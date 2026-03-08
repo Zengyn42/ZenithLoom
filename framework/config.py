@@ -25,6 +25,7 @@ class AgentConfig:
     persona_dir: str = "./agents/hani/"  # SOUL.md / IDENTITY.md / COMMANDS.md 目录
     session_thread_id: str = "default_session"
     timeout: int = 120  # Claude SDK 超时（秒）
+    claude_model: str | None = None  # None = 用 Claude Code CLI 默认模型
 
     @classmethod
     def from_env(cls, prefix: str = "HANI") -> "AgentConfig":
@@ -49,4 +50,5 @@ class AgentConfig:
                 f"{prefix}_THREAD_ID", f"{prefix.lower()}_session"
             ),
             timeout=int(os.getenv(f"{prefix}_TIMEOUT", "120")),
+            claude_model=os.getenv(f"{prefix}_CLAUDE_MODEL") or None,
         )
