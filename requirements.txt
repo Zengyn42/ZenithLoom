@@ -1,6 +1,7 @@
 # 核心框架（状态机 + 持久化）
 langgraph>=0.2.0
 langgraph-checkpoint-sqlite>=3.0.0
+aiosqlite>=0.20.0           # AsyncSqliteSaver for async graph execution
 langchain-core>=0.3.0    # BaseMessage, HumanMessage, AIMessage, add_messages
 
 # 接口层
@@ -10,5 +11,8 @@ libtmux>=0.28.0          # P1: Tmux session 管理
 # 工具
 python-dotenv>=1.0.0
 
+# Claude Agent SDK（替代 subprocess 调用 Claude CLI）
+claude-agent-sdk>=0.1.0
+
 # 注意：无需 langchain-anthropic 或 langchain-google-genai
-# Claude 和 Gemini 通过本地 CLI subprocess 调用
+# Gemini 通过本地 CLI subprocess 调用（Phase 2 迁移到 google-adk）
