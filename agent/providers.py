@@ -67,6 +67,7 @@ class ClaudeCLIProvider(LLMProvider):
             tools=kwargs.get("tools", self.tools),
             skip_permissions=kwargs.get("skip_permissions", self.skip_permissions),
             timeout=self.timeout,
+            resume_session_id=kwargs.get("resume_session_id", ""),
         )
 
 
