@@ -176,7 +176,7 @@ class _CodeAssistClient:
         403/429 立刻抛出 GeminiQuotaError，调用方不应重试。
         """
         delay = random.uniform(_JITTER_MIN, _JITTER_MAX)
-        logger.debug(f"[gemini_client] jitter sleep {delay:.1f}s")
+        logger.info(f"[gemini_client] model={self._model} jitter={delay:.1f}s")
         time.sleep(delay)
 
         token = self._ensure_token()

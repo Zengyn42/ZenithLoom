@@ -50,6 +50,9 @@ class ClaudeNode:
         - tools 可覆盖 config 默认工具列表
         - cwd 可覆盖 config 默认工作目录
         """
+        model = self.config.claude_model or "default"
+        logger.info(f"[claude_node] model={model} sid={session_id[:8] if session_id else 'new'}")
+
         options = ClaudeAgentOptions(
             system_prompt=self.system_prompt or None,
             cwd=cwd or self.config.workspace or None,
