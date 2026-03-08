@@ -59,7 +59,7 @@ class ClaudeNode:
             env={"CLAUDECODE": "", "CLAUDE_CODE_SESSION": ""},
         )
 
-        text_parts = []
+        result_text = ""
         new_session_id = session_id
 
         client = ClaudeSDKClient(options)
@@ -68,21 +68,16 @@ class ClaudeNode:
             await client.query(prompt, session_id=session_id or "default")
 
             async for msg in client.receive_messages():
-                if isinstance(msg, AssistantMessage):
-                    for block in msg.content:
-                        if isinstance(block, TextBlock):
-                            text_parts.append(block.text)
-                elif isinstance(msg, ResultMessage):
+                if isinstance(msg, ResultMessage):
                     new_session_id = msg.session_id or session_id
                     if msg.usage:
                         update_token_stats(msg.usage)
+                    # ResultMessage.result 是权威最终文本
                     if msg.result:
-                        text_parts.append(msg.result)
+                        result_text = msg.result.strip()
                     break  # ResultMessage 是最后一条
         finally:
             await client.disconnect()
-
-        result_text = "".join(text_parts).strip()
         sid_short = new_session_id[:8] if new_session_id else "new"
         logger.info(
             f"[claude_node] sid={sid_short} output_len={len(result_text)}"
