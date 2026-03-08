@@ -56,6 +56,7 @@ class ClaudeNode:
             allowed_tools=tools or self.config.tools,
             permission_mode=self.config.permission_mode,
             resume=session_id or None,
+            model=self.config.claude_model or None,
             env={"CLAUDECODE": "", "CLAUDE_CODE_SESSION": ""},
         )
 
