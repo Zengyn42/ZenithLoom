@@ -151,6 +151,56 @@ def _run_watched(cmd: list[str], env: dict, cwd: str | None, timeout: int,
 
 
 # ==========================================
+# Token 计数器（进程级累计）
+# ==========================================
+import json as _json
+
+_token_stats = {
+    "input_tokens": 0,
+    "output_tokens": 0,
+    "cache_read_input_tokens": 0,
+    "cache_creation_input_tokens": 0,
+    "calls": 0,
+}
+
+
+def get_token_stats() -> dict:
+    """返回当前进程的累计 token 使用统计。"""
+    return dict(_token_stats)
+
+
+def reset_token_stats() -> None:
+    for k in _token_stats:
+        _token_stats[k] = 0
+
+
+_last_session_id: str = ""
+
+
+def get_last_session_id() -> str:
+    return _last_session_id
+
+
+def _parse_claude_json(raw: str) -> tuple[str, dict, str]:
+    """
+    解析 --output-format json 的响应。
+    返回 (text_result, usage_dict, session_id)。
+    解析失败时 fallback 到原始文本。
+    """
+    global _last_session_id
+    try:
+        data = _json.loads(raw)
+        text = data.get("result", "") or data.get("content", "") or raw
+        usage = data.get("usage", {})
+        sid = data.get("session_id", "")
+        if sid:
+            _last_session_id = sid
+        return clean_output(str(text)), usage, sid
+    except (_json.JSONDecodeError, Exception):
+        return clean_output(raw), {}, ""
+
+
+# ==========================================
 # Claude CLI 调用
 # ==========================================
 def call_claude(
@@ -159,14 +209,15 @@ def call_claude(
     tools: list[str] | None = None,
     skip_permissions: bool = False,
     timeout: int = 120,
+    resume_session_id: str = "",
 ) -> str:
     """
     调用 `claude -p <prompt>`。
-    - cwd: 项目目录，Claude 按 cwd 区分不同项目 session
-    - tools: 传递给 --allowedTools（如 ["Bash","Read","Write"]）
-    - skip_permissions: --dangerously-skip-permissions
+    - resume_session_id: 非空时用 --resume 续接已有 session，历史由 Claude 管理
     """
-    cmd = ["claude", "-p", prompt]
+    cmd = ["claude", "-p", prompt, "--output-format", "json"]
+    if resume_session_id:
+        cmd += ["--resume", resume_session_id]
     if skip_permissions:
         cmd.append("--dangerously-skip-permissions")
     if tools:
@@ -177,12 +228,29 @@ def call_claude(
     env.pop("CLAUDE_CODE_SESSION", None)
 
     try:
-        return _run_watched(cmd, env, cwd, timeout)
+        raw = _run_watched(cmd, env, cwd, timeout)
     except SubprocessInteractiveError as e:
         logger.error(f"[claude CLI] {e}")
         return f"[错误] Claude 被交互提示中断: {e}"
     except FileNotFoundError:
         return "[错误] claude 命令不存在，请确认已安装 Claude Code CLI。"
+
+    text, usage, _ = _parse_claude_json(raw)
+
+    # 累计 token 统计
+    _token_stats["calls"] += 1
+    for key in ("input_tokens", "output_tokens", "cache_read_input_tokens", "cache_creation_input_tokens"):
+        _token_stats[key] += usage.get(key, 0)
+
+    if usage:
+        inp = usage.get("input_tokens", 0)
+        out = usage.get("output_tokens", 0)
+        cache_r = usage.get("cache_read_input_tokens", 0)
+        cache_c = usage.get("cache_creation_input_tokens", 0)
+        sid_short = _last_session_id[:8] if _last_session_id else "new"
+        logger.info(f"[tokens] sid={sid_short} in={inp} out={out} cache_read={cache_r} cache_create={cache_c} | 累计 calls={_token_stats['calls']}")
+
+    return text
 
 
 # ==========================================

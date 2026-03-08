@@ -28,7 +28,7 @@ from langgraph.graph import END, StateGraph
 from langgraph.graph.message import add_messages
 
 import logging
-from agent.cli_wrapper import extract_json, heartbeat_probe
+from agent.cli_wrapper import extract_json, heartbeat_probe, get_last_session_id
 from agent.git_ops import ensure_repo, snapshot, rollback
 
 logger = logging.getLogger(__name__)
@@ -115,6 +115,7 @@ class AgentState(TypedDict):
     last_stable_commit: str  # claude_node 运行前的 git snapshot hash
     retry_count: int         # 当前 turn 已触发回退重试的次数
     rollback_reason: str     # 验证失败原因；非空时 claude_node 注入警告
+    claude_session_id: str   # Claude CLI session ID，非空时用 --resume 续接
 
 
 # ==========================================
@@ -237,46 +238,38 @@ def claude_node(state: AgentState) -> dict:
     else:
         _gemini_override_topic = None
 
-    history_text = _format_history(state["messages"][:-1], MAX_MESSAGES)
     gemini_ctx = state.get("gemini_context", "")
     project_root = state.get("project_root", "") or None
+    session_id = state.get("claude_session_id", "")
 
-    project_section = _build_project_section(state)
-
-    gemini_section = (
-        f"\n[Gemini 首席架构师建议（经3轮对抗验证）]\n{gemini_ctx}\n[建议结束]\n"
-        f"⚠️ 你已收到 Gemini 的建议，请直接基于以上建议回复老板。"
-        f"严禁再次输出 consult_gemini JSON，否则造成死循环。\n"
-        if gemini_ctx and not gemini_ctx.startswith("__PENDING__")
-        else ""
-    )
-
-    # ── Git 回退警告（上一次操作触发了熔断）────────────────────────────
+    # ── 动态注入内容（rollback / 耻辱柱 / Gemini 建议）────────────────
     rollback_reason = state.get("rollback_reason", "")
     last_commit = state.get("last_stable_commit", "")
     rollback_warning = (
-        f"\n⚠️ 【系统警告·时光倒流】\n"
+        f"⚠️ 【系统警告·时光倒流】\n"
         f"你上一次的操作触发了验证失败（原因：{rollback_reason}）。\n"
         f"系统已执行 git reset --hard，文件已恢复到 {last_commit[:8] if last_commit else '上一个稳定版本'}。\n"
-        f"现在的工作目录是干净的。请换一种思路，不要重复同样的错误。\n"
-        if rollback_reason
-        else ""
+        f"请换一种思路，不要重复同样的错误。\n"
+        if rollback_reason else ""
     )
 
-    # 耻辱柱注入：有历史失败案例时强行警告，防止时光机后失忆重蹈覆辙
     tombstone_raw = _read_tombstone(project_root or "")
     tombstone_section = (
-        f"\n⛔ 【跨时空耻辱柱·绝对禁止重蹈】\n"
-        f"以下是系统已经证明失败的方案，git 时光机已回滚它们，但这段记忆必须保留：\n"
-        f"{tombstone_raw}\n"
-        f"绝对不要重复以上任何模式。\n"
-        if tombstone_raw
-        else ""
+        f"⛔ 【跨时空耻辱柱·绝对禁止重蹈】\n{tombstone_raw}\n绝对不要重复以上任何模式。\n"
+        if tombstone_raw else ""
     )
 
-    # @Gemini 触发时，注入强制组装指令（覆盖正常的"当前指令"）
+    gemini_section = (
+        f"[Gemini 首席架构师建议（经3轮对抗验证）]\n{gemini_ctx}\n[建议结束]\n"
+        f"⚠️ 严禁再次输出 consult_gemini JSON，否则造成死循环。\n"
+        if gemini_ctx and not gemini_ctx.startswith("__PENDING__") else ""
+    )
+
+    project_section = _build_project_section(state)
+
+    # @Gemini 触发时的强制组装指令
     if _gemini_override_topic:
-        current_instruction = (
+        user_msg = (
             f"老板: {latest_input}\n\n"
             f"【系统指令·强制咨询】老板明确要求咨询 Gemini 首席架构师，关于：{_gemini_override_topic}\n"
             f"你的任务：结合当前项目上下文，把这个问题组装成专业提问，"
@@ -284,32 +277,43 @@ def claude_node(state: AgentState) -> dict:
             f'{{"action": "consult_gemini", "topic": "<提炼后的问题>", "context": "<相关项目状态>"}}'
         )
     else:
-        current_instruction = f"老板: {latest_input}"
+        user_msg = f"老板: {latest_input}"
 
-    prompt = f"""{_PERSONA_HEADER}
+    dynamic_injections = "".join(filter(None, [rollback_warning, tombstone_section, gemini_section, project_section]))
+
+    if not session_id:
+        # ── 首轮：完整注入 SOUL + IDENTITY + OPERATIONAL，建立 Claude session ──
+        history_text = _format_history(state["messages"][:-1], MAX_MESSAGES)
+        prompt = f"""{_PERSONA_HEADER}
 
 ---
 
 {_OPERATIONAL_PROMPT}
-{rollback_warning}{tombstone_section}
+{dynamic_injections}
 [历史对话]
 {history_text}
 
-{project_section}
-{gemini_section}
 [当前指令]
-{current_instruction}
+{user_msg}
 
 Hani:"""
+    else:
+        # ── 后续轮：只发动态注入 + 消息，历史由 Claude session 管理 ──────
+        parts = [p for p in [dynamic_injections, user_msg] if p]
+        prompt = "\n\n".join(parts)
 
     debug = os.getenv("DEBUG", "").lower() in ("1", "true")
     if debug:
-        logger.debug(f"[claude_node] prompt length={len(prompt)} chars")
+        logger.debug(f"[claude_node] session={'new' if not session_id else session_id[:8]} prompt_len={len(prompt)}")
 
     dynamic_tools = _select_tools(latest_input)
-    if debug:
-        logger.debug(f"[claude_node] tools={dynamic_tools}")
-    raw_output = _claude_provider.complete(prompt, cwd=project_root, tools=dynamic_tools)
+    raw_output = _claude_provider.complete(
+        prompt, cwd=project_root, tools=dynamic_tools,
+        resume_session_id=session_id,
+    )
+
+    # 保存本次调用产生的 session_id
+    new_session_id = get_last_session_id()
 
     if debug:
         logger.debug(f"[claude_node] raw_output={raw_output[:300]!r}")
@@ -332,23 +336,42 @@ Hani:"""
     return {
         "messages": [AIMessage(content=raw_output)],
         "gemini_context": "",
-        "consult_count": 0,   # 完成本轮 turn，重置计数器
-        "rollback_reason": "", # 回复成功后清零（下一轮不再注入警告）
-        "retry_count": 0,      # 重置重试计数器
+        "consult_count": 0,
+        "rollback_reason": "",
+        "retry_count": 0,
+        "claude_session_id": new_session_id or session_id,  # 保持或更新 session
     }
 
 
 # ==========================================
 # 5. Gemini 战略顾问节点（3轮对抗）
 # ==========================================
+_CONSULT_LOG = os.path.join(os.path.dirname(__file__), "..", "consult_log.md")
+
+
+def _log_consult(content: str, label: str, debug: bool) -> None:
+    """把咨询内容追加写到 consult_log.md，debug 模式同时打印到终端。"""
+    ts = datetime.datetime.now().strftime("%H:%M:%S")
+    entry = f"\n### [{ts}] {label}\n```\n{content}\n```\n"
+    try:
+        with open(_CONSULT_LOG, "a", encoding="utf-8") as f:
+            f.write(entry)
+    except Exception:
+        pass
+    if debug:
+        print(f"\n{'='*60}\n[DEBUG] {label}\n{content}\n{'='*60}", flush=True)
+
+
 def gemini_node(state: AgentState) -> dict:
     """
     3轮内部对抗性咨询（不新增 LangGraph 节点，内部同步循环）：
       Round 1: Gemini 首次回答
       Round 2: Claude 挑刺 → Gemini 修订
       Round 3: Claude 深度挑刺 → Gemini 最终建议
-    全程打印进度，缓解"系统假死焦虑"。
+    全程打印进度，内容写入 consult_log.md（DEBUG=1 时同时打终端）。
     """
+    debug = os.getenv("DEBUG", "").lower() in ("1", "true")
+
     pending = state.get("gemini_context", "")
     if pending.startswith("__PENDING__"):
         rest = pending[len("__PENDING__"):]
@@ -361,6 +384,14 @@ def gemini_node(state: AgentState) -> dict:
 
     project_root = state.get("project_root", "") or None
 
+    # 写咨询会话头部
+    ts = datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+    try:
+        with open(_CONSULT_LOG, "a", encoding="utf-8") as f:
+            f.write(f"\n\n---\n## 咨询会话 [{ts}]\n**Topic:** {topic}\n**Context:** {context[:200]}\n")
+    except Exception:
+        pass
+
     gemini_system = (
         "你是无垠智穹的首席架构师（Gemini）。Hani向你咨询架构问题。\n"
         "请根据\"5090显存绝对清场\"和\"物理隔离\"铁律，给出极致架构建议。\n"
@@ -372,6 +403,7 @@ def gemini_node(state: AgentState) -> dict:
     g1 = _gemini_provider.complete(
         f"{gemini_system}\n\n问题：{topic}\n当前上下文：{context}"
     )
+    _log_consult(g1, "Round 1 · Gemini 首次回答", debug)
 
     # ── Round 2: Claude 挑刺 → Gemini 修订 ────────
     print(f"[咨询 2/3] 🔍 Claude 挑刺中...", flush=True)
@@ -380,6 +412,7 @@ def gemini_node(state: AgentState) -> dict:
         f"遗漏的边界情况或过于理想化的假设（简明扼要，3点以内）：\n\n{g1}",
         cwd=project_root,
     )
+    _log_consult(critique, "Round 2 · Claude 挑刺", debug)
 
     print(f"[咨询 2/3] 🔄 Gemini 修订中...", flush=True)
     g2 = _gemini_provider.complete(
@@ -388,6 +421,7 @@ def gemini_node(state: AgentState) -> dict:
         f"Hani的质疑：\n{critique}\n\n"
         "请针对上述质疑修订你的建议："
     )
+    _log_consult(g2, "Round 2 · Gemini 修订", debug)
 
     # ── Round 3: Claude 深度挑刺 → Gemini 最终 ────
     print(f"[咨询 3/3] ⚡ Claude 深度挑刺...", flush=True)
@@ -397,6 +431,7 @@ def gemini_node(state: AgentState) -> dict:
         f"{g2}",
         cwd=project_root,
     )
+    _log_consult(nitpick, "Round 3 · Claude 深度挑刺", debug)
 
     print(f"[咨询 3/3] 🏁 Gemini 最终建议...", flush=True)
     g_final = _gemini_provider.complete(
@@ -405,6 +440,7 @@ def gemini_node(state: AgentState) -> dict:
         f"Hani 的最终审查意见：\n{nitpick}\n\n"
         "请给出你的最终建议（这将直接被 Hani 采纳执行）："
     )
+    _log_consult(g_final, "Round 3 · Gemini 最终建议", debug)
 
     print(f"[咨询完成] ✅ Gemini 3轮建议已就绪\n", flush=True)
     return {

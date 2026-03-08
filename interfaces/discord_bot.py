@@ -25,6 +25,7 @@ from agent.core import (
     get_engine, get_config, SESSION_THREAD_ID, DB_PATH,
     session_stats, session_compact, session_reset,
 )
+from agent.cli_wrapper import get_token_stats, reset_token_stats
 
 load_dotenv()
 
@@ -324,6 +325,38 @@ async def reset_session(ctx, confirm: str = ""):
         return
     deleted = session_reset()
     await ctx.send(f"🗑️ Session 已重置，清空了 `{deleted}` 条记录。Hani 从零开始。")
+
+
+@bot.command(name="tokens")
+async def show_tokens(ctx, reset: str = ""):
+    """!tokens — 查看本次进程累计 token 消耗；!tokens reset 重置计数"""
+    if not await _check_auth(ctx):
+        return
+    if reset == "reset":
+        reset_token_stats()
+        await ctx.send("🔄 Token 计数已重置。")
+        return
+    s = get_token_stats()
+    inp = s["input_tokens"]
+    out = s["output_tokens"]
+    cr  = s["cache_read_input_tokens"]
+    cc  = s["cache_creation_input_tokens"]
+    calls = s["calls"]
+    # Sonnet 4.5 价格：input $3/M, output $15/M, cache_read $0.3/M, cache_write $3.75/M
+    cost_usd = (inp * 3 + out * 15 + cr * 0.3 + cc * 3.75) / 1_000_000
+    # 如果全走 cache_read 能省多少：
+    saved_usd = cr * (3 - 0.3) / 1_000_000
+    await ctx.send(
+        f"📊 **Token 统计（本次启动后）**\n"
+        f"```\n"
+        f"调用次数      : {calls}\n"
+        f"Input tokens  : {inp:,}\n"
+        f"Output tokens : {out:,}\n"
+        f"Cache read    : {cr:,}  ← 省了 ${saved_usd:.4f}\n"
+        f"Cache create  : {cc:,}  ← 首次写入成本\n"
+        f"估算费用      : ~${cost_usd:.4f} USD\n"
+        f"```"
+    )
 
 
 @bot.command(name="clear")
