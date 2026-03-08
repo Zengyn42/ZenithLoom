@@ -10,12 +10,17 @@ Phase 2: 直接调用 Gemini Code Assist API（cloudcode-pa.googleapis.com）。
   2. Token 过期时用 client_id/secret + refresh_token 自动续期
   3. 首次调用时通过 loadCodeAssist 获取 project_id（缓存）
   4. 直接 POST 到 cloudcode-pa.googleapis.com/v1internal:generateContent
+
+安全守则（防止账号/钱包被打）：
+  - 每次调用前强制 jitter sleep 2~5s，模拟人类节奏
+  - 403 / 429 立刻抛出 GeminiQuotaError，LangGraph 图停止，不重试
 """
 
 import asyncio
 import json
 import logging
 import os
+import random
 import time
 import urllib.error
 import urllib.parse
@@ -43,6 +48,17 @@ _GEMINI_SYSTEM = (
     "请根据问题给出极致架构建议。直接输出建议，不需要客套。"
 )
 
+# 两次 API 调用之间的随机延迟范围（秒）
+_JITTER_MIN = 2.0
+_JITTER_MAX = 5.0
+
+
+class GeminiQuotaError(RuntimeError):
+    """
+    403 / 429 触发时抛出。
+    LangGraph 节点捕获后应立即停止图，不得重试。
+    """
+
 
 class _CodeAssistClient:
     """
@@ -50,6 +66,7 @@ class _CodeAssistClient:
     - 自动处理 token 过期续期
     - 缓存 project_id（每次启动只请求一次）
     - 维护对话历史（multi-turn）
+    - 每次 generateContent 前强制 jitter sleep
     """
 
     def __init__(self, model: str):
@@ -154,7 +171,14 @@ class _CodeAssistClient:
         """
         同步版本（供 run_in_executor 调用）。
         发送一轮对话，自动维护历史，返回模型回复文本。
+
+        每次调用前强制 jitter sleep，防止触发速率限制。
+        403/429 立刻抛出 GeminiQuotaError，调用方不应重试。
         """
+        delay = random.uniform(_JITTER_MIN, _JITTER_MAX)
+        logger.debug(f"[gemini_client] jitter sleep {delay:.1f}s")
+        time.sleep(delay)
+
         token = self._ensure_token()
         project_id = self._get_project_id(token)
 
@@ -182,9 +206,13 @@ class _CodeAssistClient:
             with urllib.request.urlopen(req, timeout=120) as resp:
                 result = json.loads(resp.read())
         except urllib.error.HTTPError as e:
-            raise RuntimeError(
-                f"generateContent 失败 ({e.code}): {e.read().decode()[:300]}"
-            )
+            body = e.read().decode()[:300]
+            if e.code in (403, 429):
+                # 账号权限撤销或配额耗尽 — 立刻停止，不重试
+                raise GeminiQuotaError(
+                    f"Gemini API {e.code} — 图已停止，请检查账号状态或等待配额重置。\n{body}"
+                )
+            raise RuntimeError(f"generateContent 失败 ({e.code}): {body}")
 
         candidates = result.get("response", {}).get("candidates", [])
         if not candidates:
@@ -212,6 +240,8 @@ class GeminiNode:
 
     Phase 2: 直接调用 Code Assist API，Gemini 自管对话历史。
     每个 LangGraph thread_id 对应一个独立的 _CodeAssistClient（持久多轮）。
+
+    GeminiQuotaError（403/429）会向上穿透，由 LangGraph 图捕获后终止流程。
     """
 
     def __init__(self, config: AgentConfig, claude_node: ClaudeNode):
@@ -237,6 +267,9 @@ class GeminiNode:
           Round 1: Gemini 首次回答
           Round 2: Claude 挑刺 → Gemini 修订
           Round 3: Claude 深度挑刺 → Gemini 最终建议
+
+        GeminiQuotaError 不被捕获，直接穿透给 LangGraph 图。
+        其他异常在此捕获并返回错误占位文本。
         """
         client = self._get_client(session_id or "default")
         client.reset()  # 每次咨询都是独立话题
@@ -279,6 +312,8 @@ class GeminiNode:
             logger.info("[gemini] 3轮咨询完成")
             return g_final
 
+        except GeminiQuotaError:
+            raise  # 穿透给图，让图停止
         except Exception as e:
             logger.error(f"[gemini] Code Assist API 失败: {e}")
             return f"[Gemini 咨询失败: {e}]"

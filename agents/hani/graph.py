@@ -15,7 +15,7 @@ from langgraph.graph import END, StateGraph
 from agents.hani.config import load_hani_config, load_hani_system_prompt
 from agents.hani.hani_claude_node import HaniClaudeNode
 from framework.nodes.claude_node import ClaudeNode
-from framework.nodes.gemini_node import GeminiNode
+from framework.nodes.gemini_node import GeminiNode, GeminiQuotaError
 from framework.nodes.git_nodes import GitRollbackNode, GitSnapshotNode
 from framework.nodes.validate_node import ValidateNode
 from framework.nodes.vram_flush_node import VramFlushNode
@@ -41,7 +41,16 @@ def _gemini_node_wrapper(gemini: GeminiNode):
             context = ""
 
         session_id = state.get("claude_session_id", "")
-        result = await gemini.consult(topic, context, session_id)
+        try:
+            result = await gemini.consult(topic, context, session_id)
+        except GeminiQuotaError as e:
+            # 403/429：账号权限撤销或配额耗尽，立刻终止图，不重试
+            logger.error(f"[gemini_node] 配额错误，图终止: {e}")
+            return {
+                "gemini_context": f"[Gemini 配额错误，本轮跳过: {e}]",
+                "consult_count": state.get("consult_count", 0) + 1,
+                # 清除 __PENDING__ 防止图继续循环
+            }
 
         return {
             "gemini_context": result,
