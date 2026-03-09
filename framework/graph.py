@@ -1,23 +1,35 @@
 """
 框架级通用 Agent 图构建器 — framework/graph.py
 
-build_agent_graph() 构建标准 LangGraph 状态机：
-  git_snapshot → agent_node → validate → [rollback|gemini_advisor|vram_flush] → END
+build_agent_graph() 构建可配置的 LangGraph 状态机。
 
-任何 agent 都可以用自己的 agent_node 调用此函数，不需要重复写图结构。
+LangGraph 设计哲学：StateGraph 是纯 builder——节点是任意 callable，
+拓扑由代码显式声明。本模块把节点工厂与拓扑组装分开，
+通过 GraphSpec 让 agent.json 声明自己需要哪些组件，无需写 Python。
+
+GraphSpec（agent.json["graph"] 字段）：
+  use_git      bool  git_snapshot + git_rollback（默认 true，适合写代码的 agent）
+  use_validate bool  validate 节点，错误时触发 rollback（默认 true）
+  use_gemini   bool  gemini_advisor 节点（默认 true）
+  use_vram_flush bool GPU 清洗节点（默认 false）
+
+等效拓扑：
+  full（默认）: git_snapshot → agent → validate → [rollback|gemini|END]
+  chat:        agent → END          （use_git=false, use_validate=false）
+  worker:      agent → validate → END（use_git=false, use_gemini=false）
+
+需要完全自定义拓扑：在 agents/<name>/graph.py 定义 build_graph(loader, checkpointer)。
 
 Session 管理（模块级）：
   _active         — 当前激活的命名 session
   get_config()    — 动态返回 thread_id，供 engine.astream() 使用
   switch_session()— 切换到已有命名 session
   new_session()   — 创建并切换到新命名 session
-  get_engine()    — 单例引擎，懒加载
-  invalidate_engine() — 使引擎缓存失效（compact/reset 后调用）
 """
 
 import logging
 import os
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 
 import aiosqlite
 from langgraph.checkpoint.sqlite.aio import AsyncSqliteSaver
@@ -33,6 +45,34 @@ from framework.state import BaseAgentState
 
 logger = logging.getLogger(__name__)
 
+
+# ---------------------------------------------------------------------------
+# GraphSpec — agent.json["graph"] 驱动的拓扑配置
+# ---------------------------------------------------------------------------
+
+@dataclass
+class GraphSpec:
+    """
+    声明式图拓扑配置，从 agent.json["graph"] 加载。
+
+    use_git=True  → 插入 git_snapshot（入口）和 git_rollback（错误恢复）
+    use_validate  → 插入 validate 节点，验证失败触发 rollback / gemini 咨询
+    use_gemini    → validate 后可路由到 gemini_advisor
+    use_vram_flush→ 终止前清洗 GPU 显存
+    """
+    use_git: bool = True
+    use_validate: bool = True
+    use_gemini: bool = True
+    use_vram_flush: bool = False
+
+    @classmethod
+    def from_dict(cls, d: dict) -> "GraphSpec":
+        return cls(
+            use_git=d.get("use_git", True),
+            use_validate=d.get("use_validate", True),
+            use_gemini=d.get("use_gemini", True),
+            use_vram_flush=d.get("use_vram_flush", False),
+        )
 
 
 # ---------------------------------------------------------------------------
@@ -165,53 +205,85 @@ async def build_agent_graph(
     agent_node,
     gemini: GeminiNode,
     checkpointer=None,
+    spec: "GraphSpec | None" = None,
+    # 向后兼容旧参数
     use_vram_flush: bool = False,
 ):
     """
-    构建标准 Agent StateGraph。
+    构建可配置的 Agent StateGraph。
 
-    任何 agent 传入自己的 agent_node（实现了 __call__(state) → dict 的对象），
-    其余节点（git_snapshot、validate、gemini_advisor、git_rollback）
-    由框架统一提供。vram_flush 节点为可选，由 agent.json["vram_flush"] 控制。
+    拓扑由 GraphSpec 控制（来自 agent.json["graph"]），默认等价于原来的完整图。
+    LangGraph 节点 = callable(state) → dict，边 = 显式声明，条件路由 = 函数。
 
     Args:
-        config:          AgentConfig
-        agent_node:      实现了 async __call__(state: BaseAgentState) -> dict 的节点对象
-        gemini:          GeminiNode 实例（已初始化）
-        checkpointer:    LangGraph checkpointer，None 则自动创建 AsyncSqliteSaver
-        use_vram_flush:  是否在图末尾插入 GPU 清洗节点（默认 False）
+        config:       AgentConfig
+        agent_node:   async __call__(state) → dict
+        gemini:       GeminiNode 实例
+        checkpointer: LangGraph checkpointer，None 自动创建 AsyncSqliteSaver
+        spec:         GraphSpec，None 时使用默认（全功能）
+        use_vram_flush: 向后兼容参数，优先级低于 spec.use_vram_flush
     """
-    git_snapshot = GitSnapshotNode()
-    git_rollback = GitRollbackNode()
-    validate = ValidateNode(config)
+    if spec is None:
+        spec = GraphSpec(use_vram_flush=use_vram_flush)
+
+    if is_debug():
+        logger.debug(
+            f"[graph] spec: git={spec.use_git} validate={spec.use_validate} "
+            f"gemini={spec.use_gemini} vram={spec.use_vram_flush}"
+        )
 
     builder = StateGraph(BaseAgentState)
-    builder.add_node("git_snapshot", git_snapshot)
     builder.add_node("claude_agent", agent_node)
-    builder.add_node("validate", validate)
-    builder.add_node("gemini_advisor", _gemini_node_wrapper(gemini))
-    builder.add_node("git_rollback", git_rollback)
 
-    terminal = "vram_flush" if use_vram_flush else END
-    if use_vram_flush:
+    # ── 终止节点 ──────────────────────────────────────────────────────────
+    terminal = END
+    if spec.use_vram_flush:
         builder.add_node("vram_flush", VramFlushNode())
         builder.add_edge("vram_flush", END)
+        terminal = "vram_flush"
 
-    builder.set_entry_point("git_snapshot")
-    builder.add_edge("git_snapshot", "claude_agent")
-    builder.add_edge("claude_agent", "validate")
-    builder.add_conditional_edges(
-        "validate",
-        _make_validate_route(config.max_gemini_consults),
-        {
-            "rollback": "git_rollback",
-            "consult_gemini": "gemini_advisor",
-            "end": terminal,
-        },
-    )
-    builder.add_edge("git_rollback", "claude_agent")
-    builder.add_edge("gemini_advisor", "claude_agent")
+    # ── validate + 条件路由 ───────────────────────────────────────────────
+    if spec.use_validate:
+        validate = ValidateNode(config)
+        builder.add_node("validate", validate)
+        builder.add_edge("claude_agent", "validate")
 
+        route_map: dict[str, str] = {"end": terminal}
+
+        if spec.use_git:
+            git_rollback = GitRollbackNode()
+            builder.add_node("git_rollback", git_rollback)
+            builder.add_edge("git_rollback", "claude_agent")
+            route_map["rollback"] = "git_rollback"
+        else:
+            # 没有 git rollback，验证失败也走 end
+            route_map["rollback"] = terminal
+
+        if spec.use_gemini:
+            builder.add_node("gemini_advisor", _gemini_node_wrapper(gemini))
+            builder.add_edge("gemini_advisor", "claude_agent")
+            route_map["consult_gemini"] = "gemini_advisor"
+        else:
+            route_map["consult_gemini"] = terminal
+
+        builder.add_conditional_edges(
+            "validate",
+            _make_validate_route(config.max_gemini_consults),
+            route_map,
+        )
+    else:
+        builder.add_edge("claude_agent", terminal)
+
+    # ── 入口 ──────────────────────────────────────────────────────────────
+    if spec.use_git:
+        git_snapshot = GitSnapshotNode()
+        builder.add_node("git_snapshot", git_snapshot)
+        builder.add_edge("git_snapshot", "claude_agent")
+        builder.set_entry_point("git_snapshot")
+    else:
+        builder.set_entry_point("claude_agent")
+
+    # ── Checkpointer ──────────────────────────────────────────────────────
     if checkpointer is None:
         db_path = os.path.abspath(config.db_path)
         conn = await aiosqlite.connect(db_path)

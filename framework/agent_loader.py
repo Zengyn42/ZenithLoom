@@ -105,17 +105,42 @@ class AgentLoader:
             raise ValueError(f"未知 llm: {llm!r}，支持：'claude' | 'llama'")
 
     async def build_graph(self, checkpointer=None):
-        """构建并返回编译好的 LangGraph 状态机。"""
+        """构建并返回编译好的 LangGraph 状态机。
+
+        优先级：
+          1. agent 目录下的 graph.py 存在且定义了 build_graph(loader, checkpointer) → 使用它
+          2. 否则使用框架默认图（git_snapshot → agent → validate → ...）
+        """
+        # 检查 agent 是否有自定义图
+        custom_graph_path = self._dir / "graph.py"
+        if custom_graph_path.exists():
+            import importlib.util
+            spec = importlib.util.spec_from_file_location(
+                f"agents.{self._dir.name}.graph", custom_graph_path
+            )
+            mod = importlib.util.module_from_spec(spec)
+            spec.loader.exec_module(mod)
+            if hasattr(mod, "build_graph"):
+                logger.info(f"[agent_loader] using custom graph.py for {self.name!r}")
+                return await mod.build_graph(self, checkpointer)
+
+        # 框架默认图
         config = self.load_config()
         system_prompt = self.load_system_prompt()
         llm_node = self._make_llm_node(config, system_prompt)
 
         from framework.gemini.node import GeminiNode
         from framework.nodes.agent_node import AgentNode
-        from framework.graph import build_agent_graph
+        from framework.graph import build_agent_graph, GraphSpec
 
         gemini = GeminiNode(config, llm_node)
         agent_node = AgentNode(llm_node, gemini, node_config=self._json)
+
+        # agent.json["graph"] 驱动拓扑；向后兼容旧 "vram_flush" 字段
+        graph_dict = dict(self._json.get("graph") or {})
+        if "use_vram_flush" not in graph_dict:
+            graph_dict["use_vram_flush"] = bool(self._json.get("vram_flush", False))
+        spec = GraphSpec.from_dict(graph_dict)
 
         logger.info(f"[agent_loader] building graph for {self.name!r}")
         if is_debug():
@@ -126,7 +151,7 @@ class AgentLoader:
             agent_node=agent_node,
             gemini=gemini,
             checkpointer=checkpointer,
-            use_vram_flush=bool(self._json.get("vram_flush", False)),
+            spec=spec,
         )
 
     async def get_engine(self):
