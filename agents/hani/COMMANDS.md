@@ -32,6 +32,11 @@
 | `claude-md-management:revise-claude-md` | 更新 CLAUDE.md |
 | `superpowers:systematic-debugging` | 系统性 debug |
 | `superpowers:brainstorming` | 新功能/方案设计前的头脑风暴 |
+| `huggingface-skills:hugging-face-model-trainer` | 训练/微调模型（TRL, SFT, DPO） |
+| `huggingface-skills:hugging-face-jobs` | 在 HF Jobs 上运行计算任务 |
+| `huggingface-skills:hugging-face-datasets` | 创建/管理 HF 数据集 |
+| `huggingface-skills:huggingface-gradio` | 构建 Gradio Web UI |
+| `huggingface-skills:hugging-face-cli` | HF Hub 文件操作（下载/上传） |
 
 ## 特殊触发
 
@@ -46,16 +51,4 @@
 
 ## 配置
 
-所有配置通过 `.env` 文件设置，`HANI_` 前缀：
-
-```
-HANI_WORKSPACE=/path/to/project      # 默认工作目录
-HANI_TOOLS=Read,Write,Edit,Bash,...   # 工具列表
-HANI_PERMISSION_MODE=bypassPermissions
-HANI_MAX_RETRIES=2                    # git rollback 重试上限
-HANI_DB_PATH=./hani.db                # SQLite 路径
-HANI_SESSIONS_FILE=./sessions.json    # Named sessions 映射
-HANI_THREAD_ID=hani_session_01        # LangGraph thread ID
-DISCORD_BOT_TOKEN=...                 # Discord bot token
-DISCORD_ALLOWED_USERS=123,456         # 白名单（逗号分隔 ID）
-```
+主要配置在 `agents/hani/agent.json`。敏感信息（Discord token）通过 `DISCORD_BOT_TOKEN` 环境变量注入。
