@@ -18,6 +18,21 @@
 | `!whoami` | 显示你的 Discord ID |
 | `!help_hani` | 显示帮助信息 |
 
+## 可用 Skills（通过 Skill 工具按需调用）
+
+当任务匹配时，使用 `Skill` 工具加载对应技能的完整指令：
+
+| Skill 名称 | 触发时机 |
+|---|---|
+| `commit` | 需要创建 git commit |
+| `commit-push-pr` | 需要 commit + push + 开 PR |
+| `commit-commands:clean_gone` | 清理已删除的远程分支 |
+| `code-review:code-review` | 审查 Pull Request |
+| `code-simplifier:code-simplifier` | 代码简化和重构 |
+| `claude-md-management:revise-claude-md` | 更新 CLAUDE.md |
+| `superpowers:systematic-debugging` | 系统性 debug |
+| `superpowers:brainstorming` | 新功能/方案设计前的头脑风暴 |
+
 ## 特殊触发
 
 - 消息中包含 `@Gemini` 可强制触发 Gemini 首席架构师咨询（3轮对抗）

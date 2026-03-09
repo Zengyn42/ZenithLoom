@@ -1,46 +1,137 @@
 """
 框架级 Named Session 管理器
 
-sessions.json 存储 name → session_id 映射，方便 !session 命令管理。
+sessions.json 存储 name → SessionEnvelope 映射。
+SessionEnvelope 包含：
+  - thread_id   : LangGraph checkpointer 用的 thread_id
+  - node_sessions: 各节点 session UUID（claude_main, gemini_main, ...）
+  - created_at / updated_at
+
+向后兼容：若 sessions.json 中值为 plain string（旧格式），
+_load() 自动包装为 SessionEnvelope。
 """
 
 import json
 import logging
 import os
 import sqlite3
+from dataclasses import asdict, dataclass, field
+from datetime import datetime, timezone
+from uuid import uuid4
 
 logger = logging.getLogger(__name__)
 
 
+# ---------------------------------------------------------------------------
+# SessionEnvelope
+# ---------------------------------------------------------------------------
+
+@dataclass
+class SessionEnvelope:
+    """一个命名 session 的完整信封：LangGraph thread_id + 所有节点 UUID。"""
+
+    thread_id: str
+    created_at: str
+    updated_at: str
+    node_sessions: dict = field(default_factory=dict)  # {"claude_main": uuid, ...}
+
+    def to_dict(self) -> dict:
+        return {
+            "thread_id": self.thread_id,
+            "created_at": self.created_at,
+            "updated_at": self.updated_at,
+            "node_sessions": self.node_sessions,
+        }
+
+    @classmethod
+    def from_dict(cls, d: dict) -> "SessionEnvelope":
+        return cls(
+            thread_id=d["thread_id"],
+            created_at=d.get("created_at", ""),
+            updated_at=d.get("updated_at", ""),
+            node_sessions=d.get("node_sessions", {}),
+        )
+
+    @classmethod
+    def new(cls, thread_id: str | None = None) -> "SessionEnvelope":
+        now = datetime.now(timezone.utc).isoformat()
+        tid = thread_id or f"hani_session_{uuid4().hex[:8]}"
+        return cls(thread_id=tid, created_at=now, updated_at=now)
+
+
+# ---------------------------------------------------------------------------
+# SessionManager
+# ---------------------------------------------------------------------------
+
 class SessionManager:
-    """管理 sessions.json 和 LangGraph SQLite checkpoint。"""
+    """管理 sessions.json（命名 session → SessionEnvelope）和 LangGraph SQLite checkpoint。"""
 
     def __init__(self, sessions_file: str, db_path: str):
         self.sessions_file = sessions_file
         self.db_path = db_path
-        self._sessions: dict[str, str] = {}
+        self._sessions: dict[str, SessionEnvelope] = {}
         self._load()
 
+    # ------------------------------------------------------------------
+    # Persistence
+    # ------------------------------------------------------------------
+
     def _load(self) -> None:
-        if os.path.exists(self.sessions_file):
-            try:
-                with open(self.sessions_file, encoding="utf-8") as f:
-                    self._sessions = json.load(f)
-            except (json.JSONDecodeError, OSError):
-                self._sessions = {}
+        if not os.path.exists(self.sessions_file):
+            return
+        try:
+            with open(self.sessions_file, encoding="utf-8") as f:
+                raw = json.load(f)
+        except (json.JSONDecodeError, OSError):
+            return
+
+        for name, value in raw.items():
+            if isinstance(value, str):
+                # 旧格式：plain string → 自动迁移
+                self._sessions[name] = SessionEnvelope.new(value)
+                logger.info(f"[session] migrated legacy session {name!r} → envelope")
+            elif isinstance(value, dict):
+                self._sessions[name] = SessionEnvelope.from_dict(value)
 
     def _save(self) -> None:
+        data = {name: env.to_dict() for name, env in self._sessions.items()}
         with open(self.sessions_file, "w", encoding="utf-8") as f:
-            json.dump(self._sessions, f, indent=2, ensure_ascii=False)
+            json.dump(data, f, indent=2, ensure_ascii=False)
+
+    # ------------------------------------------------------------------
+    # Session CRUD (backward-compatible API)
+    # ------------------------------------------------------------------
 
     def get(self, name: str) -> str | None:
-        """获取 named session 对应的 thread_id。"""
+        """获取 named session 对应的 thread_id（签名不变）。"""
+        env = self._sessions.get(name)
+        return env.thread_id if env else None
+
+    def get_envelope(self, name: str) -> SessionEnvelope | None:
+        """获取完整 SessionEnvelope。"""
         return self._sessions.get(name)
 
     def set(self, name: str, thread_id: str) -> None:
-        """创建或更新 named session。"""
-        self._sessions[name] = thread_id
+        """创建或更新 named session（向后兼容，只设 thread_id）。"""
+        existing = self._sessions.get(name)
+        if existing:
+            existing.thread_id = thread_id
+            existing.updated_at = datetime.now(timezone.utc).isoformat()
+        else:
+            self._sessions[name] = SessionEnvelope.new(thread_id)
         self._save()
+
+    def create_session(self, name: str) -> SessionEnvelope:
+        """创建新命名 session，生成随机 thread_id。若 name 已存在抛 ValueError。"""
+        if name in self._sessions:
+            raise ValueError(
+                f"Session {name!r} 已存在。用 !switch {name} 切换，或用其他名称。"
+            )
+        env = SessionEnvelope.new()
+        self._sessions[name] = env
+        self._save()
+        logger.info(f"[session] created {name!r} → thread_id={env.thread_id}")
+        return env
 
     def delete(self, name: str) -> bool:
         """删除 named session。"""
@@ -50,9 +141,29 @@ class SessionManager:
             return True
         return False
 
-    def list_all(self) -> dict[str, str]:
-        """列出所有 named sessions。"""
+    def list_all(self) -> dict[str, SessionEnvelope]:
+        """列出所有命名 sessions。"""
         return dict(self._sessions)
+
+    def update_node_session(self, name: str, node_key: str, session_id: str) -> None:
+        """更新指定 session 下某个节点的 UUID。"""
+        env = self._sessions.get(name)
+        if env is None:
+            raise KeyError(f"Session {name!r} 不存在")
+        env.node_sessions[node_key] = session_id
+        env.updated_at = datetime.now(timezone.utc).isoformat()
+        self._save()
+
+    def find_name_by_thread_id(self, thread_id: str) -> str | None:
+        """反向查找：thread_id → session name。"""
+        for name, env in self._sessions.items():
+            if env.thread_id == thread_id:
+                return name
+        return None
+
+    # ------------------------------------------------------------------
+    # LangGraph checkpoint management
+    # ------------------------------------------------------------------
 
     def session_stats(self, thread_id: str) -> dict:
         """返回指定 thread_id 的 checkpoint 统计。"""

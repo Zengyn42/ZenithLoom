@@ -1,15 +1,13 @@
 """
-E2E 测试：Claude ↔ Gemini 3轮对抗咨询，验证模型名称。
+E2E 测试：Claude ↔ Gemini 3轮对抗咨询
 
-直接调用 GeminiNode.consult()（内含3轮 ClaudeNode 交互），
-绕过 LangGraph 图的 session resume（避免嵌套 Claude Code 环境限制）。
+直接调用 GeminiNode.consult()（内含 3轮 ClaudeNode 交互），
+绕过 LangGraph 图（避免嵌套 Claude Code 环境限制）。
 
 运行：
     python3 test_e2e_debate.py
 
-预期日志（INFO 级别）：
-    [claude_node] model=claude-sonnet-4-6 sid=new
-    [gemini_client] model=gemini-3-pro-preview jitter=X.Xs
+预期日志：
     [gemini] Round 1/3: Gemini 首次回答
     [gemini] Round 2/3: Claude 挑刺
     [gemini] Round 2/3: Gemini 修订
@@ -42,12 +40,14 @@ CONTEXT = "当前项目为 Python LangGraph 多 Agent 框架，团队规模 1-3 
 
 
 async def run():
-    from agents.hani.config import load_hani_config
-    from framework.nodes.claude_node import ClaudeNode
-    from framework.nodes.gemini_node import GeminiNode
+    from pathlib import Path
+    from framework.agent_loader import AgentLoader
+    from framework.claude.node import ClaudeNode
+    from framework.gemini.node import GeminiNode
 
-    cfg = load_hani_config()
-    gemini_model = os.getenv("HANI_GEMINI_MODEL", "gemini-2.5-flash")
+    loader = AgentLoader(Path("agents/hani"))
+    cfg = loader.load_config()
+    gemini_model = os.getenv("GEMINI_MODEL") or os.getenv("HANI_GEMINI_MODEL", "gemini-2.5-flash")
 
     logger.info("=== E2E Debate 测试开始 ===")
     logger.info(f"Claude 模型: {cfg.claude_model or 'CLI default'}")
@@ -58,7 +58,7 @@ async def run():
     claude = ClaudeNode(cfg)
     gemini = GeminiNode(cfg, claude)
 
-    result = await gemini.consult(
+    result, session_id = await gemini.consult(
         topic=TOPIC,
         context=CONTEXT,
         session_id="",
@@ -66,10 +66,10 @@ async def run():
 
     logger.info("=" * 50)
     logger.info("=== 测试完成 ===")
+    logger.info(f"Gemini session_id: {session_id[:8] if session_id else 'none'}")
     logger.info(f"Gemini 最终建议长度: {len(result)} 字符")
     logger.info(f"Gemini 最终建议预览:\n{result[:400]}")
 
-    # 断言
     assert result and len(result) > 20, f"Gemini 输出为空或过短: {result!r}"
     assert "[Gemini 咨询失败" not in result, f"Gemini 调用失败: {result[:200]}"
     assert "[Gemini 配额错误" not in result, f"Gemini 配额错误: {result[:200]}"

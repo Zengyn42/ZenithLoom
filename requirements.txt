@@ -14,5 +14,6 @@ python-dotenv>=1.0.0
 # Claude Agent SDK（替代 subprocess 调用 Claude CLI）
 claude-agent-sdk>=0.1.0
 
-# 注意：无需 langchain-anthropic 或 langchain-google-genai
-# Gemini 通过本地 CLI subprocess 调用（Phase 2 迁移到 google-adk）
+# 注意：无需任何 Google SDK（google-adk / google-generativeai / vertexai）
+# Gemini 通过 urllib.request 直连 cloudcode-pa.googleapis.com
+# 认证复用 Gemini CLI 的 OAuth 凭据（~/.gemini/oauth_creds.json）

@@ -24,4 +24,5 @@ class BaseAgentState(TypedDict):
     last_stable_commit: str  # git 快照 hash
     retry_count: int  # 当轮回退重试次数
     rollback_reason: str  # 触发回退的原因（非空 = 需要回退）
-    claude_session_id: str  # SDK resume 用的 session UUID
+    claude_session_id: str  # SDK resume 用的 session UUID（向后兼容，镜像 node_sessions["claude_main"]）
+    node_sessions: dict     # {"claude_main": uuid, "gemini_main": uuid, ...} — 所有节点 session UUID
