@@ -1,8 +1,8 @@
 """
-Hani Agent — LangGraph 状态机工厂（6行）
+Asa Agent — LangGraph 状态机工厂（6行）
 
-所有行为由 agents/hani/agent.json 驱动，无 Hani 专属 Python 代码。
-Session 管理函数从 framework.graph 再导出，供接口层调用。
+所有行为由 agents/asa/agent.json 驱动。
+使用 Llama 作为主 LLM（LlamaNode）。
 """
 
 from pathlib import Path

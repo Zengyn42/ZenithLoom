@@ -1,0 +1,39 @@
+{
+  "name": "hani",
+  "llm": "claude",
+  "workspace": "/home/kingy/Foundation/EdenGateway",
+  "vram_flush": false,
+  "channel_history_limit": 20,
+  "tools": ["Read", "Write", "Edit", "Bash", "Glob", "Grep"],
+  "permission_mode": "bypassPermissions",
+  "max_retries": 2,
+  "max_gemini_consults": 1,
+  "db_path": "hani.db",
+  "sessions_file": "sessions.json",
+  "claude_model": null,
+  "gemini_model": "gemini-2.5-pro-preview-06-05",
+  "setting_sources": null,
+  "persona_files": ["SOUL.md", "IDENTITY.md", "OPERATIONAL.md", "COMMANDS.md"],
+  "first_turn_suffix": "Hani:",
+  "user_msg_prefix": "老板: ",
+  "gemini_mention_pattern": "@[Gg]emini",
+  "tombstone_enabled": true,
+  "discord_allowed_users": [],
+  "tool_rules": [
+    {
+      "pattern": "论文|paper|arXiv|arxiv|研究|publication",
+      "flags": ["IGNORECASE"],
+      "tools": ["WebFetch", "WebSearch"]
+    },
+    {
+      "pattern": "搜索|search|网络|internet|url|http",
+      "flags": ["IGNORECASE"],
+      "tools": ["WebFetch", "WebSearch"]
+    },
+    {
+      "pattern": "notebook|jupyter|\\.ipynb",
+      "flags": ["IGNORECASE"],
+      "tools": ["NotebookEdit"]
+    }
+  ]
+}
