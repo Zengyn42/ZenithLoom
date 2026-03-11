@@ -1,26 +1,31 @@
 """
-框架级 Claude CLI 节点 — framework/claude/node.py
+框架级 Claude SDK 节点 — framework/claude/node.py
 
 ClaudeNode 继承 AgentNode，实现 call_llm() 接口：
   call_llm(prompt, session_id, tools, cwd) -> (text, new_session_id)
     - session_id 空 -> 新建 session
     - session_id 非空 -> resume 已有 session（~/.claude/ 本地存储）
 
-实现方式：直接调用 claude -p <prompt> --output-format json（非 SDK 流式协议）。
-进程自然退出确保会话历史落盘，下一轮 --resume 可正常加载。
+实现方式：claude_agent_sdk.query()（SDK 流式协议）。
+sdk_query() 通过 wait_for_result_and_end_input() 关闭 stdin，
+让子进程优雅退出，确保会话历史（user/assistant 条目）写入 JSONL 文件。
+
+注意：SDK 内部 Query._read_messages_task 会将 ProcessError 包装成
+普通 Exception 再推入消息流，因此异常捕获需检测消息内容而非类型。
 
 基类 AgentNode.__call__() 处理所有图协议逻辑（路由、注入、信号检测）；
-ClaudeNode 只负责 Claude CLI 调用。
+ClaudeNode 只负责 Claude SDK 调用。
 """
 
-import asyncio
 import json
 import logging
-import os
 
 from claude_agent_sdk import (
+    ClaudeAgentOptions,
+    ResultMessage,
     get_session_messages,
     list_sessions as sdk_list_sessions,
+    query as sdk_query,
 )
 from claude_agent_sdk._errors import ProcessError
 
@@ -34,10 +39,10 @@ logger = logging.getLogger(__name__)
 
 class ClaudeNode(AgentNode):
     """
-    Claude CLI LLM 节点。
+    Claude SDK LLM 节点。
 
-    使用 asyncio.create_subprocess_exec(['claude', '-p', ...]) 直接调用，
-    进程通过 communicate() 自然退出，确保会话历史写入 JSONL 文件。
+    继承 AgentNode，实现 call_llm()。
+    使用 sdk_query() 流式调用，stdin 关闭后进程优雅退出，会话历史落盘。
     """
 
     def __init__(
@@ -56,7 +61,7 @@ class ClaudeNode(AgentNode):
         tools: list[str] | None = None,
         cwd: str | None = None,
     ) -> tuple[str, str]:
-        """调用 Claude CLI，返回 (text, new_session_id)。"""
+        """调用 Claude SDK，返回 (text, new_session_id)。"""
         model = self.node_config.get("model") or self.node_config.get("claude_model") or "default"
         sid_short = session_id[:8] if session_id else "new"
         logger.info(f"[claude] model={model} sid={sid_short}")
@@ -69,78 +74,58 @@ class ClaudeNode(AgentNode):
             stderr_lines.append(line)
             logger.debug(f"[claude/stderr] {line.rstrip()}")
 
-        env = {
-            **os.environ,
-            "CLAUDECODE": "",
-            "CLAUDE_CODE_SESSION": "",
-            "CLAUDE_AGENT_SDK": "1",
-            "CLAUDE_CODE_ENTRYPOINT": "sdk-py",
-        }
+        settings_val = (
+            json.dumps(self.config.settings_override)
+            if self.config.settings_override
+            else None
+        )
 
-        def _build_cmd(sid: str, msg: str) -> list[str]:
-            cmd = ["claude", "-p", msg, "--output-format", "json"]
-            sp = self.node_config.get("system_prompt") or self.system_prompt
-            if sp:
-                cmd += ["--system-prompt", sp]
-            if sid:
-                cmd += ["--resume", sid]
-            tool_list = tools or self.config.tools
-            if tool_list:
-                cmd += ["--allowedTools", ",".join(tool_list)]
-            if self.config.permission_mode:
-                cmd += ["--permission-mode", self.config.permission_mode]
-            m = self.node_config.get("model") or self.node_config.get("claude_model")
-            if m:
-                cmd += ["--model", m]
-            if self.config.setting_sources is not None:
-                sources = ",".join(self.config.setting_sources) if self.config.setting_sources else ""
-                cmd += ["--setting-sources", sources]
-            if self.config.settings_override:
-                cmd += ["--settings", json.dumps(self.config.settings_override)]
-            return cmd
+        def _make_options(sid: str) -> ClaudeAgentOptions:
+            sp = self.node_config.get("system_prompt") or self.system_prompt or None
+            return ClaudeAgentOptions(
+                system_prompt=sp,
+                cwd=cwd or None,
+                allowed_tools=tools or self.config.tools,
+                permission_mode=self.config.permission_mode,
+                resume=sid or None,
+                model=self.node_config.get("model") or self.node_config.get("claude_model") or None,
+                env={"CLAUDECODE": "", "CLAUDE_CODE_SESSION": "", "CLAUDE_AGENT_SDK": "1"},
+                stderr=_on_stderr,
+                setting_sources=self.config.setting_sources,
+                settings=settings_val,
+            )
 
         async def _run_once(sid: str, msg_text: str) -> tuple[str, str, bool]:
             """
-            运行 claude -p，返回 (result_text, new_session_id, is_error)。
-            communicate() 等待进程自然退出，确保会话历史落盘。
+            调用 sdk_query()，返回 (result_text, new_session_id, is_error)。
+
+            sdk_query() 内部通过 wait_for_result_and_end_input() 关闭 stdin，
+            子进程优雅退出后会话历史写入磁盘。
+
+            注意：SDK 将传输层的 ProcessError 包装为普通 Exception 推入消息流，
+            receive_messages() 收到 {"type":"error"} 时 raise Exception(msg)。
+            该异常在此函数内透传，由外层统一处理。
             """
-            cmd = _build_cmd(sid, msg_text)
-            if is_debug():
-                logger.debug(f"[claude/cmd] {cmd[:8]}")
+            _result = ""
+            _new_sid = sid
+            _is_error = False
+            async for msg in sdk_query(prompt=msg_text, options=_make_options(sid)):
+                if isinstance(msg, ResultMessage):
+                    _new_sid = msg.session_id or sid
+                    _is_error = msg.is_error
+                    if msg.usage:
+                        update_token_stats(msg.usage)
+                    if msg.result:
+                        _result = msg.result.strip()
+            return _result, _new_sid, _is_error
 
-            proc = await asyncio.create_subprocess_exec(
-                *cmd,
-                stdout=asyncio.subprocess.PIPE,
-                stderr=asyncio.subprocess.PIPE,
-                cwd=cwd,
-                env=env,
-            )
-            stdout_bytes, stderr_bytes = await proc.communicate()
-
-            for line in stderr_bytes.decode(errors="replace").splitlines():
-                _on_stderr(line)
-
-            if proc.returncode != 0:
-                raise ProcessError(
-                    f"Command failed with exit code {proc.returncode}",
-                    exit_code=proc.returncode,
-                    stderr=stderr_bytes.decode(errors="replace") or "Check stderr output for details",
-                )
-
-            raw = stdout_bytes.decode(errors="replace").strip()
-            if is_debug():
-                logger.debug(f"[claude/stdout-raw] {raw[:300]!r}")
-
-            try:
-                data = json.loads(raw)
-                result = (data.get("result") or "").strip()
-                new_sid = data.get("session_id") or sid
-                is_err = bool(data.get("is_error", False))
-                if data.get("usage"):
-                    update_token_stats(data["usage"])
-                return result, new_sid, is_err
-            except json.JSONDecodeError:
-                return raw, sid, False
+        def _is_cli_exit_error(e: Exception) -> bool:
+            """
+            判断异常是否来自 CLI 子进程非零退出。
+            ProcessError 在 SDK 内部被包装为 Exception(str(e))，
+            因此同时检测类型和消息内容。
+            """
+            return isinstance(e, ProcessError) or "exit code" in str(e).lower()
 
         result_text = ""
         new_session_id = session_id
@@ -148,16 +133,16 @@ class ClaudeNode(AgentNode):
 
         try:
             result_text, new_session_id, is_error = await _run_once(session_id, prompt)
-        except ProcessError as e:
+        except Exception as e:
             if stderr_lines:
                 logger.error(
                     f"[claude] CLI stderr ({len(stderr_lines)} lines):\n"
                     + "\n".join(stderr_lines[-20:])
                 )
             # resume 失败 -> 以新 session 重试
-            if session_id:
+            if _is_cli_exit_error(e) and session_id:
                 logger.warning(
-                    f"[claude] resume sid={session_id[:8]} 失败（ProcessError），以新 session 重试..."
+                    f"[claude] resume sid={session_id[:8]} 失败，以新 session 重试..."
                 )
                 result_text, new_session_id, is_error = await _run_once("", prompt)
             else:
