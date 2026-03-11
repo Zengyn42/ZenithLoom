@@ -21,10 +21,10 @@ import logging
 
 from claude_agent_sdk import (
     ClaudeAgentOptions,
-    ClaudeSDKClient,
     ResultMessage,
     get_session_messages,
     list_sessions as sdk_list_sessions,
+    query as sdk_query,
 )
 from claude_agent_sdk._errors import ProcessError
 
@@ -106,25 +106,24 @@ class ClaudeNode(AgentNode):
         is_error = False
 
         async def _run_once(opts: ClaudeAgentOptions, sid: str, msg_text: str) -> tuple[str, str, bool]:
-            """返回 (result_text, new_session_id, is_error)。"""
+            """返回 (result_text, new_session_id, is_error)。
+
+            使用 sdk_query()（而非 ClaudeSDKClient）：query() 通过关闭 stdin 让
+            子进程优雅退出，确保会话历史（user/assistant 条目）写入 JSONL 文件，
+            下一轮 --resume 才能成功。ClaudeSDKClient.disconnect() 直接 terminate()
+            子进程，导致历史未落盘，resume 失败。
+            """
             _result = ""
             _new_sid = sid
             _is_error = False
-            _client = ClaudeSDKClient(opts)
-            try:
-                await _client.connect()
-                await _client.query(msg_text, session_id=sid or "default")
-                async for msg in _client.receive_messages():
-                    if isinstance(msg, ResultMessage):
-                        _new_sid = msg.session_id or sid
-                        _is_error = msg.is_error
-                        if msg.usage:
-                            update_token_stats(msg.usage)
-                        if msg.result:
-                            _result = msg.result.strip()
-                        break
-            finally:
-                await _client.disconnect()
+            async for msg in sdk_query(prompt=msg_text, options=opts):
+                if isinstance(msg, ResultMessage):
+                    _new_sid = msg.session_id or sid
+                    _is_error = msg.is_error
+                    if msg.usage:
+                        update_token_stats(msg.usage)
+                    if msg.result:
+                        _result = msg.result.strip()
             return _result, _new_sid, _is_error
 
         try:
