@@ -14,6 +14,8 @@
 | `!tokens reset` | 重置 token 计数 |
 | `!setproject <路径>` | 设置工作目录（Git 时间机器在此生效） |
 | `!project` | 查看当前项目目录 |
+| `!snapshots` | 查看最近 10 次 git 快照记录（commit hash + 时间） |
+| `!rollback N` | 三层回退到第 N 条快照（git reset + session UUID 恢复 + tombstone） |
 | `!debug` | 查看 debug 模式状态 |
 | `!whoami` | 显示你的 Discord ID |
 | `!help_hani` | 显示帮助信息 |
