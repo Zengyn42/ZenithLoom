@@ -1,5 +1,6 @@
 {
   "name": "debate_claude_first",
+  "routing_hint": "当已有具体技术方案、需要严格对抗性审查时使用。Claude 先提案、Gemini 质疑，适合架构决策和工程设计评审。",
   "llm": "claude",
   "db_path": "debate_claude_first.db",
   "sessions_file": "sessions.json",

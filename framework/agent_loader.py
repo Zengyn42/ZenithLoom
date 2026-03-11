@@ -209,6 +209,48 @@ def _maybe_limit(fn, max_retry):
 # 声明式图构建（Priority 2）
 # ---------------------------------------------------------------------------
 
+def _collect_routing_hints(graph_spec: dict) -> str:
+    """
+    遍历 graph_spec 中所有 AGENT_REF 节点，读取其 agent.json 的 routing_hint 字段，
+    构建路由说明字符串，用于注入主节点 system_prompt。
+    """
+    hints: list[str] = []
+    for node_def in graph_spec.get("nodes", []):
+        if node_def.get("type") != "AGENT_REF":
+            continue
+        node_id = node_def.get("id", "")
+        agent_dir = node_def.get("agent_dir", "")
+        if not agent_dir:
+            continue
+        agent_json_path = Path(agent_dir) / "agent.json"
+        if not agent_json_path.exists():
+            continue
+        try:
+            sub_json = json.loads(agent_json_path.read_text(encoding="utf-8"))
+            hint = sub_json.get("routing_hint", "")
+            if hint:
+                hints.append(f'  - "{node_id}": {hint}')
+        except Exception:
+            continue
+
+    if not hints:
+        return ""
+
+    lines = [
+        "",
+        "[可调用子图]",
+        "遇到以下情况时，可将任务委托给对应子图。",
+        "路由方式：在回复的第一行且仅第一行输出以下 JSON（不加任何前缀或解释）：",
+        '{"route": "<节点id>", "context": "<清晰描述议题和相关背景>"}',
+        "",
+        "可用子图：",
+    ] + hints + [
+        "",
+        "注意：路由是重操作（多轮 LLM 调用），仅在真正有价值时使用，日常任务直接回复。",
+    ]
+    return "\n".join(lines)
+
+
 async def _build_declarative(
     graph_spec: dict,
     config: AgentConfig,
@@ -228,6 +270,12 @@ async def _build_declarative(
 
     from framework.registry import get_condition, get_node_factory
     from framework.state import BaseAgentState, DebateState
+
+    # ── Step 0: routing_hint 注入 system_prompt ──────────────────────────────
+    if system_prompt:
+        routing_section = _collect_routing_hints(graph_spec)
+        if routing_section:
+            system_prompt = system_prompt + "\n\n" + routing_section
 
     # ── Step 1: 三步图验证 + 主节点唯一性 ───────────────────────────────────
     all_ids = _collect_all_ids(graph_spec)
