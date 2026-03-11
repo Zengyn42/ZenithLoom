@@ -88,6 +88,7 @@ async def _run_cli_async(loader):
     agent_name = loader.name
     print(f"\n{agent_name} 已启动 (session: {name} | thread: {thread_id})")
     print("   !new / !switch / !sessions / !session / !resources / !tokens / !topology / !debug / !clear")
+    print("   !snapshots — 查看历史快照  !rollback N — 回退到第 N 条快照")
     print("   输入 'q' 或 Ctrl+C 退出\n")
 
     loop = asyncio.get_event_loop()
@@ -210,8 +211,61 @@ async def _run_cli_async(loader):
                 print(f"Session '{cur_name}' 已重置。(new thread: {new_env.thread_id[:8]})")
                 continue
 
+            elif cmd == "!snapshots":
+                history = controller.rollback_log.get_history(
+                    controller.active_thread_id, limit=10
+                )
+                if not history:
+                    print("当前 session 还没有任何 git 快照记录。")
+                    print("（需要 project_root 指向一个 git repo，每轮对话会自动快照）")
+                else:
+                    print(f"最近 {len(history)} 条快照（最新在前）：")
+                    for i, rec in enumerate(history, 1):
+                        ts = rec["created_at"][:19].replace("T", " ")
+                        root = rec["project_root"] or "(无 project_root)"
+                        print(f"  [{i}] {rec['commit_hash'][:8]}  {ts}  {root}")
+                    print("用法：!rollback <序号>  （1=最近一次）")
+                continue
+
+            elif cmd == "!rollback":
+                if not arg:
+                    print("用法：!rollback <序号>  （1=最近，2=倒数第二...用 !snapshots 查看列表）")
+                    continue
+                try:
+                    n = int(arg)
+                    if n < 1:
+                        raise ValueError
+                except ValueError:
+                    print(f"❌ 序号必须是正整数，例如：!rollback 3")
+                    continue
+
+                # 先展示目标快照
+                record = controller.rollback_log.get_nth_ago(controller.active_thread_id, n)
+                if not record:
+                    print(f"❌ 没有找到第 {n} 条快照（用 !snapshots 查看当前记录数）")
+                    continue
+                ts = record["created_at"][:19].replace("T", " ")
+                print(f"目标快照：{record['commit_hash'][:8]}  {ts}  {record['project_root'] or '(无 git repo)'}")
+                print("请输入本次回退原因（回车跳过，将写入 .DO_NOT_REPEAT.md）：", end="", flush=True)
+                try:
+                    reason = await loop.run_in_executor(None, lambda: input().strip())
+                except (KeyboardInterrupt, EOFError):
+                    print("\n已取消")
+                    continue
+
+                result = await controller.rollback_to_turn(n, reason=reason)
+                if result["ok"]:
+                    ns_keys = list(result.get("node_sessions", {}).keys())
+                    print(f"✅ {result['msg']}")
+                    print(f"   恢复的节点 UUID：{ns_keys}")
+                    if reason:
+                        print(f"   已写入 .DO_NOT_REPEAT.md")
+                else:
+                    print(f"❌ {result['msg']}")
+                continue
+
             else:
-                print(f"未知命令：{cmd}  （试试 !new / !switch / !sessions / !session / !resources / !tokens / !topology / !clear）")
+                print(f"未知命令：{cmd}  （试试 !new / !switch / !sessions / !session / !resources / !tokens / !topology / !clear / !snapshots / !rollback）")
                 continue
 
         # --- 正常对话（流式输出）---
@@ -229,6 +283,12 @@ async def _run_cli_async(loader):
             print(f"\n[错误] {e}", file=sys.stderr)
 
         print("\n")
+
+        # 每轮结束后记录 git 快照到 rollback_log（有 project_root + git repo 时有效）
+        try:
+            await controller.log_snapshot()
+        except Exception:
+            pass
 
 
 def run_tmux(loader=None):
