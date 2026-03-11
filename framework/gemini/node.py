@@ -9,7 +9,9 @@ GeminiNode(AgentNode)  →  GEMINI_CLI 节点类型
     - 增加 consult_count
 
 安全守则（防止账号/钱包被打）：
-  - 每次 API 调用前强制 jitter sleep 2~5s
+  - 每次 API 调用前强制 jitter sleep，时长随 prompt 长度线性缩放：
+      1 char → 1s，2000+ chars → 20s，再叠加 ±2s 随机抖动
+    （Claude 不需要此机制：SDK 子进程内部自行处理 rate limiting）
   - 403 / 429 立刻抛出 GeminiQuotaError，不重试
 """
 
@@ -51,8 +53,19 @@ _GEMINI_SYSTEM = (
     "请根据问题给出极致架构建议。直接输出建议，不需要客套。"
 )
 
-_JITTER_MIN = 10.0
-_JITTER_MAX = 18.0
+# Gemini jitter 机制（Claude 不需要，SDK 子进程内部自行处理 rate limiting）：
+# prompt 长度线性映射到等待时间，再叠加随机抖动，防止 429。
+# 1 char → 1s base，2000+ chars → 20s base，±2s 随机噪声，最低 0.5s。
+_JITTER_MIN_S = 1.0
+_JITTER_MAX_S = 20.0
+_JITTER_SCALE_LEN = 2000
+_JITTER_NOISE = 2.0
+
+
+def _jitter_secs(text_len: int) -> float:
+    t = min(max(text_len, 1) / _JITTER_SCALE_LEN, 1.0)
+    base = _JITTER_MIN_S + t * (_JITTER_MAX_S - _JITTER_MIN_S)
+    return max(0.5, base + random.uniform(-_JITTER_NOISE, _JITTER_NOISE))
 
 
 class GeminiQuotaError(RuntimeError):
@@ -159,8 +172,8 @@ class _CodeAssistClient:
         return self._project_id
 
     def _chat_sync(self, user_text: str, system: str = "") -> str:
-        delay = random.uniform(_JITTER_MIN, _JITTER_MAX)
-        logger.info(f"[gemini.client] model={self._model} jitter={delay:.1f}s")
+        delay = _jitter_secs(len(user_text))
+        logger.info(f"[gemini.client] model={self._model} jitter={delay:.1f}s (prompt_len={len(user_text)})")
         if is_debug():
             logger.debug(f"[gemini.client] prompt_preview={user_text[:100]!r}")
         time.sleep(delay)
@@ -184,16 +197,23 @@ class _CodeAssistClient:
         req.add_header("Authorization", f"Bearer {token}")
         req.add_header("Content-Type", "application/json")
 
-        try:
-            with urllib.request.urlopen(req, timeout=120) as resp:
-                result = json.loads(resp.read())
-        except urllib.error.HTTPError as e:
-            body = e.read().decode()[:300]
-            if e.code in (403, 429):
-                raise GeminiQuotaError(
-                    f"Gemini API {e.code} — 图已停止，请检查账号状态或等待配额重置。\n{body}"
-                )
-            raise RuntimeError(f"generateContent 失败 ({e.code}): {body}")
+        result = None
+        for attempt in range(2):
+            try:
+                with urllib.request.urlopen(req, timeout=120) as resp:
+                    result = json.loads(resp.read())
+                break
+            except urllib.error.HTTPError as e:
+                body = e.read().decode()[:300]
+                if e.code == 429 and attempt == 0:
+                    logger.warning(f"[gemini.client] 429，60s 后重试一次...")
+                    time.sleep(60)
+                    continue
+                if e.code in (403, 429):
+                    raise GeminiQuotaError(
+                        f"Gemini API {e.code} — 图已停止，请检查账号状态或等待配额重置。\n{body}"
+                    )
+                raise RuntimeError(f"generateContent 失败 ({e.code}): {body}")
 
         candidates = result.get("response", {}).get("candidates", [])
         if not candidates:
@@ -368,14 +388,24 @@ class GeminiNode(_GeminiSessionMixin, AgentNode):
                 f"session_id={session_id[:8] if session_id else 'new'}"
             )
 
-        async with acquire_resource(
-            self._resource_lock,
-            timeout=self._resource_timeout,
-            holder=self._node_id,
-        ):
-            reply, new_session_id = await self.call_llm(
-                prompt, session_id=session_id, cwd=workspace or None
-            )
+        try:
+            async with acquire_resource(
+                self._resource_lock,
+                timeout=self._resource_timeout,
+                holder=self._node_id,
+            ):
+                reply, new_session_id = await self.call_llm(
+                    prompt, session_id=session_id, cwd=workspace or None
+                )
+        except GeminiQuotaError as e:
+            logger.error(f"[{self._node_id}] Gemini 配额耗尽，降级跳过: {e}")
+            return {
+                "messages": [AIMessage(content="[Gemini 暂不可用，已跳过本轮咨询]")],
+                "routing_target": "",
+                "routing_context": "",
+                "consult_count": state.get("consult_count", 0) + 1,
+                "node_sessions": ns,
+            }
 
         ns[self._node_id] = new_session_id or session_id
         logger.info(f"[{self._node_id}] done, consult_count→{state.get('consult_count', 0) + 1}")

@@ -74,24 +74,33 @@ class ClaudeNode(AgentNode):
             stderr_lines.append(line)
             logger.debug(f"[claude/stderr] {line.rstrip()}")
 
-        settings_val = (
-            json.dumps(self.config.settings_override)
-            if self.config.settings_override
-            else None
+        # node_config 优先，退回到顶层 AgentConfig（兼容旧 agent.json）
+        _MISSING = object()
+        permission_mode = (
+            self.node_config.get("permission_mode") or self.config.permission_mode
         )
+        _node_sources = self.node_config.get("setting_sources", _MISSING)
+        setting_sources = (
+            _node_sources if _node_sources is not _MISSING else self.config.setting_sources
+        )
+        settings_override = (
+            self.node_config.get("settings_override") or self.config.settings_override
+        )
+        settings_val = json.dumps(settings_override) if settings_override else None
 
         def _make_options(sid: str) -> ClaudeAgentOptions:
             sp = self.node_config.get("system_prompt") or self.system_prompt or None
+            node_tools = self.node_config.get("tools")
             return ClaudeAgentOptions(
                 system_prompt=sp,
                 cwd=cwd or None,
-                allowed_tools=tools or self.config.tools,
-                permission_mode=self.config.permission_mode,
+                allowed_tools=tools or node_tools or self.config.tools,
+                permission_mode=permission_mode,
                 resume=sid or None,
                 model=self.node_config.get("model") or self.node_config.get("claude_model") or None,
                 env={"CLAUDECODE": "", "CLAUDE_CODE_SESSION": "", "CLAUDE_AGENT_SDK": "1"},
                 stderr=_on_stderr,
-                setting_sources=self.config.setting_sources,
+                setting_sources=setting_sources,
                 settings=settings_val,
             )
 
