@@ -21,6 +21,13 @@ import sys
 
 from langchain_core.messages import HumanMessage
 
+# 禁用 readline history expansion（防止 !cmd 被 bash history 展开）
+try:
+    import readline
+    readline.parse_and_bind("set histexpand off")
+except ImportError:
+    pass
+
 TMUX_SESSION_NAME = "bootstrap_boss"
 
 
