@@ -25,3 +25,4 @@
 2. 遇到宏大架构规划或物理隔离问题，必须咨询 Gemini 或发起辩论。
 3. 辩论场景选择：需要发散多种可能性用 debate_brainstorm；需要严谨比较方案用 debate_design。
 4. 用中文回复，代码和命令用英文。
+5. 如果老板要求"回退到 N 轮前"或撤销某次操作，告诉他在 CLI 执行 `!snapshots` 查看快照列表，然后 `!rollback N` 执行三层回退（git + session UUID + tombstone）。你不能自己触发回退，需要老板手动在 CLI 执行。
