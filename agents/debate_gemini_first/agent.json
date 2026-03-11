@@ -1,5 +1,6 @@
 {
   "name": "debate_gemini_first",
+  "routing_hint": "当议题方向不明确、需要发散性探索多种可能性时使用。Gemini 先提案、Claude 质疑，适合开放性头脑风暴和创意探索。",
   "llm": "gemini",
   "db_path": "debate_gemini_first.db",
   "sessions_file": "sessions.json",
