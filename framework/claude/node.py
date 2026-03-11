@@ -128,16 +128,19 @@ class ClaudeNode(AgentNode):
 
         try:
             result_text, new_session_id, is_error = await _run_once(options, session_id, prompt)
-        except ProcessError as e:
+        except Exception as e:
             if stderr_lines:
                 logger.error(
                     f"[claude] CLI stderr ({len(stderr_lines)} lines):\n"
                     + "\n".join(stderr_lines[-20:])
                 )
-            # resume 失败（ProcessError：session 文件不存在或已过期）→ 以新 session 重试
-            if session_id:
+            # sdk_query() wraps ProcessError as plain Exception inside Query._read_messages_task,
+            # so we detect CLI exit failures by message content rather than type.
+            is_cli_exit = isinstance(e, ProcessError) or "exit code" in str(e).lower()
+            # resume 失败 → 以新 session 重试
+            if is_cli_exit and session_id:
                 logger.warning(
-                    f"[claude] resume sid={session_id[:8]} 失败（ProcessError），以新 session 重试..."
+                    f"[claude] resume sid={session_id[:8]} 失败，以新 session 重试..."
                 )
                 options_fresh = ClaudeAgentOptions(
                     system_prompt=options.system_prompt,
@@ -154,13 +157,6 @@ class ClaudeNode(AgentNode):
                 result_text, new_session_id, is_error = await _run_once(options_fresh, "", prompt)
             else:
                 raise
-        except Exception as e:
-            if stderr_lines:
-                logger.error(
-                    f"[claude] CLI stderr ({len(stderr_lines)} lines):\n"
-                    + "\n".join(stderr_lines[-20:])
-                )
-            raise
 
         new_sid_short = new_session_id[:8] if new_session_id else "new"
         logger.info(f"[claude] done sid={new_sid_short} output_len={len(result_text)}")
