@@ -194,11 +194,15 @@ async def _run_cli_async(loader):
                 continue
 
             elif cmd == "!clear":
-                # 重置当前 session：清除 Claude 上下文，下一轮以全新 session 开始
+                # 重置当前 session：生成新 thread_id，不碰 SQLite（避免与 LangGraph 连接冲突）
                 cur_tid = controller.active_thread_id
-                cur_name = session_mgr.find_name_by_thread_id(cur_tid) or "（默认）"
-                session_mgr.reset(cur_tid)
-                print(f"Session '{cur_name}' 已清除，下一轮将以全新上下文开始。")
+                cur_name = session_mgr.find_name_by_thread_id(cur_tid) or "default"
+                old_env = session_mgr.get_envelope(cur_name)
+                workspace = old_env.workspace if old_env else ""
+                session_mgr.delete(cur_name)
+                new_env = session_mgr.create_session(cur_name, workspace=workspace)
+                controller._active_thread_id = new_env.thread_id
+                print(f"Session '{cur_name}' 已重置。(new thread: {new_env.thread_id[:8]})")
                 continue
 
             else:
