@@ -23,6 +23,7 @@ from langchain_core.messages import HumanMessage
 
 from framework.config import AgentConfig
 from framework.debug import is_debug
+from framework.rollback_log import RollbackLog
 from framework.session_mgr import SessionManager
 
 logger = logging.getLogger(__name__)
@@ -43,6 +44,7 @@ class GraphController:
         self._graph = graph
         self._session_mgr = session_mgr
         self._config = config
+        self._rollback_log = RollbackLog(config.db_path)
         self._active_thread_id: str = self._init_session()
 
     def _init_session(self) -> str:
@@ -150,6 +152,89 @@ class GraphController:
             "next_nodes": list(snapshot.next),
             "created_at": getattr(snapshot, "created_at", None),
         }
+
+    async def log_snapshot(self) -> None:
+        """
+        读取当前 checkpoint state，若有 last_stable_commit 则写入 rollback_log。
+        CLI 在每轮流式输出结束后调用，记录 (commit_hash, node_sessions, project_root)。
+        """
+        snapshot = await self._graph.aget_state(self.get_config())
+        commit = snapshot.values.get("last_stable_commit") or ""
+        if not commit:
+            return
+        ns = snapshot.values.get("node_sessions") or {}
+        project_root = snapshot.values.get("project_root") or ""
+        self._rollback_log.log_turn(
+            self._active_thread_id, commit, ns, project_root=project_root
+        )
+
+    async def rollback_to_turn(self, n: int, reason: str = "") -> dict:
+        """
+        三层回退到第 N 条快照（N=1=最近一次，N=2=倒数第二次...）：
+          1. git reset --hard <commit_hash>（仅当 project_root 非空）
+          2. LangGraph aupdate_state → node_sessions 恢复为旧 UUID
+          3. 写入 .DO_NOT_REPEAT.md tombstone（仅当 reason 非空）
+
+        返回 {"ok": bool, "msg": str, "commit": str, "node_sessions": dict}
+        """
+        from framework.nodes.git_ops import rollback as git_rollback
+        from framework.nodes.git_nodes import _write_tombstone
+
+        record = self._rollback_log.get_nth_ago(self._active_thread_id, n)
+        if not record:
+            return {"ok": False, "msg": f"没有找到第 {n} 条历史快照（当前 thread 共记录了多少条？用 !snapshots 查看）"}
+
+        commit_hash = record["commit_hash"]
+        old_node_sessions = record["node_sessions"]
+        project_root = record["project_root"]
+
+        # 1. git reset --hard
+        if project_root and commit_hash:
+            ok = git_rollback(project_root, commit_hash)
+            if not ok:
+                return {"ok": False, "msg": f"git reset --hard {commit_hash[:8]} 失败，请检查 project_root={project_root!r}"}
+        else:
+            logger.warning("[controller] rollback: project_root 为空，跳过 git reset")
+
+        # 2. 更新 LangGraph checkpoint 的 node_sessions
+        await self._graph.aupdate_state(
+            self.get_config(),
+            {"node_sessions": old_node_sessions},
+        )
+
+        # 3. 同步 sessions.json 中的 node_sessions
+        name = self._session_mgr.find_name_by_thread_id(self._active_thread_id)
+        if name:
+            for node_key, uuid in old_node_sessions.items():
+                if uuid:
+                    try:
+                        self._session_mgr.update_node_session(name, node_key, uuid)
+                    except Exception:
+                        pass
+
+        # 4. tombstone
+        if project_root and reason:
+            _write_tombstone(
+                project_root,
+                reason,
+                f"[!rollback {n}] 手动回退到 commit {commit_hash[:8]}",
+            )
+
+        logger.info(
+            f"[controller] rollback N={n} → commit={commit_hash[:8]} "
+            f"ns_keys={list(old_node_sessions.keys())}"
+        )
+        return {
+            "ok": True,
+            "msg": f"已回退到 {commit_hash[:8]}，node_sessions 已恢复",
+            "commit": commit_hash,
+            "node_sessions": old_node_sessions,
+        }
+
+    @property
+    def rollback_log(self) -> RollbackLog:
+        """RollbackLog 引用（供接口层查询历史）。"""
+        return self._rollback_log
 
     @property
     def active_thread_id(self) -> str:
