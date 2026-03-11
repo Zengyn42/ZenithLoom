@@ -10,14 +10,13 @@
        "setting_sources": null,
        "settings_override": {"enabledPlugins": []},
        "first_turn_suffix": "Hani:", "user_msg_prefix": "老板: ",
-       "gemini_mention_pattern": "@[Gg]emini", "tombstone_enabled": true,
+       "tombstone_enabled": true,
        "tool_rules": [
          {"pattern": "论文|paper|arXiv|arxiv|研究|publication", "flags": ["IGNORECASE"], "tools": ["WebFetch", "WebSearch"]},
          {"pattern": "搜索|search|网络|internet|url|http", "flags": ["IGNORECASE"], "tools": ["WebFetch", "WebSearch"]},
          {"pattern": "notebook|jupyter|\\.ipynb", "flags": ["IGNORECASE"], "tools": ["NotebookEdit"]}
        ]
       },
-      {"id": "gemini_advisor", "type": "GEMINI_CLI",  "model": "gemini-2.5-flash"},
       {"id": "validate",       "type": "VALIDATE"},
       {"id": "git_snapshot",   "type": "GIT_SNAPSHOT"},
       {"id": "git_rollback",   "type": "GIT_ROLLBACK"},
@@ -34,12 +33,10 @@
       {"id": "e_start_2_claude",         "from": "__start__",        "to": "claude_main"},
       {"id": "e_claude_2_snapshot",      "from": "claude_main",      "to": "git_snapshot"},
       {"id": "e_snapshot_2_validate",    "from": "git_snapshot",     "to": "validate"},
-      {"id": "e_validate_2_gemini",      "type": "routing_to",       "from": "validate", "to": "gemini_advisor",    "max_retry": 3},
       {"id": "e_validate_2_brainstorm",  "type": "routing_to",       "from": "validate", "to": "debate_brainstorm", "max_retry": 1},
       {"id": "e_validate_2_design",      "type": "routing_to",       "from": "validate", "to": "debate_design",     "max_retry": 1},
       {"id": "e_validate_2_end",         "type": "no_routing",       "from": "validate", "to": "__end__"},
       {"id": "e_validate_2_rollback",    "type": "on_error",         "from": "validate", "to": "git_rollback"},
-      {"id": "e_gemini_2_claude",        "from": "gemini_advisor",   "to": "claude_main"},
       {"id": "e_brainstorm_2_claude",    "from": "debate_brainstorm","to": "claude_main"},
       {"id": "e_design_2_claude",        "from": "debate_design",    "to": "claude_main"},
       {"id": "e_rollback_2_claude",      "from": "git_rollback",     "to": "claude_main"}
