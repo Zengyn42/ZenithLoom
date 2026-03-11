@@ -20,9 +20,10 @@ GeminiAPI:
 
 使用示例：
     from framework.api import ClaudeAPI, GeminiAPI
-    from agents.hani.config import load_hani_config
+    from framework.agent_loader import AgentLoader
+    from pathlib import Path
 
-    cfg = load_hani_config()
+    cfg = AgentLoader(Path("agents/hani")).load_config()
     claude = ClaudeAPI(cfg)
     gemini = GeminiAPI(cfg, claude_api=claude)
 
@@ -39,7 +40,6 @@ GeminiAPI:
 """
 
 import logging
-import os
 
 from framework.config import AgentConfig
 from framework.nodes.claude_node import ClaudeNode
@@ -114,9 +114,8 @@ class GeminiAPI:
     GeminiQuotaError（403/429）不捕获，直接穿透给调用方（LangGraph 图）。
     """
 
-    def __init__(self, config: AgentConfig, claude_api: ClaudeAPI):
-        gemini_model = os.getenv("HANI_GEMINI_MODEL", "gemini-2.5-flash")
-        self._client = _CodeAssistClient(gemini_model)
+    def __init__(self, config: AgentConfig, claude_api: ClaudeAPI, model: str = "gemini-2.5-flash"):
+        self._client = _CodeAssistClient(model)
         self._claude = claude_api
 
     async def chat(

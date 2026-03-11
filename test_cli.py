@@ -96,14 +96,15 @@ def test_tool_rules():
     print("✅ tool_rules OK\n")
 
 
-def test_hani_graph_exports():
-    print("--- agents/hani/graph.py 导出 ---")
-    from agents.hani.graph import get_engine, invalidate_engine
-    from framework.graph import get_config, switch_session, new_session
-    assert callable(get_engine)
-    assert callable(invalidate_engine)
-    assert callable(get_config)
-    print("✅ hani/graph.py 导出 OK\n")
+def test_hani_loader():
+    print("--- AgentLoader for hani ---")
+    from pathlib import Path
+    from framework.agent_loader import AgentLoader
+    loader = AgentLoader(Path("agents/hani"))
+    assert callable(loader.get_engine)
+    assert callable(loader.invalidate_engine)
+    assert callable(loader.get_controller)
+    print("✅ AgentLoader(hani) OK\n")
 
 
 def test_main_arg_parsing():
@@ -115,11 +116,12 @@ def test_main_arg_parsing():
     spec = importlib.util.spec_from_file_location("main", "main.py")
     main_mod = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(main_mod)
-    agent_name, mode = main_mod._parse_args()
+    agent_name, mode, debug = main_mod._parse_args()
     sys.argv = orig
     assert agent_name == "hani", f"agent_name={agent_name}"
     assert mode == "cli", f"mode={mode}"
-    print(f"   parsed: agent={agent_name} mode={mode}")
+    assert debug is False
+    print(f"   parsed: agent={agent_name} mode={mode} debug={debug}")
     print("✅ main.py 参数解析 OK\n")
 
 

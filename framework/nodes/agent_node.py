@@ -1,71 +1,82 @@
 """
-框架级通用 Agent 节点 — framework/nodes/agent_node.py
+框架级通用 Agent 节点（抽象基类）— framework/nodes/agent_node.py
 
-AgentNode 封装所有 Agent 共用的图协议逻辑，通过 node_config dict
-（来自 agent.json）驱动 agent 专属行为，无需子类化。
-llm_node 可以是 ClaudeNode 或 LlamaNode，只需实现 call_llm() 接口。
+AgentNode 是所有 LLM 节点的抽象基类，封装图协议逻辑。
+子类只需实现 call_llm()，其余框架行为由基类统一处理。
 
-框架协议（所有 agent 共用）：
-  - LLM session UUID 路由（node_sessions["claude_main"]）
-  - consult_gemini JSON 信号检测（决定图是否路由到 gemini_advisor）
-  - rollback warning 注入（读取 BaseAgentState.rollback_reason）
-  - Gemini 建议注入（读取 BaseAgentState.gemini_context）
-  - project_meta 上下文注入（plan / tasks 文件）
+继承体系：
+  AgentNode（base class）
+    ├── __call__(state) → dict      ← LangGraph 节点，处理路由、tool_rules、信号检测
+    └── call_llm(prompt, ...) → (str, str)  ← 抽象方法，子类实现
+  ClaudeNode(AgentNode)            ← Claude CLI SDK 实现
+  GeminiNode(AgentNode)            ← Gemini Code Assist API 实现
+  LlamaNode(AgentNode)             ← 本地 vLLM/Ollama 实现
 
-agent.json 驱动的 agent 专属行为（通过 node_config 传入）：
+node_config（来自 agent.json）驱动行为：
   first_turn_suffix      str   首轮 prompt 末尾附加字符串，如 "Hani:"
   user_msg_prefix        str   用户消息前缀，如 "老板: "
   gemini_mention_pattern str   触发强制咨询的 @Gemini 正则，如 "@[Gg]emini"
   tombstone_enabled      bool  是否注入 .tombstone 耻辱柱内容
   tool_rules             list  [{"pattern": ..., "flags": [...], "tools": [...]}]
-                               关键词匹配后动态追加的工具列表
+  resource_lock          str   持锁资源名，如 "GPU_0_VRAM_22GB"（可选）
+  resource_timeout       float 资源锁超时秒数（默认 300）
+  signal_parser          str   信号解析器类型（默认 "json_line"）
+  id                     str   节点 ID，用于 node_sessions 键名（默认 "claude_main"）
 """
 
 import json
 import logging
 import os
 import re
+from abc import abstractmethod
 
 from langchain_core.messages import AIMessage
 
+from framework.config import AgentConfig
 from framework.debug import is_debug
-from framework.gemini.node import GeminiNode
-from framework.state import BaseAgentState
+from framework.resource_lock import acquire_resource
+from framework.signal_parser import get_signal_parser
 
 logger = logging.getLogger(__name__)
-
-# consult_gemini 信号检测（框架路由协议）
-_CONSULT_SIGNAL_RE = re.compile(r'\{"action"\s*:\s*"consult_gemini".*?\}', re.DOTALL)
 
 # project_meta 文件读取
 _IN_PROGRESS_RE = re.compile(r"^## In Progress", re.MULTILINE)
 PLAN_MAX_CHARS = 3000
 TASKS_MAX_CHARS = 2000
 
+
 class AgentNode:
     """
-    通用 Agent LLM 节点。
+    所有 LLM 节点的抽象基类。
 
-    传入 node_config（agent.json 的完整 dict）即可驱动所有 agent 专属行为，
-    无需子类化。直接实例化：
-
-        node = AgentNode(llm_node, gemini, node_config=agent_json_dict)
-
-    llm_node 可以是 ClaudeNode 或 LlamaNode，只需实现 call_llm() 接口。
+    子类实现 call_llm()；基类 __call__() 处理所有框架级逻辑：
+      - node_sessions UUID 路由（读取/写入 state["node_sessions"]）
+      - 资源锁（acquire_resource）
+      - 动态注入（rollback warning、Gemini 建议、project_meta）
+      - consult_gemini 信号检测（路由到 gemini_advisor）
+      - tool_rules 关键词匹配
     """
 
-    def __init__(
-        self,
-        llm_node,
-        gemini_node: GeminiNode,
-        node_config: dict | None = None,
-    ):
-        self.llm = llm_node
-        self.gemini = gemini_node
-        self._cfg = node_config or {}
+    def __init__(self, config: AgentConfig, node_config: dict):
+        self.config = config
+        self.node_config = node_config
+        # 保留 _cfg 兼容旧内部引用
+        self._cfg = node_config
+
+        # 节点 ID（用于 node_sessions 字典的键）
+        self._node_id = node_config.get("id", "claude_main")
+
+        # 资源锁
+        self._resource_lock = node_config.get("resource_lock")
+        self._resource_timeout = float(node_config.get("resource_timeout", 300))
+
+        # 信号解析器
+        self._signal_parser = get_signal_parser(
+            node_config.get("signal_parser", "json_line")
+        )
 
         # 预编译 @Gemini 触发正则
-        mention_pat = self._cfg.get("gemini_mention_pattern")
+        mention_pat = node_config.get("gemini_mention_pattern")
         self._gemini_mention_re: re.Pattern | None = (
             re.compile(mention_pat, re.IGNORECASE) if mention_pat else None
         )
@@ -79,20 +90,40 @@ class AgentNode:
                 ),
                 rule["tools"],
             )
-            for rule in self._cfg.get("tool_rules", [])
+            for rule in node_config.get("tool_rules", [])
         ]
 
-    async def __call__(self, state: BaseAgentState) -> dict:
-        latest_input = state["messages"][-1].content
-        project_root = state.get("project_root", "") or None
+    @abstractmethod
+    async def call_llm(
+        self,
+        prompt: str,
+        session_id: str = "",
+        tools: list[str] | None = None,
+        cwd: str | None = None,
+    ) -> tuple[str, str]:
+        """
+        调用具体 LLM，返回 (text, new_session_id)。
+        session_id 空 → 新建 session；非空 → resume 已有 session。
+        子类必须实现。
+        """
 
-        # Claude session UUID 路由（优先 node_sessions，向后兼容旧字段）
+    async def __call__(self, state: dict) -> dict:
+        latest_input = state["messages"][-1].content
+        # project_root（!setproject）优先；退回 per-session workspace
+        project_root = state.get("project_root", "") or state.get("workspace", "") or None
+
+        # node_sessions UUID 路由
         ns = dict(state.get("node_sessions") or {})
-        session_id = ns.get("claude_main") or state.get("claude_session_id", "")
+        # 首先尝试 node_id 键，兼容旧字段 claude_session_id（仅 claude_main）
+        session_id = ns.get(self._node_id) or (
+            state.get("claude_session_id", "")
+            if self._node_id == "claude_main"
+            else ""
+        )
 
         if is_debug():
             logger.debug(
-                f"[agent_node] session_id={session_id[:8] if session_id else 'new'} "
+                f"[{self._node_id}] session_id={session_id[:8] if session_id else 'new'} "
                 f"input_len={len(latest_input)}"
             )
 
@@ -120,48 +151,59 @@ class AgentNode:
         tools = self._select_tools(latest_input)
 
         if is_debug():
-            logger.debug(f"[agent_node] prompt_len={len(prompt)} tools={tools}")
+            logger.debug(f"[{self._node_id}] prompt_len={len(prompt)} tools={tools}")
 
-        raw_output, new_session_id = await self.llm.call_llm(
-            prompt,
-            session_id=session_id,
-            tools=tools,
-            cwd=project_root,
-        )
+        # ── LLM 调用（持资源锁）────────────────────────────────────────────
+        async with acquire_resource(
+            self._resource_lock,
+            timeout=self._resource_timeout,
+            holder=self._node_id,
+        ):
+            raw_output, new_session_id = await self.call_llm(
+                prompt,
+                session_id=session_id,
+                tools=tools,
+                cwd=project_root,
+            )
 
         if is_debug():
-            logger.debug(f"[agent_node] raw_output_preview={raw_output[:200]!r}")
+            logger.debug(f"[{self._node_id}] raw_output_preview={raw_output[:200]!r}")
 
-        # ── consult_gemini 信号检测（框架路由协议）─────────────────────────
-        first_line = raw_output.lstrip().split("\n")[0].strip()
-        if first_line.startswith("{") and "consult_gemini" in first_line:
-            signal = _extract_json(first_line)
-            if signal and signal.get("action") == "consult_gemini":
-                topic = signal.get("topic", "")
-                context = signal.get("context", "")
-                logger.info(f"[agent_node] consult_gemini signal: topic={topic!r}")
-                ns["claude_main"] = new_session_id or session_id
-                return {
-                    "messages": [AIMessage(content=raw_output)],
-                    "gemini_context": f"__PENDING__{topic}|{context}",
-                    "claude_session_id": new_session_id or session_id,
-                    "node_sessions": ns,
-                }
+        # ── 路由信号检测（用注册的 SignalParser）────────────────────────────
+        # 信号格式：{"route": "<node_id>", "context": "<question|background>"}
+        signal = self._signal_parser.parse(raw_output)
+        routing_target = signal.get("route", "") if signal else ""
+        routing_context = signal.get("context", "") if signal else ""
 
-        ns["claude_main"] = new_session_id or session_id
-        return {
-            "messages": [AIMessage(content=raw_output)],
-            "gemini_context": "",
-            "consult_count": 0,
-            "rollback_reason": "",
-            "retry_count": 0,
-            "claude_session_id": new_session_id or session_id,
-            "node_sessions": ns,
-        }
+        ns[self._node_id] = new_session_id or session_id
+
+        if routing_target:
+            logger.info(f"[{self._node_id}] routing signal: target={routing_target!r}")
+            result: dict = {
+                "messages": [AIMessage(content=raw_output)],
+                "routing_target": routing_target,
+                "routing_context": routing_context,
+                "node_sessions": ns,
+            }
+        else:
+            result = {
+                "messages": [AIMessage(content=raw_output)],
+                "routing_target": "",
+                "routing_context": "",
+                "consult_count": 0,
+                "rollback_reason": "",
+                "retry_count": 0,
+                "node_sessions": ns,
+            }
+
+        # 向后兼容：claude_main 同步写 claude_session_id
+        if self._node_id == "claude_main":
+            result["claude_session_id"] = new_session_id or session_id
+        return result
 
     # ── 框架层内部方法 ──────────────────────────────────────────────────────
 
-    def _build_rollback_warning(self, state: BaseAgentState) -> str:
+    def _build_rollback_warning(self, state: dict) -> str:
         rollback_reason = state.get("rollback_reason", "")
         if not rollback_reason:
             return ""
@@ -174,24 +216,17 @@ class AgentNode:
             f"请换一种思路，不要重复同样的错误。\n"
         )
         if is_debug():
-            logger.debug(f"[agent_node] rollback_warning injected: reason={rollback_reason!r}")
+            logger.debug(
+                f"[{self._node_id}] rollback_warning injected: reason={rollback_reason!r}"
+            )
         return warning
 
-    def _build_gemini_section(self, state: BaseAgentState) -> str:
-        gemini_ctx = state.get("gemini_context", "")
-        if not gemini_ctx or gemini_ctx.startswith("__PENDING__"):
-            return ""
-        if is_debug():
-            logger.debug(f"[agent_node] gemini_section injected len={len(gemini_ctx)}")
-        return (
-            f"[Gemini 首席架构师建议（经3轮对抗验证）]\n{gemini_ctx}\n"
-            f"[建议结束]\n"
-            f"⚠️ 严禁再次输出 consult_gemini JSON，否则造成死循环。\n"
-        )
+    def _build_gemini_section(self, state: dict) -> str:
+        # Gemini 的回复已通过 AIMessage 进入 messages，Claude 在对话历史中直接看到。
+        # 此方法保留供子类扩展；基类不再注入 routing_context。
+        return ""
 
-    # ── node_config 驱动的行为（无需子类化）───────────────────────────────
-
-    def _build_extra_injections(self, state: BaseAgentState, user_input: str) -> str:
+    def _build_extra_injections(self, state: dict, user_input: str) -> str:
         """耻辱柱注入（tombstone_enabled: true 时激活）。"""
         if not self._cfg.get("tombstone_enabled", False):
             return ""
@@ -201,37 +236,40 @@ class AgentNode:
         if not tombstone_raw:
             return ""
         if is_debug():
-            logger.debug(f"[agent_node] tombstone injected ({len(tombstone_raw)} chars)")
+            logger.debug(
+                f"[{self._node_id}] tombstone injected ({len(tombstone_raw)} chars)"
+            )
         return (
             f"⛔ 【跨时空耻辱柱·绝对禁止重蹈】\n{tombstone_raw}\n"
             f"绝对不要重复以上任何模式。\n"
         )
 
-    def _format_user_msg(self, user_input: str, state: BaseAgentState) -> str:
+    def _format_user_msg(self, user_input: str, state: dict) -> str:
         """用户消息前缀 + @Gemini 强制咨询检测。"""
         prefix = self._cfg.get("user_msg_prefix", "")
         if self._gemini_mention_re and self._gemini_mention_re.search(user_input):
             topic = self._gemini_mention_re.sub("", user_input).strip() or user_input
-            logger.info(f"[agent_node] @Gemini trigger: topic={topic!r}")
+            logger.info(f"[{self._node_id}] @Gemini trigger: topic={topic!r}")
             return (
                 f"{prefix}{user_input}\n\n"
                 f"【系统指令·强制咨询】用户明确要求咨询 Gemini，关于：{topic}\n"
                 f"请把这个问题组装成专业提问，"
                 f"**第一行且只有第一行**输出以下 JSON，不要任何前缀或解释：\n"
-                f'{{"action": "consult_gemini", "topic": "<提炼后的问题>", '
-                f'"context": "<相关项目状态>"}}'
+                f'{{"route": "gemini_advisor", "context": "<提炼后的问题>|<相关项目状态>"}}'
             )
         return f"{prefix}{user_input}" if prefix else user_input
 
     def _select_tools(self, user_input: str) -> list[str] | None:
         """tool_rules 关键词匹配后动态追加工具。"""
-        tools = list(self.llm.config.tools)
+        tools = list(self.config.tools)
         for pattern, extra in self._tool_rules:
             if pattern.search(user_input):
                 for t in extra:
                     if t not in tools:
                         tools.append(t)
         return tools
+
+
 # ── 框架工具函数 ──────────────────────────────────────────────────────────────
 
 def _extract_json(text: str) -> dict | None:
@@ -245,6 +283,8 @@ def _extract_json(text: str) -> dict | None:
             except json.JSONDecodeError:
                 pass
     return None
+
+
 def _read_project_file(
     path: str, is_tasks: bool = False, max_chars: int = 3000
 ) -> str:
@@ -268,7 +308,9 @@ def _read_project_file(
             content = content[:max_chars] + "\n...(rest truncated)"
 
     return content.strip()
-def _build_project_section(state: BaseAgentState) -> str:
+
+
+def _build_project_section(state: dict) -> str:
     meta = state.get("project_meta") or {}
     root = state.get("project_root") or ""
     sections = []
@@ -293,5 +335,7 @@ def _build_project_section(state: BaseAgentState) -> str:
         logger.debug(f"[agent_node] project_section sections={len(sections)}")
 
     return "\n\n".join(sections)
+
+
 # 向后兼容别名
 AgentClaudeNode = AgentNode

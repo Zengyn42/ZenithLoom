@@ -14,7 +14,6 @@ from dotenv import load_dotenv
 from langchain_core.messages import HumanMessage
 
 from framework.debug import is_debug
-from framework.graph import get_config, switch_session, new_session
 from framework.token_tracker import get_token_stats, reset_token_stats
 
 load_dotenv()
@@ -29,6 +28,7 @@ DISCORD_MAX_CHARS = 1900
 
 # 由 run_discord() 注入
 _loader = None
+_controller = None
 _session_mgr = None
 
 
@@ -161,8 +161,8 @@ async def _refresh_history_file(channel, limit: int, exclude_msg_id: int) -> str
 # Agent 调用
 # ==========================================
 async def _invoke_agent_async(user_input: str, message=None) -> str:
-    engine = await _loader.get_engine()
-    config = get_config()
+    engine = _controller._graph
+    config = _controller.get_config()
 
     # 后台刷新历史文件（Agent 不会自动读取，只在被要求时用 Read 工具读取）
     history_limit = (_loader.json.get("channel_history_limit", 0) if _loader else 0)
@@ -322,9 +322,8 @@ async def new_session_cmd(ctx, *, name: str = ""):
         await ctx.send("用法：`!new <session名称>`")
         return
     try:
-        thread_id = await new_session(name, _session_mgr)
-        _loader.invalidate_engine()
-        await ctx.send(f"✅ 新 session `{name}` 已创建并激活\nthread_id: `{thread_id}`")
+        await _controller.new_session(name)
+        await ctx.send(f"✅ 新 session `{name}` 已创建并激活\nthread_id: `{_controller.active_thread_id}`")
     except ValueError as e:
         await ctx.send(f"❌ {e}")
     except Exception as e:
@@ -339,9 +338,8 @@ async def switch_session_cmd(ctx, *, name: str = ""):
         await ctx.send("用法：`!switch <session名称>`")
         return
     try:
-        thread_id = await switch_session(name, _session_mgr)
-        _loader.invalidate_engine()
-        await ctx.send(f"✅ 已切换到 session `{name}`\nthread_id: `{thread_id}`")
+        await _controller.switch_session(name)
+        await ctx.send(f"✅ 已切换到 session `{name}`\nthread_id: `{_controller.active_thread_id}`")
     except ValueError as e:
         await ctx.send(f"❌ {e}")
     except Exception as e:
@@ -352,7 +350,7 @@ async def switch_session_cmd(ctx, *, name: str = ""):
 async def show_session(ctx):
     if not await _check_auth(ctx):
         return
-    thread_id = get_config()["configurable"]["thread_id"]
+    thread_id = _controller.active_thread_id
     name = _session_mgr.find_name_by_thread_id(thread_id) or "（默认）"
     await ctx.send(f"当前 session: `{name}`\nthread_id: `{thread_id}`")
 
@@ -365,7 +363,7 @@ async def list_sessions_cmd(ctx):
     if not all_sessions:
         await ctx.send("还没有任何命名 session。用 `!new <名称>` 创建第一个。")
         return
-    current_tid = get_config()["configurable"]["thread_id"]
+    current_tid = _controller.active_thread_id
     lines = []
     for sname, env in all_sessions.items():
         marker = " ◀" if env.thread_id == current_tid else ""
@@ -391,7 +389,7 @@ async def whoami(ctx):
 async def show_memory(ctx):
     if not await _check_auth(ctx):
         return
-    thread_id = get_config()["configurable"]["thread_id"]
+    thread_id = _controller.active_thread_id
     stats = _session_mgr.session_stats(thread_id)
     name = _session_mgr.find_name_by_thread_id(thread_id) or "默认"
     await ctx.send(
@@ -406,7 +404,7 @@ async def show_memory(ctx):
 async def compact_session(ctx, keep: int = 20):
     if not await _check_auth(ctx):
         return
-    thread_id = get_config()["configurable"]["thread_id"]
+    thread_id = _controller.active_thread_id
     deleted = _session_mgr.compact(thread_id, keep_last=keep)
     _loader.invalidate_engine()
     await ctx.send(f"Compact 完成：删除了 `{deleted}` 条旧记录，保留最近 `{keep}` 条。")
@@ -423,7 +421,7 @@ async def reset_session(ctx, confirm: str = ""):
             "确认请输入：`!reset confirm`"
         )
         return
-    thread_id = get_config()["configurable"]["thread_id"]
+    thread_id = _controller.active_thread_id
     deleted = _session_mgr.reset(thread_id)
     _loader.invalidate_engine()
     await ctx.send(f"Session 已重置，清空了 `{deleted}` 条记录。{agent_name} 从零开始。")
@@ -463,10 +461,19 @@ async def clear_session(ctx):
     if not await _check_auth(ctx):
         return
     agent_name = _loader.name if _loader else "Agent"
-    thread_id = get_config()["configurable"]["thread_id"]
+    thread_id = _controller.active_thread_id
     deleted = _session_mgr.reset(thread_id)
     _loader.invalidate_engine()
     await ctx.send(f"Session 已清空（{deleted} 条）。{agent_name} 从零开始。")
+
+
+@bot.command(name="resources")
+async def show_resources(ctx):
+    if not await _check_auth(ctx):
+        return
+    from framework.resource_lock import format_resource_status
+    status = format_resource_status()
+    await ctx.send(f"**资源锁状态**\n```\n{status}\n```")
 
 
 @bot.command(name="setproject")
@@ -498,9 +505,14 @@ async def show_project(ctx):
 # 入口
 # ==========================================
 def run_discord(loader=None):
-    global _loader, _session_mgr
+    global _loader, _controller, _session_mgr
     _loader = loader
     _session_mgr = loader.session_mgr if loader else None
+
+    # 初始化 GraphController（同步包装）
+    if loader:
+        import asyncio
+        _controller = asyncio.get_event_loop().run_until_complete(loader.get_controller())
 
     token = loader.load_config().discord_token if loader else ""
     if not token:
