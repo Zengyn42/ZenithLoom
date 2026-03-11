@@ -5,6 +5,10 @@
   "graph": {
     "nodes": [
       {"id": "claude_main",    "type": "CLAUDE_CLI",  "model": null,
+       "tools": ["Read", "Write", "Edit", "Bash", "Glob", "Grep"],
+       "permission_mode": "bypassPermissions",
+       "setting_sources": null,
+       "settings_override": {"enabledPlugins": []},
        "first_turn_suffix": "Hani:", "user_msg_prefix": "老板: ",
        "gemini_mention_pattern": "@[Gg]emini", "tombstone_enabled": true,
        "tool_rules": [
@@ -31,8 +35,8 @@
       {"id": "e_claude_2_snapshot",      "from": "claude_main",      "to": "git_snapshot"},
       {"id": "e_snapshot_2_validate",    "from": "git_snapshot",     "to": "validate"},
       {"id": "e_validate_2_gemini",      "type": "routing_to",       "from": "validate", "to": "gemini_advisor",    "max_retry": 3},
-      {"id": "e_validate_2_brainstorm",  "type": "routing_to",       "from": "validate", "to": "debate_brainstorm", "max_retry": 3},
-      {"id": "e_validate_2_design",      "type": "routing_to",       "from": "validate", "to": "debate_design",     "max_retry": 3},
+      {"id": "e_validate_2_brainstorm",  "type": "routing_to",       "from": "validate", "to": "debate_brainstorm", "max_retry": 1},
+      {"id": "e_validate_2_design",      "type": "routing_to",       "from": "validate", "to": "debate_design",     "max_retry": 1},
       {"id": "e_validate_2_end",         "type": "no_routing",       "from": "validate", "to": "__end__"},
       {"id": "e_validate_2_rollback",    "type": "on_error",         "from": "validate", "to": "git_rollback"},
       {"id": "e_gemini_2_claude",        "from": "gemini_advisor",   "to": "claude_main"},
@@ -41,12 +45,9 @@
       {"id": "e_rollback_2_claude",      "from": "git_rollback",     "to": "claude_main"}
     ]
   },
-  "tools": ["Read", "Write", "Edit", "Bash", "Glob", "Grep"],
-  "permission_mode": "bypassPermissions",
   "max_retries": 2,
   "db_path": "hani.db",
   "sessions_file": "sessions.json",
-  "setting_sources": null,
   "persona_files": ["SOUL.md", "IDENTITY.md", "OPERATIONAL.md", "COMMANDS.md"],
   "discord_token": "MTQ4MDA1MjMyNTU1NjAyNzUzMw.GtJeZJ.Yj8IWNtnpIRzZQsSNJci2MkZNFyXcKIW4zJ3JA",
   "discord_allowed_users": ["286003878997262337"]

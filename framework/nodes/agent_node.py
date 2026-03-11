@@ -260,8 +260,8 @@ class AgentNode:
         return f"{prefix}{user_input}" if prefix else user_input
 
     def _select_tools(self, user_input: str) -> list[str] | None:
-        """tool_rules 关键词匹配后动态追加工具。"""
-        tools = list(self.config.tools)
+        """tool_rules 关键词匹配后动态追加工具。node_config.tools 优先于顶层 config.tools。"""
+        tools = list(self._cfg.get("tools") or self.config.tools)
         for pattern, extra in self._tool_rules:
             if pattern.search(user_input):
                 for t in extra:
