@@ -1,16 +1,12 @@
 """
-框架级 Gemini 顾问节点 — framework/gemini/node.py
+框架级 Gemini 节点 — framework/gemini/node.py
 
-Phase 2: 直接调用 Gemini Code Assist API（cloudcode-pa.googleapis.com）。
-复用 Gemini CLI 的 OAuth 凭据（~/.gemini/oauth_creds.json），
-无需 API key，支持 gemini-2.5-pro / gemini-2.5-flash 等全量模型。
-
-Session 管理（自包含）：
-  每次 consult() / chat() 接受 session_id（UUID）：
-    - 空 UUID → 创建新 Gemini session（ConversationRecord），生成新 UUID
-    - 非空 UUID → 从 ~/.gemini/tmp/ 加载已有 session，resume 对话
-  调用结束后自动将更新后的 ConversationRecord 写回磁盘（Gemini CLI 兼容格式）。
-  返回 (result, session_id)，由调用方（图 wrapper）写回 BaseAgentState.node_sessions。
+GeminiNode(AgentNode)  →  GEMINI_CLI 节点类型
+  Gemini 作为咨询 agent，重写 __call__()：
+    - 读取 state["routing_context"] 作为提问
+    - 调用 call_llm() 获取回复
+    - 清除 routing_target / routing_context
+    - 增加 consult_count
 
 安全守则（防止账号/钱包被打）：
   - 每次 API 调用前强制 jitter sleep 2~5s
@@ -28,8 +24,12 @@ import urllib.parse
 import urllib.request
 from pathlib import Path
 
+from langchain_core.messages import AIMessage
+
 from framework.config import AgentConfig
 from framework.debug import is_debug
+from framework.nodes.agent_node import AgentNode
+from framework.resource_lock import acquire_resource
 import framework.gemini.gemini_session as gem_sess
 from framework.gemini.gemini_session import ConversationRecord
 
@@ -51,8 +51,8 @@ _GEMINI_SYSTEM = (
     "请根据问题给出极致架构建议。直接输出建议，不需要客套。"
 )
 
-_JITTER_MIN = 2.0
-_JITTER_MAX = 5.0
+_JITTER_MIN = 10.0
+_JITTER_MAX = 18.0
 
 
 class GeminiQuotaError(RuntimeError):
@@ -63,7 +63,7 @@ class GeminiQuotaError(RuntimeError):
 
 
 # ---------------------------------------------------------------------------
-# _CodeAssistClient — 底层 HTTP 客户端
+# _CodeAssistClient — 底层 HTTP 客户端（内部用）
 # ---------------------------------------------------------------------------
 
 class _CodeAssistClient:
@@ -118,7 +118,9 @@ class _CodeAssistClient:
             with urllib.request.urlopen(req, timeout=15) as resp:
                 token_data = json.loads(resp.read())
         except urllib.error.HTTPError as e:
-            raise RuntimeError(f"OAuth token 刷新失败 ({e.code}): {e.read().decode()[:200]}")
+            raise RuntimeError(
+                f"OAuth token 刷新失败 ({e.code}): {e.read().decode()[:200]}"
+            )
 
         self._access_token = token_data["access_token"]
         self._token_expiry = time.time() + token_data.get("expires_in", 3600)
@@ -148,7 +150,9 @@ class _CodeAssistClient:
             with urllib.request.urlopen(req, timeout=15) as resp:
                 result = json.loads(resp.read())
         except urllib.error.HTTPError as e:
-            raise RuntimeError(f"loadCodeAssist 失败 ({e.code}): {e.read().decode()[:300]}")
+            raise RuntimeError(
+                f"loadCodeAssist 失败 ({e.code}): {e.read().decode()[:300]}"
+            )
 
         self._project_id = result.get("cloudaicompanionProject", "")
         logger.info(f"[gemini.client] project_id={self._project_id}")
@@ -210,59 +214,44 @@ class _CodeAssistClient:
 
 
 # ---------------------------------------------------------------------------
-# GeminiNode — 自包含 session-aware 节点
+# _GeminiSessionMixin — 共享 session 管理逻辑
 # ---------------------------------------------------------------------------
 
-class GeminiNode:
-    """
-    Gemini 顾问节点（自包含 session 管理）。
+class _GeminiSessionMixin:
+    """Gemini session 管理 mixin：按 session_id UUID 索引 client 和 ConversationRecord。"""
 
-    统一接口：
-      consult(topic, context, session_id="") → (result, session_id)
-      chat(message, session_id="", system="") → (reply, session_id)
+    # 内存中最多保留的 session 数量（LRU 淘汰旧 session，防止辩论等场景内存泄漏）
+    _SESSION_CACHE_LIMIT = 1
 
-    session_id 为空 → 创建新 Gemini session；
-    非空 → 从 ~/.gemini/tmp/{project_id}/chats/ 恢复已有 session。
-    每次调用结束后自动持久化 ConversationRecord（Gemini CLI 兼容格式）。
-
-    调用方（图 wrapper）只需：
-      1. 从 state.node_sessions["gemini_main"] 取 session_id 传入
-      2. 把返回的 session_id 写回 state.node_sessions["gemini_main"]
-    """
-
-    def __init__(self, config: AgentConfig, llm_node):
-        self.config = config
-        self.llm_node = llm_node  # ClaudeNode / LlamaNode，用于 consult 的挑刺轮
-
-        self._default_model = getattr(config, "gemini_model", None) or "gemini-2.5-flash"
-
-        # project_id: 从 workspace 生成 slug，定位 ~/.gemini/tmp/{project_id}/
-        self._project_id = gem_sess.get_project_id(config.workspace or os.getcwd())
-        logger.info(f"[gemini] project_id={self._project_id}")
-
-        # 按 session_id UUID 索引（避免每次重建 token 缓存）
+    def _init_session_state(self, node_config: dict):
+        # 模型从 node_config 读取（"model" → 声明式节点字段）
+        self._default_model = (
+            node_config.get("model")
+            or node_config.get("gemini_model")
+            or "gemini-2.5-flash"
+        )
         self._clients: dict[str, _CodeAssistClient] = {}
         self._records: dict[str, ConversationRecord] = {}
+        logger.info(f"[gemini] default_model={self._default_model}")
 
     def _get_client(self, session_id: str) -> _CodeAssistClient:
         if session_id not in self._clients:
             self._clients[session_id] = _CodeAssistClient(self._default_model)
         return self._clients[session_id]
 
-    def _load_or_create(self, session_id: str) -> tuple[ConversationRecord, _CodeAssistClient]:
-        """
-        按 session_id 加载或创建 ConversationRecord + client。
-        将磁盘上的历史同步到 client._history（resume 语义）。
-        """
-        # 内存缓存命中
+    def _load_or_create(
+        self, session_id: str, workspace: str = ""
+    ) -> tuple[ConversationRecord, _CodeAssistClient]:
+        # project_id 从 workspace 实时计算（不缓存，workspace 可能随 session 变化）
+        project_id = gem_sess.get_project_id(workspace or os.getcwd())
+
         if session_id and session_id in self._records:
             if is_debug():
                 logger.debug(f"[gemini] cache hit for session {session_id[:8]}")
             return self._records[session_id], self._get_client(session_id)
 
-        # 磁盘加载
         if session_id:
-            record = gem_sess.load_session(session_id, self._project_id)
+            record = gem_sess.load_session(session_id, project_id)
             if record is not None:
                 client = self._get_client(session_id)
                 client._history = gem_sess.to_api_history(record)
@@ -276,96 +265,124 @@ class GeminiNode:
                 f"[gemini] session {session_id[:8]} not found on disk, creating new"
             )
 
-        # 新建
-        record = gem_sess.new_session(self._project_id, self._default_model)
+        record = gem_sess.new_session(project_id, self._default_model)
         client = self._get_client(record.sessionId)
+        self._evict_old_sessions()
         self._records[record.sessionId] = record
         logger.info(f"[gemini] new session {record.sessionId[:8]}")
         return record, client
 
-    def _persist(self, record: ConversationRecord, client: _CodeAssistClient) -> None:
-        """将 client._history 追加到 record 并保存到磁盘。"""
-        gem_sess.append_history(record, client._history, model=self._default_model)
-        gem_sess.save_session(record, self._project_id)
-
-    async def consult(
-        self,
-        topic: str,
-        context: str,
-        session_id: str = "",
-    ) -> tuple[str, str]:
-        """
-        3 轮对抗咨询。返回 (最终建议, session_id)。
-        GeminiQuotaError（403/429）直接穿透。
-        """
-        record, client = self._load_or_create(session_id)
-        sid = record.sessionId
-
-        try:
-            logger.info("[gemini] Round 1/3: Gemini 首次回答")
-            g1 = await client.chat(
-                f"问题：{topic}\n当前上下文：{context}",
-                system=_GEMINI_SYSTEM,
-            )
+    def _evict_old_sessions(self) -> None:
+        """LRU 淘汰：当缓存超限时，移除最旧的 session（保留最近的）。"""
+        while len(self._records) >= self._SESSION_CACHE_LIMIT:
+            oldest_key = next(iter(self._records))
+            del self._records[oldest_key]
+            self._clients.pop(oldest_key, None)
             if is_debug():
-                logger.debug(f"[gemini] g1_preview={g1[:150]!r}")
+                logger.debug(f"[gemini] evicted session {oldest_key[:8]} from cache")
 
-            logger.info("[gemini] Round 2/3: Claude 挑刺")
-            critique_prompt = (
-                f"以下是 Gemini 架构师对「{topic}」的建议，请找出其中的逻辑漏洞、"
-                f"遗漏的边界情况或过于理想化的假设（简明扼要，3点以内）：\n\n{g1}"
-            )
-            critique, _ = await self.llm_node.call_llm(critique_prompt)
+    def _persist(
+        self, record: ConversationRecord, client: _CodeAssistClient, workspace: str = ""
+    ) -> None:
+        project_id = gem_sess.get_project_id(workspace or os.getcwd())
+        gem_sess.append_history(record, client._history, model=self._default_model)
+        gem_sess.save_session(record, project_id)
 
-            logger.info("[gemini] Round 2/3: Gemini 修订")
-            g2 = await client.chat(
-                f"Hani 的质疑（请针对以下质疑修订你的建议）：\n{critique}"
-            )
 
-            logger.info("[gemini] Round 3/3: Claude 深度挑刺")
-            nitpick_prompt = (
-                f"对以下修订后的架构建议进行最后一轮深度审查。\n"
-                f"重点关注：实施复杂度、潜在的单点故障、与现有环境的兼容性。\n\n{g2}"
-            )
-            nitpick, _ = await self.llm_node.call_llm(nitpick_prompt)
+# ---------------------------------------------------------------------------
+# GeminiNode — GEMINI_CLI 节点类型（继承 AgentNode）
+# ---------------------------------------------------------------------------
 
-            logger.info("[gemini] Round 3/3: Gemini 最终建议")
-            g_final = await client.chat(
-                f"Hani 的最终审查意见：\n{nitpick}\n\n"
-                "请给出你的最终建议（这将直接被采纳执行）："
-            )
+class GeminiNode(_GeminiSessionMixin, AgentNode):
+    """
+    Gemini 咨询 agent（GEMINI_CLI 节点类型）。
 
-            logger.info("[gemini] 3轮咨询完成")
-            self._persist(record, client)
-            return g_final, sid
+    重写 __call__()：
+      - 读取 state["routing_context"] 作为提问
+      - 清除 routing_target / routing_context
+      - 增加 consult_count
 
-        except GeminiQuotaError:
-            raise
-        except Exception as e:
-            logger.error(f"[gemini] consult 失败: {e}")
-            self._persist(record, client)
-            return f"[Gemini 咨询失败: {e}]", sid
+    不调用 super().__call__()，因为：
+      - prompt 来自 routing_context，不是 messages[-1]
+      - Gemini 不需要信号解析（不会再路由到其他节点）
+    """
 
-    async def chat(
+    def __init__(self, config: AgentConfig, node_config: dict):
+        AgentNode.__init__(self, config, node_config)
+        self._init_session_state(node_config)
+        # node_config 中的 system_prompt 优先；否则使用框架默认
+        self._system_prompt: str = node_config.get("system_prompt") or _GEMINI_SYSTEM
+
+    async def call_llm(
         self,
-        message: str,
+        prompt: str,
         session_id: str = "",
-        system: str = "",
+        tools: list[str] | None = None,
+        cwd: str | None = None,
     ) -> tuple[str, str]:
-        """
-        单轮直接对话，返回 (reply, session_id)。
-        适合不需要 Claude 挑刺的直接 Gemini 对话场景。
-        """
-        record, client = self._load_or_create(session_id)
+        """单轮 Gemini 对话，返回 (reply, session_id)。"""
+        workspace = cwd or ""
+        record, client = self._load_or_create(session_id, workspace)
         sid = record.sessionId
-
         try:
-            reply = await client.chat(message, system=system or _GEMINI_SYSTEM)
-            self._persist(record, client)
+            reply = await client.chat(prompt, system=self._system_prompt)
+            self._persist(record, client, workspace)
             return reply, sid
         except GeminiQuotaError:
             raise
         except Exception as e:
-            logger.error(f"[gemini] chat 失败: {e}")
-            self._persist(record, client)
-            return f"[Gemini chat 失败: {e}]", sid
+            logger.error(f"[gemini.node] call_llm 失败: {e}")
+            self._persist(record, client, workspace)
+            return f"[Gemini 失败: {e}]", sid
+
+    async def __call__(self, state: dict) -> dict:
+        """
+        读取 routing_context 作为 prompt，调用 Gemini，清除路由信号。
+        """
+        routing_context = state.get("routing_context", "")
+        msgs = state.get("messages", [])
+
+        if routing_context:
+            prompt = routing_context
+            prompt_src = "routing_context"
+        elif len(msgs) > 1:
+            # 多轮对话（辩论模式）：把完整历史格式化进 prompt，让 Gemini 看到全局上下文
+            parts = []
+            for m in msgs:
+                role = "议题" if getattr(m, "type", "") == "human" else "发言"
+                parts.append(f"[{role}]:\n{m.content}")
+            prompt = "\n\n---\n\n".join(parts)
+            prompt_src = f"full_history ({len(msgs)} msgs)"
+        else:
+            prompt = msgs[-1].content if msgs else ""
+            prompt_src = "messages[-1]"
+
+        ns = dict(state.get("node_sessions") or {})
+        session_id = ns.get(self._node_id, "")
+        workspace = state.get("workspace", "")
+
+        if is_debug():
+            logger.debug(
+                f"[{self._node_id}] prompt_src={prompt_src} "
+                f"prompt_preview={prompt[:120]!r} "
+                f"session_id={session_id[:8] if session_id else 'new'}"
+            )
+
+        async with acquire_resource(
+            self._resource_lock,
+            timeout=self._resource_timeout,
+            holder=self._node_id,
+        ):
+            reply, new_session_id = await self.call_llm(
+                prompt, session_id=session_id, cwd=workspace or None
+            )
+
+        ns[self._node_id] = new_session_id or session_id
+        logger.info(f"[{self._node_id}] done, consult_count→{state.get('consult_count', 0) + 1}")
+        return {
+            "messages": [AIMessage(content=reply)],
+            "routing_target": "",     # 清除路由信号，让 validate 正常路由
+            "routing_context": "",
+            "consult_count": state.get("consult_count", 0) + 1,
+            "node_sessions": ns,
+        }

@@ -207,6 +207,34 @@ def load_session(session_id: str, project_id: str) -> ConversationRecord | None:
         return None
 
 
+def delete_session(session_id: str, project_id: str = "") -> bool:
+    """
+    按 sessionId 删除磁盘上的 session 文件。
+
+    若 project_id 为空，则扫描所有 project 目录。
+    返回 True 若成功删除，False 若文件不存在。
+    """
+    if project_id:
+        path = _find_session_file(session_id, project_id)
+        if path and path.exists():
+            path.unlink()
+            logger.info(f"[gemini.session] deleted {path.name}")
+            return True
+        return False
+
+    # project_id 未知时，扫描所有 project 目录
+    if not _GEMINI_DIR.exists():
+        return False
+    for proj_dir in _GEMINI_DIR.iterdir():
+        if proj_dir.is_dir():
+            path = _find_session_file(session_id, proj_dir.name)
+            if path and path.exists():
+                path.unlink()
+                logger.info(f"[gemini.session] deleted {path.name}")
+                return True
+    return False
+
+
 def list_sessions(project_id: str) -> list[ConversationRecord]:
     """列出该 project 下所有 session，按 lastUpdated 降序。"""
     chats = _chats_dir(project_id)

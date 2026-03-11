@@ -28,12 +28,13 @@ logger = logging.getLogger(__name__)
 
 @dataclass
 class SessionEnvelope:
-    """一个命名 session 的完整信封：LangGraph thread_id + 所有节点 UUID。"""
+    """一个命名 session 的完整信封：LangGraph thread_id + 所有节点 UUID + workspace。"""
 
     thread_id: str
     created_at: str
     updated_at: str
     node_sessions: dict = field(default_factory=dict)  # {"claude_main": uuid, ...}
+    workspace: str = ""  # per-session 工作目录（注入到 BaseAgentState["workspace"]）
 
     def to_dict(self) -> dict:
         return {
@@ -41,6 +42,7 @@ class SessionEnvelope:
             "created_at": self.created_at,
             "updated_at": self.updated_at,
             "node_sessions": self.node_sessions,
+            "workspace": self.workspace,
         }
 
     @classmethod
@@ -50,13 +52,14 @@ class SessionEnvelope:
             created_at=d.get("created_at", ""),
             updated_at=d.get("updated_at", ""),
             node_sessions=d.get("node_sessions", {}),
+            workspace=d.get("workspace", ""),
         )
 
     @classmethod
-    def new(cls, thread_id: str | None = None) -> "SessionEnvelope":
+    def new(cls, thread_id: str | None = None, workspace: str = "") -> "SessionEnvelope":
         now = datetime.now(timezone.utc).isoformat()
         tid = thread_id or f"hani_session_{uuid4().hex[:8]}"
-        return cls(thread_id=tid, created_at=now, updated_at=now)
+        return cls(thread_id=tid, created_at=now, updated_at=now, workspace=workspace)
 
 
 # ---------------------------------------------------------------------------
@@ -121,16 +124,16 @@ class SessionManager:
             self._sessions[name] = SessionEnvelope.new(thread_id)
         self._save()
 
-    def create_session(self, name: str) -> SessionEnvelope:
+    def create_session(self, name: str, workspace: str = "") -> SessionEnvelope:
         """创建新命名 session，生成随机 thread_id。若 name 已存在抛 ValueError。"""
         if name in self._sessions:
             raise ValueError(
                 f"Session {name!r} 已存在。用 !switch {name} 切换，或用其他名称。"
             )
-        env = SessionEnvelope.new()
+        env = SessionEnvelope.new(workspace=workspace)
         self._sessions[name] = env
         self._save()
-        logger.info(f"[session] created {name!r} → thread_id={env.thread_id}")
+        logger.info(f"[session] created {name!r} → thread_id={env.thread_id} workspace={workspace!r}")
         return env
 
     def delete(self, name: str) -> bool:

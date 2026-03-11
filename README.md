@@ -1,261 +1,353 @@
-# BootstrapBuilder — 多 Agent 框架
+# BootstrapBuilder
 
-基于 LangGraph 的可插拔 AI Agent 框架，支持 Claude（云端）和 Llama（本地）双引擎，提供 CLI、Discord Bot 两种接入方式。
+多 LLM Agent 编排框架，基于 LangGraph 构建。支持声明式图定义、多 Session 管理、子图嵌套、以及 Git 原子回滚。
 
 ---
 
-## 架构概览
+## 目录结构
 
 ```
 BootstrapBuilder/
-├── main.py                  # 统一入口（--agent / mode）
-├── framework/               # 可复用框架层（LLM 无关）
-│   ├── config.py            # AgentConfig dataclass
-│   ├── state.py             # BaseAgentState（LangGraph 状态）
-│   ├── graph.py             # 通用图构建器 + Session 管理
-│   ├── agent_loader.py      # 从 agent.json 懒加载 Agent
-│   ├── session_mgr.py       # 命名 Session 持久化
-│   ├── heartbeat.py         # CLI/Ollama 存活探测（后台定时）
-│   ├── token_tracker.py     # Claude API token 统计
-│   ├── claude/node.py       # ClaudeNode — Claude Code CLI SDK 包装
-│   ├── llama/node.py        # LlamaNode — Ollama HTTP 接口
-│   ├── gemini/node.py       # GeminiNode — Gemini 顾问（3 轮对抗咨询）
-│   └── nodes/
-│       ├── agent_node.py    # AgentNode — 通用 LLM 节点（JSON 驱动）
-│       ├── git_nodes.py     # Git 快照 / 回滚节点
-│       ├── validate_node.py # 输出验证节点
-│       └── vram_flush_node.py # GPU 显存清洗节点
-├── agents/
-│   ├── hani/                # Claude Agent（个人助手）
-│   │   ├── agent.json       # 所有配置
-│   │   ├── SOUL.md          # 价值观（不可覆盖）
-│   │   ├── IDENTITY.md      # 身份认知
-│   │   ├── OPERATIONAL.md   # 操作规范
-│   │   └── COMMANDS.md      # 用户命令手册
-│   └── asa/                 # Llama Agent（本地常驻）
-│       ├── agent.json
-│       └── SOUL.md
+├── main.py                        # 入口（CLI / Discord / Tmux 模式）
+├── framework/                     # 核心框架层
+│   ├── state.py                   # BaseAgentState / DebateState (TypedDict)
+│   ├── config.py                  # AgentConfig dataclass（from agent.json）
+│   ├── registry.py                # 节点/条件注册（装饰器驱动）
+│   ├── agent_loader.py            # AgentLoader：加载 agent.json、编译图
+│   ├── graph.py                   # build_agent_graph()（Priority 3 默认图）
+│   ├── graph_controller.py        # GraphController：图执行 + Session 管理
+│   ├── builtins.py                # 注册所有内置节点类型和条件谓词
+│   ├── debug.py                   # is_debug() / set_debug()
+│   ├── session_mgr.py             # SessionManager（sessions.json I/O）
+│   ├── signal_parser.py           # 路由信号提取（JSON 解析）
+│   ├── token_tracker.py           # Token 用量统计
+│   ├── nodes/                     # 节点实现
+│   │   ├── agent_node.py          # AgentNode 基类（抽象）
+│   │   ├── agent_ref_node.py      # AgentRefNode：嵌入外部 Agent 子图
+│   │   ├── git_nodes.py           # GitSnapshotNode / GitRollbackNode
+│   │   ├── validate_node.py       # ValidateNode：输出质量检查
+│   │   ├── vram_flush_node.py     # VramFlushNode：GPU 显存清理
+│   │   └── subgraph_mapper.py     # SubgraphMapperNode：字段映射
+│   ├── claude/
+│   │   └── node.py                # ClaudeNode（Claude SDK，可 resume）
+│   ├── gemini/
+│   │   ├── node.py                # GeminiNode（Gemini API，独立 Session）
+│   │   └── gemini_session.py      # Session 存储 & 刷新
+│   └── llama/
+│       └── node.py                # LlamaNode（Ollama/vLLM，stub）
+├── agents/                        # 每个 Agent 一个目录
+│   ├── hani/                      # 主 Agent（Claude 驱动）
+│   │   ├── agent.json             # 图配置 + 工具 + 节点
+│   │   ├── sessions.json          # 活跃 Session & node_sessions
+│   │   ├── hani.db                # LangGraph checkpoint（SQLite）
+│   │   └── *.md                   # Persona 文件（SOUL / IDENTITY / ...）
+│   ├── debate_gemini_first/       # 辩论子图（Gemini 先手）
+│   │   └── agent.json
+│   └── debate_claude_first/       # 辩论子图（Claude 先手）
+│       └── agent.json
 └── interfaces/
-    ├── cli.py               # 本地 CLI
-    └── discord_bot.py       # Discord Bot
+    ├── cli.py                     # run_cli() / run_tmux()
+    └── discord_bot.py             # run_discord()
 ```
 
 ---
 
-## LangGraph 图流程
+## 状态 Schema
 
-每轮对话经过以下节点：
+### BaseAgentState（主图）
 
+```python
+class BaseAgentState(TypedDict):
+    messages:           list[BaseMessage]   # 最近 2 条（reducer: _keep_last_2）
+    routing_target:     str                 # 路由目标节点 ID（空 = 无路由）
+    routing_context:    str                 # 传给路由目标节点的问题/背景
+    workspace:          str                 # 当前工作目录
+    project_root:       str                 # !setproject 指定的项目根
+    project_meta:       dict                # {"plan": "path", "tasks": "path"}
+    consult_count:      int                 # 当前轮咨询次数
+    last_stable_commit: str                 # git snapshot hash
+    retry_count:        int                 # rollback 重试计数
+    rollback_reason:    str                 # 非空 = 触发 rollback
+    claude_session_id:  str                 # Claude SDK Session UUID（向后兼容）
+    node_sessions:      dict                # {"claude_main": uuid, "gemini_advisor": uuid}
+    knowledge_vault:    str                 # Obsidian vault 根路径
+    project_docs:       str                 # 子项目 /docs/ 路径
+    debate_conclusion:  str                 # 辩论子图最终结论
 ```
-用户输入
-   │
-   ▼
-git_snapshot       ← 工程模式下自动快照（!setproject 后生效）
-   │
-   ▼
-agent_node         ← 调用 LLM（Claude / Llama）
-   │
-   ▼
-validate           ← 检查输出是否触发回滚 / Gemini 咨询信号
-   │
-   ├─ rollback_reason 非空 ──► git_rollback ──► agent_node（重试）
-   │
-   ├─ gemini_context 有待处理 ──► gemini_advisor ──► agent_node
-   │
-   └─ 正常 ──► [vram_flush（可选）] ──► END
-```
+
+### DebateState（辩论子图）
+
+与 `BaseAgentState` 字段一致，但 `messages` 使用 `add_messages` reducer（累积所有轮次消息，不截断）。
 
 ---
 
 ## Agent 配置（agent.json）
 
-每个 Agent 的行为完全由 `agents/<name>/agent.json` 驱动，无需修改框架代码。
+### 顶层字段
 
-### 完整字段说明
+| 字段 | 类型 | 说明 |
+|------|------|------|
+| `name` | str | Agent 名称 |
+| `tools` | list[str] | 允许的工具列表 |
+| `permission_mode` | str | Claude SDK 权限模式（`bypassPermissions` 等） |
+| `max_retries` | int | git rollback 最大重试次数（默认 2） |
+| `db_path` | str | LangGraph checkpoint SQLite 路径 |
+| `sessions_file` | str | sessions.json 路径 |
+| `setting_sources` | list \| null | SDK 技能注入来源（注：`["user","project"]` 增加 ~14k token 系统提示） |
+| `persona_files` | list[str] | Persona 文件列表，拼接为 system prompt |
+| `discord_token` | str | Discord Bot Token（env `DISCORD_BOT_TOKEN` 优先） |
+| `discord_allowed_users` | list[str] | 白名单用户（env `DISCORD_ALLOWED_USERS` 逗号分隔覆盖） |
+| `graph` | dict | 图定义（nodes + edges） |
 
-```jsonc
+---
+
+## 节点类型
+
+| 类型 | 实现类 | 用途 | Session 存储 |
+|------|--------|------|-------------|
+| `CLAUDE_CLI` | ClaudeNode | Claude SDK LLM 调用（可 resume） | `~/.claude/` |
+| `GEMINI_CLI` | GeminiNode | Gemini API 对话 | `~/.gemini/tmp/` |
+| `LOCAL_VLLM` | LlamaNode | 本地 Ollama/vLLM（stub） | 无 |
+| `GIT_SNAPSHOT` | GitSnapshotNode | 任务前自动 git commit | 无 |
+| `GIT_ROLLBACK` | GitRollbackNode | 验证失败时回退到快照 | 无 |
+| `VALIDATE` | ValidateNode | 输出质量检查（Python 语法、超时检测等） | 无 |
+| `VRAM_FLUSH` | VramFlushNode | 杀死残留 GPU 进程 | 无 |
+| `SUBGRAPH_MAPPER` | SubgraphMapperNode | 父图↔子图字段重映射 | 无 |
+| `AGENT_REF` | AgentRefNode | 将外部 Agent 目录编译为子图并嵌入 | 继承父图 |
+
+### 自定义节点注册
+
+```python
+# framework/builtins.py（或任意被 import 的模块）
+from framework.registry import register_node, register_condition
+
+@register_node("MY_NODE")
+def _(config: AgentConfig, node_config: dict):
+    return MyNode(config, node_config)
+
+@register_condition("my_condition")
+def _(state: dict) -> bool:
+    return bool(state.get("some_field"))
+```
+
+---
+
+## 声明式图定义
+
+### 节点定义（agent.json → graph.nodes）
+
+```json
 {
-  // ── 基础 ──────────────────────────────────────────
-  "name": "hani",                    // Agent 标识（与目录名一致）
-  "llm": "claude",                   // "claude" | "llama"
-  "workspace": "/path/to/project",   // 默认工作目录（可被 !setproject 覆盖）
-
-  // ── LLM 配置 ──────────────────────────────────────
-  "claude_model": null,              // null = CLI 默认模型；或 "claude-sonnet-4-6"
-  "llama_model": "llama-3.3-70b",   // （llm=llama 时）
-  "llama_endpoint": "http://localhost:11434",
-
-  // ── Claude Code CLI 设置继承 ───────────────────────
-  // 控制子进程加载哪些 Claude Code 设置
-  "setting_sources": ["user", "project"],
-  // "user"    = 继承 ~/.claude/settings.json 中已安装的全部 Skill/Plugin
-  // "project" = 读取工作目录下 .claude/ 的项目级 Skill
-  // 不写或 null = 不加载任何设置（SDK 默认）
-
-  // ── 工具 ──────────────────────────────────────────
-  "tools": ["Read", "Write", "Edit", "Bash", "Glob", "Grep"],
-  "permission_mode": "bypassPermissions",
-
-  // ── 功能开关 ──────────────────────────────────────
-  "vram_flush": false,    // true = 图末尾执行 GPU 显存清洗（Asa 专用）
-  "heartbeat": true,      // true = 启动后台 CLI 存活探测（Asa 专用，常驻进程）
-  "tombstone_enabled": true, // true = 注入历史失败案例防止重蹈覆辙
-
-  // ── Session 持久化 ────────────────────────────────
-  "db_path": "hani.db",           // LangGraph checkpoint DB（相对于 agent 目录）
-  "sessions_file": "sessions.json",// 命名 Session 映射表
-  "max_retries": 2,               // 最大回滚重试次数
-  "max_gemini_consults": 1,       // 每轮最多 Gemini 咨询次数
-
-  // ── Discord 频道历史 ───────────────────────────────
-  "channel_history_limit": 20,    // 保存最近 N 条消息到 .discord_channel_history.txt
-                                   // Agent 可用 Read 工具按需读取（不自动注入）
-
-  // ── Persona ───────────────────────────────────────
-  "persona_files": ["SOUL.md", "IDENTITY.md", "OPERATIONAL.md", "COMMANDS.md"],
-  "first_turn_suffix": "Hani:",   // 首轮 prompt 末尾追加（引导角色扮演）
-  "user_msg_prefix": "老板: ",    // 用户消息前缀
-
-  // ── Gemini 咨询触发 ───────────────────────────────
-  "gemini_mention_pattern": "@[Gg]emini",  // 用户消息含此正则 → 强制咨询
-
-  // ── 动态工具规则 ──────────────────────────────────
+  "id": "claude_main",
+  "type": "CLAUDE_CLI",
+  "model": null,
+  "system_prompt": "（可选，优先级低于 persona_files）",
+  "first_turn_suffix": "Hani:",
+  "user_msg_prefix": "老板: ",
+  "tombstone_enabled": true,
   "tool_rules": [
-    {
-      "pattern": "论文|paper|arXiv",  // 用户消息正则
-      "flags": ["IGNORECASE"],
-      "tools": ["WebFetch", "WebSearch"]  // 动态追加到工具列表
-    }
+    {"pattern": "implement", "flags": [], "tools": ["Write", "Edit", "Bash"]}
   ]
 }
 ```
 
-### 当前 Agent 对比
+### 边类型（agent.json → graph.edges）
 
-| 字段 | Hani | Asa |
-|------|------|-----|
-| `llm` | claude | llama |
-| `vram_flush` | false | **true** |
-| `heartbeat` | false | **true** |
-| `setting_sources` | ["user", "project"] | — |
-| 定位 | 远程助手（Discord + CLI） | 本地常驻（CLI） |
+| type 值 | 触发条件 | 示例 |
+|---------|----------|------|
+| （无） | 直接连接 | `{"from": "a", "to": "b"}` |
+| `routing_to` | `state["routing_target"] == to` | `{"type": "routing_to", "from": "validate", "to": "gemini_advisor", "max_retry": 3}` |
+| `on_error` | `rollback_reason != ""` | `{"type": "on_error", "from": "validate", "to": "git_rollback"}` |
+| `no_routing` | `routing_target == ""` | `{"type": "no_routing", "from": "validate", "to": "__end__"}` |
+| 自定义名 | registry 中注册的条件函数 | `{"type": "my_condition", "from": "a", "to": "b"}` |
+
+`max_retry` 字段：触发超过 N 次后条件强制返回 False（防止路由死循环）。
+
+### AGENT_REF 节点（嵌入外部 Agent 子图）
+
+```json
+{
+  "id": "debate_brainstorm",
+  "type": "AGENT_REF",
+  "agent_dir": "agents/debate_gemini_first",
+  "state_in":  {"task": "routing_context", "knowledge_vault": "knowledge_vault"},
+  "state_out": {"debate_conclusion": "last_message"}
+}
+```
+
+- `state_in`: `{子图字段: 父图字段}` — 调用前注入
+- `state_out`: `{父图字段: 子图字段 | "last_message"}` — 调用后写回
+- `"last_message"` 特殊值：取子图最后一条消息的 `.content`
+- 辩论结论自动以 `AIMessage(content="[辩论结论]\n\n...")` 注入父图 messages
 
 ---
 
-## 快速开始
+## 图编译流程（build_graph）
 
-### 1. 安装依赖
+三优先级系统：
 
-```bash
-pip install -r requirements.txt
+```
+AgentLoader.build_graph(checkpointer=_DEFAULT)
+│
+├─ Priority 1: agents/{name}/graph.py 存在？
+│   └─ mod.build_graph(loader, checkpointer)       # 完全自定义图
+│
+├─ Priority 2: agent.json["graph"]["nodes"] 存在？
+│   └─ _build_declarative(graph_spec)
+│       ├─ 验证：节点 ID 唯一、边引用有效、BFS 可达性
+│       ├─ 选择 state_schema（"base" → BaseAgentState / "debate" → DebateState）
+│       ├─ StateGraph(schema).add_node() for each node
+│       │   ├─ ID 含 "main" 的节点注入 system_prompt
+│       │   └─ AGENT_REF 节点递归编译子图（checkpointer=None）
+│       ├─ add_edge / add_conditional_edges
+│       │   └─ routing_to 自动生成 target 匹配条件
+│       └─ .compile(checkpointer=AsyncSqliteSaver(db_path))
+│
+└─ Priority 3: GraphSpec 默认图
+    └─ build_agent_graph(config, agent_node, gemini, checkpointer, spec)
+        # 固定拓扑：git_snapshot → claude_agent → validate
+        #            validate →[on_error]→ git_rollback → claude_agent
+        #            validate →[routing]→ gemini_advisor → claude_agent
+        #            validate →[no_routing]→ __end__
 ```
 
-### 2. 配置环境变量
+### 图编译验证规则
 
-```bash
-cp .env.example .env
-# 编辑 .env，至少填写：
-#   DISCORD_BOT_TOKEN  （Discord Bot 模式必填）
-#   DISCORD_ALLOWED_USERS  （授权用户 ID，用 !whoami 获取）
+1. 所有节点 ID 全局唯一（含子图内部节点）
+2. 所有边引用的节点 ID 存在
+3. 所有节点从 `__start__` BFS 可达
+4. 若提供 system_prompt，图中恰好有 1 个 ID 含 `"main"` 的节点
+
+---
+
+## 主图拓扑（Hani）
+
+```
+__start__
+    │
+    ▼
+claude_main ◄──────────────────────────────────────────────┐
+    │                                                       │
+    ▼                                                       │
+git_snapshot                                                │
+    │                                                       │
+    ▼                                                       │
+validate ──[routing_to:gemini_advisor]──────▶ gemini_advisor ┘
+         │                                                  │
+         ├──[routing_to:debate_brainstorm]──▶ debate_brainstorm ┘
+         │                                                  │
+         ├──[routing_to:debate_design]──────▶ debate_design ─┘
+         │
+         ├──[on_error]───────────────────────▶ git_rollback ─┘
+         │
+         └──[no_routing]─────────────────────▶ __end__
 ```
 
-### 3. 启动
+Agent 通过输出路由信号触发跳转：
+
+```json
+{"route": "debate_brainstorm", "context": "微服务 vs 单体架构选型"}
+```
+
+---
+
+## 辩论子图拓扑
+
+### debate_gemini_first（Gemini 先手，适合头脑风暴）
+
+```
+__start__ → gemini_propose → claude_critique_1 → gemini_revise → claude_critique_2 → gemini_conclusion → __end__
+```
+
+### debate_claude_first（Claude 先手，适合工程/设计决策）
+
+```
+__start__ → claude_propose → gemini_critique_1 → claude_revise → gemini_critique_2 → claude_conclusion → __end__
+```
+
+- 线性图，无条件边，5 轮辩论
+- 每轮节点通过消息历史（`add_messages` 累积）读取所有前轮内容
+- 实时流式输出，每轮标注说话节点身份
+- 结论自动映射回父图 `debate_conclusion` 字段
+
+---
+
+## Session 架构
+
+### sessions.json 结构
+
+```json
+{
+  "default": {
+    "thread_id": "hani_session_abc123",
+    "node_sessions": {
+      "claude_main":    "claude-uuid-...",
+      "gemini_advisor": "gemini-uuid-..."
+    },
+    "workspace": "/home/kingy/Projects/MyProject"
+  }
+}
+```
+
+### 生命周期
+
+1. `GraphController._init_session()` — 加载 sessions.json 或创建 "default"
+2. `graph.ainvoke(config={"configurable": {"thread_id": ...}})` — LangGraph 从 SQLite checkpoint 恢复 BaseAgentState
+3. 每个 `AgentNode` 从 `state["node_sessions"][node_id]` 读取上次 Session UUID → resume
+4. 图完成后 — GraphController 将新 `node_sessions` 写回 sessions.json
+
+### Claude 新 Session 两阶段初始化（WSL2 Unicode 修复）
+
+WSL2 上 Claude CLI 在创建新 Session 时，中文在 Anthropic API 请求 JSON 第 714 字节处被截断，导致 `400 invalid high surrogate` 错误。Resume 已有 Session 时不触发（CLI 跳过 system prompt 处理）。
+
+**修复方案（ClaudeNode 内部自动执行）**：
+
+1. Phase 1：发送 ASCII-only 消息 `"hi"` 创建 Session → 获得 `new_session_id`
+2. Phase 2：立即 `resume` 该 Session，注入完整 persona + 实际 prompt
+
+---
+
+## AgentNode 基类
+
+子类只需实现 `call_llm()`，框架自动处理：
+
+- node_sessions UUID 路由（读取/写入 per-node session）
+- Rollback warning 注入（失败历史）
+- Gemini section 注入（跨 LLM 上下文传递）
+- project_meta 注入（plan/tasks 文件内容）
+- tool_rules 关键词驱动的工具选择
+- 路由信号解析（`{"route": "..."}` → routing_target / routing_context）
+- 资源锁（GPU 互斥，可选）
+
+```python
+class MyNode(AgentNode):
+    async def call_llm(
+        self,
+        prompt: str,
+        session_id: str = "",
+        tools: list[str] | None = None,
+        cwd: str | None = None,
+    ) -> tuple[str, str]:   # (response_text, new_session_id)
+        ...
+```
+
+---
+
+## 运行方式
 
 ```bash
-# Hani — 本地 CLI（Claude）
+# CLI 交互模式
 python main.py cli
 
-# Hani — Discord Bot
+# CLI debug 模式（详细日志）
+python main.py --debug cli
+
+# Discord Bot
 python main.py discord
 
-# Asa — 本地 CLI（Llama，需要先启动 Ollama）
-python main.py --agent asa cli
+# tmux 分屏模式
+python main.py tmux
 
-# 调试模式
-DEBUG=1 python main.py cli
-```
-
----
-
-## 接口命令
-
-### CLI 和 Discord 通用命令
-
-| 命令 | 说明 |
-|------|------|
-| `!new <名称>` | 创建并切换到新命名 Session |
-| `!switch <名称>` | 切换到已有 Session |
-| `!session` | 显示当前 Session 名称和 thread_id |
-| `!sessions` | 列出所有 Session（当前用 ◀ 标注） |
-| `!memory` | 查看 Session 消息数和 DB 大小 |
-| `!compact [N]` | 压缩 Session，保留最近 N 条（默认 20） |
-| `!reset confirm` | 清空当前 Session 全部记忆 |
-| `!clear` | 清空 Session（无需确认） |
-| `!tokens` | 查看 Claude API token 消耗统计 |
-| `!tokens reset` | 重置 token 计数 |
-| `!setproject <路径>` | 设置工作目录（启用 Git 时间机器） |
-| `!project` | 查看当前工作目录 |
-| `!whoami` | 显示 Discord 用户 ID |
-| `!debug` | 查看 debug 模式状态 |
-| `!help` | 显示命令手册 |
-
-### Agent 触发信号（消息内容）
-
-| 内容 | 效果 |
-|------|------|
-| 消息含 `@Gemini` | 强制触发 Gemini 架构咨询 |
-| Agent 输出含 `[SEND_FILE: /path]` | Discord Bot 自动发送该文件为附件 |
-
----
-
-## 添加新 Agent
-
-只需三步：
-
-```bash
-# 1. 创建目录
-mkdir agents/myagent
-
-# 2. 编写配置
-cat > agents/myagent/agent.json << 'EOF'
-{
-  "name": "myagent",
-  "llm": "claude",
-  "workspace": "/path/to/workspace",
-  "tools": ["Read", "Write", "Edit", "Bash", "Glob", "Grep"],
-  "permission_mode": "bypassPermissions",
-  "persona_files": ["SOUL.md"],
-  "setting_sources": ["user", "project"]
-}
-EOF
-
-# 3. 编写人设
-echo "你是一个专注于..." > agents/myagent/SOUL.md
-
-# 启动
-python main.py --agent myagent cli
-```
-
----
-
-## Skill 继承机制
-
-`ClaudeNode` 支持继承 Claude Code CLI 已安装的 Skill（`setting_sources` 字段）：
-
-- **Skill 存储位置**：`~/.claude/plugins/cache/`（本地 cache，无网络依赖）
-- **首次调用**：Skill 文本注入 system prompt → Claude API 建立 Prompt Cache
-- **后续调用**：命中 cache，费用约为原来的 10%
-- **项目级 Skill**：在工作目录下创建 `.claude/` 目录，`"project"` 来源会自动加载
-
----
-
-## 环境变量
-
-所有字段均可通过环境变量覆盖 `agent.json`，前缀为 Agent 名称大写：
-
-```bash
-HANI_WORKSPACE=/path/to/project
-HANI_CLAUDE_MODEL=claude-sonnet-4-6
-HANI_SETTING_SOURCES=user,project   # 逗号分隔
-HANI_MAX_RETRIES=3
+# E2E 测试（11 个测试）
+python3 test_e2e_debate.py
 ```

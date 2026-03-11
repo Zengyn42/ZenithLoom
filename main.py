@@ -2,7 +2,7 @@
 无垠智穹 — 统一入口
 
 用法：
-  python main.py [--agent <name>] <mode>
+  python main.py [--agent <name>] [--debug] <mode>
 
   mode:
     cli      本地 CLI（VSCode 终端 / 普通 shell）
@@ -13,8 +13,12 @@
     hani     （默认）使用 Claude 的 Hani
     asa      使用 Llama 的 Asa
 
+  --debug:
+    启用详细调试日志
+
 示例：
   python main.py cli
+  python main.py --debug cli
   python main.py --agent asa cli
   python main.py --agent hani discord
 
@@ -30,29 +34,37 @@ load_dotenv()
 
 
 def _parse_args():
-    """解析 --agent <name> 和 mode 参数。"""
+    """解析 --agent <name>、--debug 和 mode 参数。"""
     args = sys.argv[1:]
     agent_name = None
     mode = None
+    debug = False
 
     i = 0
     while i < len(args):
         if args[i] == "--agent" and i + 1 < len(args):
             agent_name = args[i + 1]
             i += 2
+        elif args[i] == "--debug":
+            debug = True
+            i += 1
         elif not args[i].startswith("--"):
             mode = args[i].lower()
             i += 1
         else:
             i += 1
 
-    return agent_name, mode
+    return agent_name, mode, debug
 
 
 def main():
     import os
 
-    agent_name, mode = _parse_args()
+    agent_name, mode, debug = _parse_args()
+
+    if debug:
+        from framework.debug import set_debug
+        set_debug(True)
 
     # 优先 --agent，其次 AGENT 环境变量，默认 hani
     agent_name = agent_name or os.getenv("AGENT", "hani")

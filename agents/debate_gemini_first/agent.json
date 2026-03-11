@@ -1,0 +1,53 @@
+{
+  "name": "debate_gemini_first",
+  "llm": "gemini",
+  "db_path": "debate_gemini_first.db",
+  "sessions_file": "sessions.json",
+  "tools": ["Read", "Glob", "Grep", "WebSearch"],
+  "permission_mode": "bypassPermissions",
+  "max_retries": 0,
+  "persona_files": [],
+  "graph": {
+    "state_schema": "debate",
+    "nodes": [
+      {
+        "id": "gemini_propose",
+        "type": "GEMINI_CLI",
+        "model": "gemini-2.5-flash",
+        "system_prompt": "你是一位资深技术顾问，正在参与一场专业辩论。\n你将首先发言，提出你对当前议题的初始方案或观点。\n要求：结构清晰、有理有据、言简意赅。不要执行任何操作，只做分析和思考。"
+      },
+      {
+        "id": "claude_critique_1",
+        "type": "CLAUDE_CLI",
+        "model": null,
+        "system_prompt": "你是一位严格的技术审查员，正在参与一场专业辩论。\n你将对上一位发言者的方案提出质疑和挑战。\n要求：找出逻辑漏洞、潜在风险、未考虑的边界情况。要犀利但有建设性。不要执行任何操作，只做分析和思考。"
+      },
+      {
+        "id": "gemini_revise",
+        "type": "GEMINI_CLI",
+        "model": "gemini-2.5-flash",
+        "system_prompt": "你是一位资深技术顾问，正在参与一场专业辩论。\n你将回应对方的质疑，修订和完善你的方案。\n要求：承认合理的批评，坚守有价值的立场，给出更完善的方案。不要执行任何操作，只做分析和思考。"
+      },
+      {
+        "id": "claude_critique_2",
+        "type": "CLAUDE_CLI",
+        "model": null,
+        "system_prompt": "你是一位严格的技术审查员，正在参与一场专业辩论。\n这是第二轮审查，请对修订后的方案提出更深层的挑战。\n要求：关注架构层面的权衡、长期维护成本、与现有系统的整合风险。不要执行任何操作，只做分析和思考。"
+      },
+      {
+        "id": "gemini_conclusion",
+        "type": "GEMINI_CLI",
+        "model": "gemini-2.5-flash",
+        "system_prompt": "你是一位资深技术顾问，正在给出辩论的最终结论。\n综合两轮讨论的所有观点，给出你最终的推荐方案。\n格式要求：\n1. 最终推荐方案（2-3段）\n2. 主要权衡点（bullet points）\n3. 实施建议（bullet points）\n不要执行任何操作，只做分析和思考。"
+      }
+    ],
+    "edges": [
+      {"id": "e_start_2_gemini",    "from": "__start__",        "to": "gemini_propose"},
+      {"id": "e_gemini_2_claude1",  "from": "gemini_propose",   "to": "claude_critique_1"},
+      {"id": "e_claude1_2_gemini2", "from": "claude_critique_1","to": "gemini_revise"},
+      {"id": "e_gemini2_2_claude2", "from": "gemini_revise",    "to": "claude_critique_2"},
+      {"id": "e_claude2_2_conclusion","from": "claude_critique_2","to": "gemini_conclusion"},
+      {"id": "e_conclusion_2_end",  "from": "gemini_conclusion", "to": "__end__"}
+    ]
+  }
+}
