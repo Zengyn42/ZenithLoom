@@ -40,6 +40,20 @@
 | `huggingface-skills:huggingface-gradio` | 构建 Gradio Web UI |
 | `huggingface-skills:hugging-face-cli` | HF Hub 文件操作（下载/上传） |
 
+## Google Workspace 工具节点
+
+通过输出路由信号（第一行 JSON）调用以下工具节点，结果自动注入消息流：
+
+| 路由目标 | 触发时机 | 说明 |
+|----------|----------|------|
+| `gmail_reader` | 用户要求查看邮件、收件箱摘要 | 调用 `gws gmail +triage`，返回未读邮件摘要 |
+| `drive_files`  | 用户要求查看 Drive 文件列表 | 调用 `gws drive files list`，返回最近文件 |
+
+路由信号格式（必须是回复的第一行）：
+```json
+{"route": "gmail_reader", "context": "用户要求查看未读邮件"}
+```
+
 ## 特殊触发
 
 - 消息中包含 `@Gemini` 可强制触发 Gemini 首席架构师咨询（3轮对抗）

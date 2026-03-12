@@ -27,7 +27,14 @@
       {"id": "debate_design",     "type": "AGENT_REF",
        "agent_dir": "agents/debate_claude_first",
        "state_in":  {"task": "routing_context", "knowledge_vault": "knowledge_vault", "project_docs": "project_docs"},
-       "state_out": {"debate_conclusion": "last_message"}}
+       "state_out": {"debate_conclusion": "last_message"}},
+      {"id": "gmail_reader", "type": "EXTERNAL_TOOL",
+       "node_config": {
+         "command": ["bash", "-c", "gws gmail users messages list --params '{\"userId\":\"me\",\"maxResults\":10,\"labelIds\":\"INBOX\"}' --format json 2>/dev/null | python3 -c \"\nimport json,sys,subprocess\ndata=json.load(sys.stdin)\nmsgs=data.get('messages',[])[:10]\nresult=[]\nfor m in msgs:\n  r=subprocess.run(['gws','gmail','users','messages','get','--params',json.dumps({'userId':'me','id':m['id'],'format':'metadata'}),'--format','json'],capture_output=True,text=True)\n  if r.returncode==0:\n    out='\\n'.join(l for l in r.stdout.splitlines() if 'keyring' not in l.lower())\n    msg=json.loads(out)\n    headers={h['name']:h['value'] for h in msg.get('payload',{}).get('headers',[])}\n    result.append({'id':m['id'],'from':headers.get('From',''),'subject':headers.get('Subject',''),'date':headers.get('Date',''),'snippet':msg.get('snippet','')[:150],'labels':msg.get('labelIds',[])})\nprint(json.dumps(result,ensure_ascii=False,indent=2))\n\""],
+         "description": "读取收件箱最近10封邮件（发件人、主题、时间、摘要）", "timeout": 60
+       }},
+      {"id": "drive_files",  "type": "EXTERNAL_TOOL",
+       "node_config": {"command": ["gws", "drive", "files", "list"], "description": "列出 Google Drive 最近文件", "timeout": 30}}
     ],
     "edges": [
       {"id": "e_start_2_claude",         "from": "__start__",        "to": "claude_main"},
@@ -35,11 +42,15 @@
       {"id": "e_snapshot_2_validate",    "from": "git_snapshot",     "to": "validate"},
       {"id": "e_validate_2_brainstorm",  "type": "routing_to",       "from": "validate", "to": "debate_brainstorm", "max_retry": 1},
       {"id": "e_validate_2_design",      "type": "routing_to",       "from": "validate", "to": "debate_design",     "max_retry": 1},
+      {"id": "e_validate_2_gmail",       "type": "routing_to",       "from": "validate", "to": "gmail_reader"},
+      {"id": "e_validate_2_drive",       "type": "routing_to",       "from": "validate", "to": "drive_files"},
       {"id": "e_validate_2_end",         "type": "no_routing",       "from": "validate", "to": "__end__"},
       {"id": "e_validate_2_rollback",    "type": "on_error",         "from": "validate", "to": "git_rollback"},
       {"id": "e_brainstorm_2_claude",    "from": "debate_brainstorm","to": "claude_main"},
       {"id": "e_design_2_claude",        "from": "debate_design",    "to": "claude_main"},
-      {"id": "e_rollback_2_claude",      "from": "git_rollback",     "to": "claude_main"}
+      {"id": "e_rollback_2_claude",      "from": "git_rollback",     "to": "claude_main"},
+      {"id": "e_gmail_2_claude",         "from": "gmail_reader",     "to": "claude_main"},
+      {"id": "e_drive_2_claude",         "from": "drive_files",      "to": "claude_main"}
     ]
   },
   "max_retries": 2,
