@@ -184,7 +184,6 @@ class AgentNode:
                 "routing_target": routing_target,
                 "routing_context": routing_context,
                 "node_sessions": ns,
-                "consult_count": state.get("consult_count", 0) + 1,
             }
         else:
             result = {
