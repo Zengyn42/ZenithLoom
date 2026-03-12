@@ -201,7 +201,7 @@ def _maybe_limit(fn, max_retry):
     if max_retry is None:
         return fn
     def _limited(state):
-        return fn(state) and state.get("consult_count", 0) < max_retry
+        return fn(state) and state.get("consult_count", 0) <= max_retry
     return _limited
 
 
