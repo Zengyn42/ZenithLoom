@@ -51,16 +51,17 @@ class JsonLineParser:
     """
 
     def parse(self, text: str) -> dict | None:
-        first = text.lstrip().split("\n")[0].strip()
-        if not first.startswith("{"):
-            return None
-        try:
-            result = json.loads(first)
-            if isinstance(result, dict):
-                logger.debug(f"[signal_parser.json_line] signal={result.get('action')!r}")
-                return result
-        except json.JSONDecodeError:
-            pass
+        for line in text.splitlines():
+            line = line.strip()
+            if not line.startswith("{"):
+                continue
+            try:
+                result = json.loads(line)
+                if isinstance(result, dict) and "route" in result:
+                    logger.debug(f"[signal_parser.json_line] signal={result.get('route')!r}")
+                    return result
+            except json.JSONDecodeError:
+                pass
         return None
 
 
