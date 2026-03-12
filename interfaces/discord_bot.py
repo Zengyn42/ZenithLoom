@@ -325,6 +325,13 @@ bot = commands.Bot(command_prefix="!", intents=intents, help_command=None)
 
 @bot.event
 async def on_ready():
+    global _controller, _session_mgr
+    # 在 discord.py 的事件循环内初始化 controller（aiosqlite 连接绑定到正确的 loop）
+    if _loader and _controller is None:
+        _controller = await _loader.get_controller()
+        _session_mgr = getattr(_controller, "session_mgr", _session_mgr)
+        logger.info(f"[Discord] controller 已初始化（graph 已编译）")
+
     agent_name = _loader.name if _loader else "Agent"
     logger.info(f"[Discord] {agent_name} 已上线: {bot.user}")
     allowed = _get_allowed_users()
@@ -615,14 +622,10 @@ class _DiscordInterface(BaseInterface):
 # 入口
 # ==========================================
 def run_discord(loader=None):
-    global _loader, _controller, _session_mgr
+    global _loader, _session_mgr
     _loader = loader
     _session_mgr = loader.session_mgr if loader else None
-
-    # 初始化 GraphController（同步包装）
-    if loader:
-        import asyncio
-        _controller = asyncio.get_event_loop().run_until_complete(loader.get_controller())
+    # _controller 延迟到 on_ready() 内初始化，确保 aiosqlite 绑定到 discord.py 的事件循环
 
     token = loader.load_config().discord_token if loader else ""
     if not token:
