@@ -187,26 +187,9 @@ async def _invoke_agent_streaming(user_input: str, message) -> None:
         if _current_project_root:
             init_state["project_root"] = _current_project_root
 
-        # ── Typing 指示器：立即发送一次，背景每 8s 续命 ────────────────────
-        # DMChannel 不支持 trigger_typing，跳过
-        async def _do_typing():
-            if hasattr(message.channel, "trigger_typing"):
-                try:
-                    await message.channel.trigger_typing()
-                except Exception:
-                    pass
-
-        await _do_typing()
-
-        async def _typing_loop():
-            try:
-                while True:
-                    await asyncio.sleep(8)
-                    await _do_typing()
-            except asyncio.CancelledError:
-                pass
-
-        typing_task = asyncio.create_task(_typing_loop())
+        # ── Typing 指示器：context manager 自动续命，兼容 DM/群组频道 ────────
+        typing_ctx = message.channel.typing()
+        await typing_ctx.__aenter__()
 
         # ── 事件队列：区分思考 / 文字 token ────────────────────────────────
         event_queue: asyncio.Queue = asyncio.Queue()
@@ -298,7 +281,7 @@ async def _invoke_agent_streaming(user_input: str, message) -> None:
             set_stream_callback(None)
             event_queue.put_nowait((None, None))
             await editor_task
-            typing_task.cancel()
+            await typing_ctx.__aexit__(None, None, None)
 
         final_text = BaseInterface._extract_response(result_state)
 
