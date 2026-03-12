@@ -350,11 +350,15 @@ async def _build_declarative(
         fns: dict[str, object] = {ckey: fn for ckey, fn, _ in cond_list}
 
         def _make_router(fn_map, rmap):
+            # Prefer no_routing key as fallback (maps to __end__); else first key
+            _no_routing_key = next(
+                (k for k, v in rmap.items() if k == "no_routing"), next(iter(rmap))
+            )
             def _router(state):
                 for ckey, fn in fn_map.items():
                     if fn(state):
                         return ckey
-                return next(iter(rmap))
+                return _no_routing_key
             return _router
 
         builder.add_conditional_edges(

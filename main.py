@@ -8,6 +8,7 @@
     cli      本地 CLI（VSCode 终端 / 普通 shell）
     tmux     在 tmux session 'bootstrap_boss' 中运行
     discord  启动 Discord Bot（远程）
+    gchat    启动 GChat Bot（通过 gws events +subscribe 监听消息）
 
   --agent:
     hani     （默认）使用 Claude 的 Hani
@@ -96,9 +97,14 @@ def main():
         from interfaces.discord_bot import run_discord
         run_discord(loader)
 
+    elif mode == "gchat":
+        import asyncio
+        from interfaces.gchat_bot import run_gchat
+        asyncio.run(run_gchat(loader))
+
     else:
         print(f"未知模式: {mode}")
-        print("可用模式: cli | tmux | discord")
+        print("可用模式: cli | tmux | discord | gchat")
         sys.exit(1)
 
 

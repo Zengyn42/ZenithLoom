@@ -10,6 +10,9 @@
   !tokens         查看 token 消耗统计（!tokens reset 重置）
   !topology       显示当前 agent 的图拓扑结构
   !debug          查看 debug 模式状态
+  !snapshots      查看历史快照
+  !rollback N     回退到第 N 条快照
+  !stream         切换流式输出 ON/OFF
   q / quit / exit 退出
 
 用法：
@@ -19,7 +22,7 @@
 import asyncio
 import sys
 
-from langchain_core.messages import HumanMessage
+from framework.base_interface import BaseInterface
 
 try:
     import readline  # noqa: F401 — 启用方向键历史导航
@@ -38,7 +41,6 @@ def format_topology(agent_json: dict) -> str:
 
     lines = [f"=== {name} 拓扑图 ===", ""]
 
-    # 节点列表
     lines.append(f"节点 ({len(nodes)}):")
     for n in nodes:
         nid = n.get("id", "?")
@@ -52,7 +54,6 @@ def format_topology(agent_json: dict) -> str:
 
     lines.append("")
 
-    # 边列表
     lines.append(f"边 ({len(edges)}):")
     for e in edges:
         src = e.get("from", "?")
@@ -74,221 +75,153 @@ def run_cli(loader=None):
 
 
 async def _run_cli_async(loader):
-    controller = await loader.get_controller()
-    session_mgr = controller.session_mgr
-    engine = controller._graph
+    iface = _CliInterface(loader)
+    await iface.setup()
+    await iface.run()
 
-    if loader.json.get("heartbeat"):
-        from framework.heartbeat import heartbeat_loop, run_heartbeat_once
-        await run_heartbeat_once()
-        asyncio.create_task(heartbeat_loop())
 
-    thread_id = controller.active_thread_id
-    name = session_mgr.find_name_by_thread_id(thread_id) or "默认"
-    agent_name = loader.name
-    print(f"\n{agent_name} 已启动 (session: {name} | thread: {thread_id})")
-    print("   !new / !switch / !sessions / !session / !resources / !tokens / !topology / !debug / !clear")
-    print("   !snapshots — 查看历史快照  !rollback N — 回退到第 N 条快照")
-    print("   输入 'q' 或 Ctrl+C 退出\n")
+class _CliInterface(BaseInterface):
+    """CLI 专用接口，继承 BaseInterface 公共命令，保留流式输出和 CLI 专属命令。"""
 
-    loop = asyncio.get_event_loop()
+    def _on_stream_chunk(self, text: str) -> None:
+        print(text, end="", flush=True)
 
-    while True:
-        try:
-            user_input = await loop.run_in_executor(
-                None, lambda: input("> ").strip()
-            )
-        except (KeyboardInterrupt, EOFError):
-            print(f"\n\n{agent_name} 待命中，再见。")
-            break
+    async def run(self):
+        controller = self._controller
+        session_mgr = self._session_mgr
+        engine = controller._graph
+        loader = self._loader
 
-        if not user_input:
-            continue
-        if user_input.lower() in ("q", "quit", "exit"):
-            print(f"{agent_name} 待命中，再见。")
-            break
+        if loader.json.get("heartbeat"):
+            from framework.heartbeat import heartbeat_loop, run_heartbeat_once
+            await run_heartbeat_once()
+            asyncio.create_task(heartbeat_loop())
 
-        # --- 内联 session 命令 ---
-        if user_input.startswith("!"):
-            parts = user_input.split(maxsplit=1)
-            cmd = parts[0].lower()
-            arg = parts[1].strip() if len(parts) > 1 else ""
+        thread_id = controller.active_thread_id
+        name = session_mgr.find_name_by_thread_id(thread_id) or "默认"
+        agent_name = loader.name
+        print(f"\n{agent_name} 已启动 (session: {name} | thread: {thread_id})")
+        print("   !new / !switch / !sessions / !session / !resources / !tokens / !topology / !debug / !clear")
+        print("   !snapshots — 查看历史快照  !rollback N — 回退到第 N 条快照")
+        print("   输入 'q' 或 Ctrl+C 退出\n")
 
-            if cmd == "!new":
-                if not arg:
-                    print("用法：!new <session名称> [工作目录]")
-                    continue
-                # 分割 name 和可选 workspace（以空格分隔）
-                new_parts = arg.split(maxsplit=1)
-                new_name = new_parts[0]
-                new_workspace = new_parts[1].strip() if len(new_parts) > 1 else ""
-                try:
-                    await controller.new_session(new_name, workspace=new_workspace)
-                    engine = controller._graph  # 引用不变，thread_id 已更新
-                    ws_hint = f" workspace={new_workspace!r}" if new_workspace else ""
-                    print(f"✅ 新 session '{new_name}' 已创建并激活 (thread: {controller.active_thread_id}{ws_hint})")
-                except ValueError as e:
-                    print(f"❌ {e}")
-                except Exception as e:
-                    print(f"创建失败: {e}")
-                continue
+        loop = asyncio.get_event_loop()
 
-            elif cmd == "!switch":
-                if not arg:
-                    print("用法：!switch <session名称>")
-                    continue
-                try:
-                    await controller.switch_session(arg)
-                    print(f"✅ 已切换到 session '{arg}' (thread: {controller.active_thread_id})")
-                except ValueError as e:
-                    print(f"❌ {e}")
-                except Exception as e:
-                    print(f"切换失败: {e}")
-                continue
-
-            elif cmd == "!sessions":
-                all_sessions = session_mgr.list_all()
-                if not all_sessions:
-                    print("还没有任何命名 session。用 !new <名称> 创建第一个。")
-                    continue
-                cur_tid = controller.active_thread_id
-                for sname, env in all_sessions.items():
-                    marker = " ◀" if env.thread_id == cur_tid else ""
-                    print(f"  {sname} → {env.thread_id}{marker}")
-                continue
-
-            elif cmd == "!session":
-                cur_tid = controller.active_thread_id
-                cur_name = session_mgr.find_name_by_thread_id(cur_tid) or "（默认）"
-                print(f"当前 session: {cur_name} | thread_id: {cur_tid}")
-                continue
-
-            elif cmd == "!resources":
-                from framework.resource_lock import format_resource_status
-                print(format_resource_status())
-                continue
-
-            elif cmd == "!topology":
-                print(format_topology(loader.json))
-                continue
-
-            elif cmd == "!tokens":
-                from framework.token_tracker import get_token_stats, reset_token_stats
-                if arg == "reset":
-                    reset_token_stats()
-                    print("Token 计数已重置。")
-                else:
-                    s = get_token_stats()
-                    inp = s["input_tokens"]
-                    out = s["output_tokens"]
-                    cr = s["cache_read_input_tokens"]
-                    cc = s["cache_creation_input_tokens"]
-                    calls = s["calls"]
-                    cost_usd = (inp * 3 + out * 15 + cr * 0.3 + cc * 3.75) / 1_000_000
-                    saved_usd = cr * (3 - 0.3) / 1_000_000
-                    print(f"调用次数      : {calls}")
-                    print(f"Input tokens  : {inp:,}")
-                    print(f"Output tokens : {out:,}")
-                    print(f"Cache read    : {cr:,}  (省了 ${saved_usd:.4f})")
-                    print(f"Cache create  : {cc:,}")
-                    print(f"估算费用      : ~${cost_usd:.4f} USD")
-                continue
-
-            elif cmd == "!debug":
-                from framework.debug import is_debug
-                print(f"Debug mode: {'ON' if is_debug() else 'OFF'}")
-                continue
-
-            elif cmd == "!clear":
-                # 重置当前 session：生成新 thread_id，不碰 SQLite（避免与 LangGraph 连接冲突）
-                cur_tid = controller.active_thread_id
-                cur_name = session_mgr.find_name_by_thread_id(cur_tid) or "default"
-                old_env = session_mgr.get_envelope(cur_name)
-                workspace = old_env.workspace if old_env else ""
-                session_mgr.delete(cur_name)
-                new_env = session_mgr.create_session(cur_name, workspace=workspace)
-                controller._active_thread_id = new_env.thread_id
-                print(f"Session '{cur_name}' 已重置。(new thread: {new_env.thread_id[:8]})")
-                continue
-
-            elif cmd == "!snapshots":
-                history = controller.rollback_log.get_history(
-                    controller.active_thread_id, limit=10
+        while True:
+            try:
+                user_input = await loop.run_in_executor(
+                    None, lambda: input("> ").strip()
                 )
-                if not history:
-                    print("当前 session 还没有任何 git 快照记录。")
-                    print("（需要 project_root 指向一个 git repo，每轮对话会自动快照）")
+            except (KeyboardInterrupt, EOFError):
+                print(f"\n\n{agent_name} 待命中，再见。")
+                break
+
+            if not user_input:
+                continue
+            if user_input.lower() in ("q", "quit", "exit"):
+                print(f"{agent_name} 待命中，再见。")
+                break
+
+            if user_input.startswith("!"):
+                parts = user_input.split(maxsplit=1)
+                cmd = parts[0].lower()
+                arg = parts[1].strip() if len(parts) > 1 else ""
+
+                # CLI-specific commands
+                if cmd == "!topology":
+                    print(format_topology(loader.json))
+                    continue
+
+                if cmd == "!debug":
+                    from framework.debug import is_debug
+                    print(f"Debug mode: {'ON' if is_debug() else 'OFF'}")
+                    continue
+
+                if cmd == "!snapshots":
+                    await self._handle_snapshots(controller)
+                    continue
+
+                if cmd == "!rollback":
+                    await self._handle_rollback(controller, arg, loop)
+                    continue
+
+                # Common commands via BaseInterface
+                reply = await self.handle_command(cmd, arg)
+                if reply is not None:
+                    print(reply)
                 else:
-                    print(f"最近 {len(history)} 条快照（最新在前）：")
-                    for i, rec in enumerate(history, 1):
-                        ts = rec["created_at"][:19].replace("T", " ")
-                        root = rec["project_root"] or "(无 project_root)"
-                        print(f"  [{i}] {rec['commit_hash'][:8]}  {ts}  {root}")
-                    print("用法：!rollback <序号>  （1=最近一次）")
+                    print(
+                        f"未知命令：{cmd}  "
+                        "（试试 !new / !switch / !sessions / !session / !resources / "
+                        "!tokens / !topology / !clear / !snapshots / !rollback）"
+                    )
                 continue
 
-            elif cmd == "!rollback":
-                if not arg:
-                    print("用法：!rollback <序号>  （1=最近，2=倒数第二...用 !snapshots 查看列表）")
-                    continue
-                try:
-                    n = int(arg)
-                    if n < 1:
-                        raise ValueError
-                except ValueError:
-                    print(f"❌ 序号必须是正整数，例如：!rollback 3")
-                    continue
+            # --- 正常对话（流式 / 非流式）---
+            print(f"\n\x1b[90m[{agent_name}]\x1b[0m ", end="", flush=True)
+            try:
+                response = await self.invoke_agent(user_input)
+                if not self._streaming:
+                    print(response, end="", flush=True)
+            except Exception as e:
+                print(f"\n[错误] {e}", file=sys.stderr)
 
-                # 先展示目标快照
-                record = controller.rollback_log.get_nth_ago(controller.active_thread_id, n)
-                if not record:
-                    print(f"❌ 没有找到第 {n} 条快照（用 !snapshots 查看当前记录数）")
-                    continue
-                ts = record["created_at"][:19].replace("T", " ")
-                print(f"目标快照：{record['commit_hash'][:8]}  {ts}  {record['project_root'] or '(无 git repo)'}")
-                print("请输入本次回退原因（回车跳过，将写入 .DO_NOT_REPEAT.md）：", end="", flush=True)
-                try:
-                    reason = await loop.run_in_executor(None, lambda: input().strip())
-                except (KeyboardInterrupt, EOFError):
-                    print("\n已取消")
-                    continue
+            print("\n")
 
-                result = await controller.rollback_to_turn(n, reason=reason)
-                if result["ok"]:
-                    ns_keys = list(result.get("node_sessions", {}).keys())
-                    print(f"✅ {result['msg']}")
-                    print(f"   恢复的节点 UUID：{ns_keys}")
-                    if reason:
-                        print(f"   已写入 .DO_NOT_REPEAT.md")
-                else:
-                    print(f"❌ {result['msg']}")
-                continue
+            try:
+                await controller.log_snapshot()
+            except Exception:
+                pass
 
-            else:
-                print(f"未知命令：{cmd}  （试试 !new / !switch / !sessions / !session / !resources / !tokens / !topology / !clear / !snapshots / !rollback）")
-                continue
+    async def _handle_snapshots(self, controller):
+        history = controller.rollback_log.get_history(
+            controller.active_thread_id, limit=10
+        )
+        if not history:
+            print("当前 session 还没有任何 git 快照记录。")
+            print("（需要 project_root 指向一个 git repo，每轮对话会自动快照）")
+        else:
+            print(f"最近 {len(history)} 条快照（最新在前）：")
+            for i, rec in enumerate(history, 1):
+                ts = rec["created_at"][:19].replace("T", " ")
+                root = rec["project_root"] or "(无 project_root)"
+                print(f"  [{i}] {rec['commit_hash'][:8]}  {ts}  {root}")
+            print("用法：!rollback <序号>  （1=最近一次）")
 
-        # --- 正常对话（流式输出）---
-        print(f"\n[{agent_name} 思考中...]\n", end="", flush=True)
-
+    async def _handle_rollback(self, controller, arg: str, loop):
+        if not arg:
+            print("用法：!rollback <序号>  （1=最近，2=倒数第二...用 !snapshots 查看列表）")
+            return
         try:
-            async for chunk, metadata in engine.astream(
-                {"messages": [HumanMessage(content=user_input)]},
-                config=controller.get_config(),
-                stream_mode="messages",
-            ):
-                if hasattr(chunk, "content") and isinstance(chunk.content, str):
-                    print(chunk.content, end="", flush=True)
-        except Exception as e:
-            print(f"\n[错误] {e}", file=sys.stderr)
+            n = int(arg)
+            if n < 1:
+                raise ValueError
+        except ValueError:
+            print("❌ 序号必须是正整数，例如：!rollback 3")
+            return
 
-        print("\n")
-
-        # 每轮结束后记录 git 快照到 rollback_log（有 project_root + git repo 时有效）
+        record = controller.rollback_log.get_nth_ago(controller.active_thread_id, n)
+        if not record:
+            print(f"❌ 没有找到第 {n} 条快照（用 !snapshots 查看当前记录数）")
+            return
+        ts = record["created_at"][:19].replace("T", " ")
+        print(f"目标快照：{record['commit_hash'][:8]}  {ts}  {record['project_root'] or '(无 git repo)'}")
+        print("请输入本次回退原因（回车跳过，将写入 .DO_NOT_REPEAT.md）：", end="", flush=True)
         try:
-            await controller.log_snapshot()
-        except Exception:
-            pass
+            reason = await loop.run_in_executor(None, lambda: input().strip())
+        except (KeyboardInterrupt, EOFError):
+            print("\n已取消")
+            return
+
+        result = await controller.rollback_to_turn(n, reason=reason)
+        if result["ok"]:
+            ns_keys = list(result.get("node_sessions", {}).keys())
+            print(f"✅ {result['msg']}")
+            print(f"   恢复的节点 UUID：{ns_keys}")
+            if reason:
+                print("   已写入 .DO_NOT_REPEAT.md")
+        else:
+            print(f"❌ {result['msg']}")
 
 
 def run_tmux(loader=None):

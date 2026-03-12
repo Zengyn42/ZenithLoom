@@ -13,6 +13,7 @@ from discord.ext import commands
 from dotenv import load_dotenv
 from langchain_core.messages import HumanMessage
 
+from framework.base_interface import BaseInterface
 from framework.debug import is_debug
 from framework.token_tracker import get_token_stats, reset_token_stats
 
@@ -30,6 +31,9 @@ DISCORD_MAX_CHARS = 1900
 _loader = None
 _controller = None
 _session_mgr = None
+
+# 流式输出开关（!stream 切换）
+_discord_streaming: bool = True
 
 
 # ==========================================
@@ -50,47 +54,10 @@ def _is_authorized(user: discord.User | discord.Member) -> bool:
 
 
 # ==========================================
-# Fence-Aware Chunking
+# Fence-Aware Chunking — delegated to BaseInterface
 # ==========================================
 def split_fence_aware(text: str, max_chars: int = DISCORD_MAX_CHARS) -> list[str]:
-    if len(text) <= max_chars:
-        return [text]
-
-    chunks = []
-    remaining = text
-    in_fence = False
-    fence_lang = ""
-
-    while len(remaining) > max_chars:
-        candidate = remaining[:max_chars]
-        current_in_fence = in_fence
-        current_lang = fence_lang
-
-        for line in candidate.split("\n"):
-            stripped = line.strip()
-            if stripped.startswith("```"):
-                if current_in_fence:
-                    current_in_fence = False
-                    current_lang = ""
-                else:
-                    current_in_fence = True
-                    current_lang = stripped[3:].strip()
-
-        if current_in_fence:
-            chunk = candidate + "\n```"
-            remaining = f"```{current_lang}\n" + remaining[max_chars:]
-        else:
-            chunk = candidate
-            remaining = remaining[max_chars:]
-
-        in_fence = current_in_fence
-        fence_lang = current_lang
-        chunks.append(chunk)
-
-    if remaining:
-        chunks.append(remaining)
-
-    return chunks
+    return BaseInterface.split_fence_aware(text, max_chars)
 
 
 # ==========================================
@@ -100,22 +67,10 @@ _current_project_root: str = ""
 
 
 # ==========================================
-# 文件发送解析（图片 / 视频）
+# 文件发送解析（图片 / 视频）— delegated to BaseInterface
 # ==========================================
-import re as _re
-
-_SEND_FILE_RE = _re.compile(r"\[SEND_FILE:\s*([^\]]+)\]")
-
-
 def _extract_attachments(text: str) -> tuple[str, list[str]]:
-    """
-    从 agent 输出中提取所有 [SEND_FILE: /path/to/file] 标记。
-    返回 (清理后的文字, [文件路径列表])。
-    Agent 约定：在回复中写 [SEND_FILE: /绝对路径] 表示要发送该文件。
-    """
-    paths = [m.group(1).strip() for m in _SEND_FILE_RE.finditer(text)]
-    clean_text = _SEND_FILE_RE.sub("", text).strip()
-    return clean_text, paths
+    return BaseInterface.extract_attachments(text)
 
 
 # ==========================================
@@ -195,6 +150,93 @@ async def _invoke_agent_async(user_input: str, message=None) -> str:
     return result
 
 
+async def _invoke_agent_streaming(user_input: str, message) -> str:
+    """
+    流式模式：立即发送占位消息，逐 token 编辑（节流 1.2s），完成后替换为最终回复。
+    返回最终回复字符串（已由本函数全程处理 Discord 消息，调用方无需再发送）。
+    """
+    from framework.claude.node import set_stream_callback
+
+    engine = _controller._graph
+    config = _controller.get_config()
+
+    # 刷新历史文件
+    history_limit = (_loader.json.get("channel_history_limit", 0) if _loader else 0)
+    if history_limit and message is not None:
+        await _refresh_history_file(message.channel, history_limit, exclude_msg_id=message.id)
+
+    init_state: dict = {"messages": [HumanMessage(content=user_input)]}
+    if _current_project_root:
+        init_state["project_root"] = _current_project_root
+
+    # 立即发送占位消息
+    draft = await message.channel.send("▌")
+
+    buf: list[str] = []
+    chunk_queue: asyncio.Queue = asyncio.Queue()
+
+    async def _editor():
+        loop = asyncio.get_event_loop()
+        last_edit = loop.time()
+        THROTTLE = 1.2
+        while True:
+            # 排空队列
+            sentinel = False
+            while True:
+                try:
+                    chunk = chunk_queue.get_nowait()
+                except asyncio.QueueEmpty:
+                    break
+                if chunk is None:
+                    sentinel = True
+                    break
+                buf.append(chunk)
+
+            if buf:
+                now = loop.time()
+                if sentinel or now - last_edit >= THROTTLE:
+                    last_edit = now
+                    preview = "".join(buf)
+                    cursor = "" if sentinel else " ▌"
+                    display = (preview[-1890:] if len(preview) > 1890 else preview) + cursor
+                    try:
+                        await draft.edit(content=display)
+                    except Exception:
+                        pass
+
+            if sentinel:
+                break
+            await asyncio.sleep(0.1)
+
+    editor_task = asyncio.create_task(_editor())
+    set_stream_callback(lambda t: chunk_queue.put_nowait(t))
+    try:
+        result_state = await engine.ainvoke(init_state, config=config)
+    finally:
+        set_stream_callback(None)
+        chunk_queue.put_nowait(None)  # sentinel
+        await editor_task
+
+    # 从最终 state 提取最后一条 AI 消息
+    from framework.base_interface import BaseInterface
+    final_text = BaseInterface._extract_response(result_state)
+
+    if not final_text:
+        try:
+            await draft.delete()
+        except Exception:
+            pass
+        return ""
+
+    # 删除占位消息，分块发送最终回复
+    try:
+        await draft.delete()
+    except Exception:
+        pass
+
+    return final_text
+
+
 # ==========================================
 # Discord Bot
 # ==========================================
@@ -235,26 +277,32 @@ async def on_message(message: discord.Message):
     if not user_input:
         return
 
-    full_text = None
-    error_msg = None
-
-    async with message.channel.typing():
-        try:
-            full_text = await _invoke_agent_async(user_input, message=message)
-
-        except Exception as e:
-            logger.error(f"[agent] 调用出错: {e}", exc_info=is_debug())
-            error_msg = str(e)
-
     agent_name = _loader.name if _loader else "Agent"
-    if error_msg:
-        await message.channel.send(f"{agent_name} 出错了: {error_msg}")
-        return
+    full_text = None
+
+    if _discord_streaming:
+        # 流式模式：立即占位 → 逐 token 编辑 → 最终回复
+        try:
+            full_text = await _invoke_agent_streaming(user_input, message)
+        except Exception as e:
+            logger.error(f"[agent] 流式调用出错: {e}", exc_info=is_debug())
+            await message.channel.send(f"{agent_name} 出错了: {e}")
+            return
+    else:
+        # 非流式模式：typing 占位 → 收集完整回复 → 发送
+        async with message.channel.typing():
+            try:
+                full_text = await _invoke_agent_async(user_input, message=message)
+            except Exception as e:
+                logger.error(f"[agent] 调用出错: {e}", exc_info=is_debug())
+                await message.channel.send(f"{agent_name} 出错了: {e}")
+                return
+
     if not full_text:
         await message.channel.send(f"（{agent_name} 没有输出，请重试）")
         return
 
-    # 提取文件附件标记，剩余部分正常发送
+    # 提取文件附件标记，分块发送
     clean_text, file_paths = _extract_attachments(full_text)
 
     if clean_text:
@@ -306,6 +354,7 @@ async def show_help(ctx):
         "!tokens reset      重置 token 计数\n"
         "!setproject <路径>  设置工作目录\n"
         "!project           查看当前项目目录\n"
+        "!stream            切换流式输出 ON/OFF\n"
         "!debug             查看 debug 模式状态\n"
         "!whoami            显示你的 Discord ID\n"
         "!help              显示此帮助信息\n"
@@ -318,57 +367,36 @@ async def show_help(ctx):
 async def new_session_cmd(ctx, *, name: str = ""):
     if not await _check_auth(ctx):
         return
-    if not name:
-        await ctx.send("用法：`!new <session名称>`")
-        return
-    try:
-        await _controller.new_session(name)
-        await ctx.send(f"✅ 新 session `{name}` 已创建并激活\nthread_id: `{_controller.active_thread_id}`")
-    except ValueError as e:
-        await ctx.send(f"❌ {e}")
-    except Exception as e:
-        await ctx.send(f"创建失败: {e}")
+    iface = _DiscordInterface(_loader)
+    reply = await iface.handle_command("!new", name)
+    await ctx.send(reply or "❌ 创建失败")
 
 
 @bot.command(name="switch")
 async def switch_session_cmd(ctx, *, name: str = ""):
     if not await _check_auth(ctx):
         return
-    if not name:
-        await ctx.send("用法：`!switch <session名称>`")
-        return
-    try:
-        await _controller.switch_session(name)
-        await ctx.send(f"✅ 已切换到 session `{name}`\nthread_id: `{_controller.active_thread_id}`")
-    except ValueError as e:
-        await ctx.send(f"❌ {e}")
-    except Exception as e:
-        await ctx.send(f"切换失败: {e}")
+    iface = _DiscordInterface(_loader)
+    reply = await iface.handle_command("!switch", name)
+    await ctx.send(reply or "❌ 切换失败")
 
 
 @bot.command(name="session")
 async def show_session(ctx):
     if not await _check_auth(ctx):
         return
-    thread_id = _controller.active_thread_id
-    name = _session_mgr.find_name_by_thread_id(thread_id) or "（默认）"
-    await ctx.send(f"当前 session: `{name}`\nthread_id: `{thread_id}`")
+    iface = _DiscordInterface(_loader)
+    reply = await iface.handle_command("!session", "")
+    await ctx.send(reply)
 
 
 @bot.command(name="sessions")
 async def list_sessions_cmd(ctx):
     if not await _check_auth(ctx):
         return
-    all_sessions = _session_mgr.list_all()
-    if not all_sessions:
-        await ctx.send("还没有任何命名 session。用 `!new <名称>` 创建第一个。")
-        return
-    current_tid = _controller.active_thread_id
-    lines = []
-    for sname, env in all_sessions.items():
-        marker = " ◀" if env.thread_id == current_tid else ""
-        lines.append(f"- `{sname}` → `{env.thread_id}`{marker}")
-    await ctx.send("**命名 Sessions：**\n" + "\n".join(lines))
+    iface = _DiscordInterface(_loader)
+    reply = await iface.handle_command("!sessions", "")
+    await ctx.send(reply)
 
 
 @bot.command(name="debug")
@@ -377,6 +405,16 @@ async def toggle_debug(ctx):
         return
     status = "ON" if is_debug() else "OFF（设置 DEBUG=1 启动以开启）"
     await ctx.send(f"Debug mode: {status}")
+
+
+@bot.command(name="stream")
+async def toggle_stream(ctx):
+    if not await _check_auth(ctx):
+        return
+    global _discord_streaming
+    _discord_streaming = not _discord_streaming
+    state = "ON" if _discord_streaming else "OFF"
+    await ctx.send(f"Streaming: {state}")
 
 
 @bot.command(name="whoami")
@@ -431,49 +469,27 @@ async def reset_session(ctx, confirm: str = ""):
 async def show_tokens(ctx, reset: str = ""):
     if not await _check_auth(ctx):
         return
-    if reset == "reset":
-        reset_token_stats()
-        await ctx.send("Token 计数已重置。")
-        return
-    s = get_token_stats()
-    inp = s["input_tokens"]
-    out = s["output_tokens"]
-    cr = s["cache_read_input_tokens"]
-    cc = s["cache_creation_input_tokens"]
-    calls = s["calls"]
-    cost_usd = (inp * 3 + out * 15 + cr * 0.3 + cc * 3.75) / 1_000_000
-    saved_usd = cr * (3 - 0.3) / 1_000_000
-    await ctx.send(
-        f"**Token 统计（本次启动后）**\n"
-        f"```\n"
-        f"调用次数      : {calls}\n"
-        f"Input tokens  : {inp:,}\n"
-        f"Output tokens : {out:,}\n"
-        f"Cache read    : {cr:,}  (省了 ${saved_usd:.4f})\n"
-        f"Cache create  : {cc:,}\n"
-        f"估算费用      : ~${cost_usd:.4f} USD\n"
-        f"```"
-    )
+    iface = _DiscordInterface(_loader)
+    reply = await iface.handle_command("!tokens", reset)
+    await ctx.send(f"**Token 统计（本次启动后）**\n```\n{reply}\n```")
 
 
 @bot.command(name="clear")
 async def clear_session(ctx):
     if not await _check_auth(ctx):
         return
-    agent_name = _loader.name if _loader else "Agent"
-    thread_id = _controller.active_thread_id
-    deleted = _session_mgr.reset(thread_id)
-    _loader.invalidate_engine()
-    await ctx.send(f"Session 已清空（{deleted} 条）。{agent_name} 从零开始。")
+    iface = _DiscordInterface(_loader)
+    reply = await iface.handle_command("!clear", "")
+    await ctx.send(reply)
 
 
 @bot.command(name="resources")
 async def show_resources(ctx):
     if not await _check_auth(ctx):
         return
-    from framework.resource_lock import format_resource_status
-    status = format_resource_status()
-    await ctx.send(f"**资源锁状态**\n```\n{status}\n```")
+    iface = _DiscordInterface(_loader)
+    reply = await iface.handle_command("!resources", "")
+    await ctx.send(f"**资源锁状态**\n```\n{reply}\n```")
 
 
 @bot.command(name="setproject")
@@ -499,6 +515,23 @@ async def show_project(ctx):
         return
     current = _current_project_root or "（未设置，全局模式）"
     await ctx.send(f"当前项目目录：`{current}`")
+
+
+# ==========================================
+# DiscordInterface — wraps BaseInterface for command delegation
+# ==========================================
+class _DiscordInterface(BaseInterface):
+    """
+    Thin wrapper so discord command handlers can delegate to BaseInterface.handle_command()
+    without managing controller lifecycle themselves.  The module-level _controller /
+    _session_mgr are already initialised by run_discord(); we just reference them.
+    """
+
+    def __init__(self, loader) -> None:
+        super().__init__(loader)
+        # Reuse the already-initialised globals
+        self._controller = _controller
+        self._session_mgr = _session_mgr
 
 
 # ==========================================

@@ -39,6 +39,9 @@ class AgentConfig:
     settings_override: dict | None = None     # 传给 --settings 的 JSON 对象
     discord_token: str = ""               # DISCORD_BOT_TOKEN env var 优先
     discord_allowed_users: list[str] = field(default_factory=list)
+    gchat_space: str = ""                 # GChat space name, e.g. "spaces/AAAA..."
+    gchat_gcp_project: str = ""           # GCP project for Workspace Events API
+    gchat_event_types: str = "google.workspace.chat.message.v1.created"
 
     @classmethod
     def from_json(cls, path, env_prefix: str | None = None) -> "AgentConfig":
@@ -93,4 +96,10 @@ class AgentConfig:
             settings_override=settings_override,
             discord_token=discord_token,
             discord_allowed_users=discord_allowed_users,
+            gchat_space=_get_str("gchat_space", ""),
+            gchat_gcp_project=_get_str("gchat_gcp_project", ""),
+            gchat_event_types=_get_str(
+                "gchat_event_types",
+                "google.workspace.chat.message.v1.created",
+            ),
         )

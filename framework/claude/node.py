@@ -17,6 +17,7 @@ sdk_query() 通过 wait_for_result_and_end_input() 关闭 stdin，
 ClaudeNode 只负责 Claude SDK 调用。
 """
 
+import contextvars
 import json
 import logging
 
@@ -27,7 +28,18 @@ from claude_agent_sdk import (
     list_sessions as sdk_list_sessions,
     query as sdk_query,
 )
+from claude_agent_sdk.types import StreamEvent
 from claude_agent_sdk._errors import ProcessError
+
+# ── Streaming callback ────────────────────────────────────────────────────────
+# ContextVar: set before invoking the graph, inherited by all awaited coroutines.
+# Callback signature: (text: str) -> None
+_stream_cb: contextvars.ContextVar = contextvars.ContextVar("claude_stream_cb", default=None)
+
+
+def set_stream_callback(fn) -> None:
+    """Set (or clear) the streaming callback for the current async context."""
+    _stream_cb.set(fn)
 
 from framework.config import AgentConfig
 from framework.debug import is_debug
@@ -88,6 +100,15 @@ class ClaudeNode(AgentNode):
         )
         settings_val = json.dumps(settings_override) if settings_override else None
 
+        # Optional extended thinking: node_config["thinking"] = "adaptive" | "disabled" | {"type":..., "budget_tokens":...}
+        _thinking_raw = self.node_config.get("thinking")
+        _thinking_cfg = None
+        if _thinking_raw:
+            if isinstance(_thinking_raw, str):
+                _thinking_cfg = {"type": _thinking_raw}
+            elif isinstance(_thinking_raw, dict):
+                _thinking_cfg = _thinking_raw
+
         def _make_options(sid: str) -> ClaudeAgentOptions:
             sp = self.node_config.get("system_prompt") or self.system_prompt or None
             node_tools = self.node_config.get("tools")
@@ -102,6 +123,8 @@ class ClaudeNode(AgentNode):
                 stderr=_on_stderr,
                 setting_sources=setting_sources,
                 settings=settings_val,
+                include_partial_messages=True,
+                thinking=_thinking_cfg,
             )
 
         async def _run_once(sid: str, msg_text: str) -> tuple[str, str, bool]:
@@ -118,14 +141,52 @@ class ClaudeNode(AgentNode):
             _result = ""
             _new_sid = sid
             _is_error = False
+            _in_thinking = False  # track current block type for ANSI styling
+            _text_chunks: list[str] = []  # fallback when ResultMessage.result is empty
+
             async for msg in sdk_query(prompt=msg_text, options=_make_options(sid)):
-                if isinstance(msg, ResultMessage):
+                if isinstance(msg, StreamEvent):
+                    cb = _stream_cb.get()
+                    ev = msg.event
+                    etype = ev.get("type")
+                    if etype == "content_block_start":
+                        btype = ev.get("content_block", {}).get("type")
+                        if btype == "thinking":
+                            _in_thinking = True
+                            if cb:
+                                cb("\x1b[2m")  # dim: thinking
+                        elif btype == "text" and _in_thinking:
+                            _in_thinking = False
+                            if cb:
+                                cb("\x1b[0m\n")  # reset dim
+                    elif etype == "content_block_stop" and _in_thinking:
+                        _in_thinking = False
+                        if cb:
+                            cb("\x1b[0m\n")  # reset dim after thinking block
+                    elif etype == "content_block_delta":
+                        delta = ev.get("delta", {})
+                        dtype = delta.get("type")
+                        if dtype == "text_delta":
+                            text = delta.get("text", "")
+                            _text_chunks.append(text)  # always accumulate
+                            if cb:
+                                cb(text)
+                        elif dtype == "thinking_delta":
+                            if cb:
+                                cb(delta.get("thinking", ""))
+                elif isinstance(msg, ResultMessage):
                     _new_sid = msg.session_id or sid
                     _is_error = msg.is_error
                     if msg.usage:
                         update_token_stats(msg.usage)
                     if msg.result:
                         _result = msg.result.strip()
+
+            # include_partial_messages=True may leave ResultMessage.result empty;
+            # fall back to text accumulated from stream events
+            if not _result and _text_chunks:
+                _result = "".join(_text_chunks).strip()
+
             return _result, _new_sid, _is_error
 
         def _is_cli_exit_error(e: Exception) -> bool:
