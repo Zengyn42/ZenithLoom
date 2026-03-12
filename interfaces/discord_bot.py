@@ -153,13 +153,13 @@ async def _invoke_agent_async(user_input: str, message=None) -> str:
 async def _invoke_agent_streaming(user_input: str, message) -> None:
     """
     流式模式：
-    - 持续显示 "is typing" 指示器
-    - 首个文字 token 到达时发出占位消息并逐步编辑（1.2s 节流）
-    - ANSI 转义码和思考块内容在 Discord 侧过滤，不显示乱码
-    - 完成后将草稿编辑为最终回复（而非删除再新发，避免遮盖历史）
-    - 直接处理全部 Discord 消息，返回 None 通知调用方无需再发送
+    - 持续 typing 指示器直到第一条消息出现
+    - 思考块 → 独立消息（斜体，实时更新），生成结束后保留在频道中
+    - 文字 token → 独立草稿消息（0.5s 节流），生成结束后删除
+    - 最终回复以全新干净消息发出（无 "(edited)" 标记）
     """
     from framework.claude.node import set_stream_callback
+    from framework.base_interface import BaseInterface
 
     engine = _controller._graph
     config = _controller.get_config()
@@ -173,68 +173,99 @@ async def _invoke_agent_streaming(user_input: str, message) -> None:
     if _current_project_root:
         init_state["project_root"] = _current_project_root
 
-    # ── 持续 typing 指示器（每 5 秒续命）──────────────────────────────────
+    # ── typing 指示器：每 5s 续命，直到第一条消息出现 ──────────────────────
+    stop_typing = asyncio.Event()
+
     async def _typing_loop():
         try:
-            while True:
+            while not stop_typing.is_set():
                 await message.channel.trigger_typing()
-                await asyncio.sleep(5)
+                try:
+                    await asyncio.wait_for(
+                        asyncio.shield(stop_typing.wait()), timeout=5
+                    )
+                except asyncio.TimeoutError:
+                    pass
         except asyncio.CancelledError:
             pass
 
     typing_task = asyncio.create_task(_typing_loop())
 
-    # ── Discord 回调：过滤 ANSI + 思考块，只排队纯文本 ─────────────────────
-    chunk_queue: asyncio.Queue = asyncio.Queue()
+    # ── 事件队列：区分思考 / 文字 ──────────────────────────────────────────
+    # 队列元素：(kind, text)，kind ∈ {"thinking", "text", None（哨兵）}
+    event_queue: asyncio.Queue = asyncio.Queue()
     _in_thinking = [False]
 
     def _discord_cb(text: str) -> None:
-        if "\x1b[2m" in text:        # 进入思考块
+        if "\x1b[2m" in text:
             _in_thinking[0] = True
             return
-        if "\x1b[0m" in text:        # 退出思考块
+        if "\x1b[0m" in text:
             _in_thinking[0] = False
             return
-        if _in_thinking[0]:          # 思考内容跳过
+        if "\x1b" in text:
             return
-        if "\x1b" in text:           # 其余 ANSI 跳过
+        if not text:
             return
-        if text:
-            chunk_queue.put_nowait(text)
+        event_queue.put_nowait(("thinking" if _in_thinking[0] else "text", text))
 
-    # ── 编辑器任务：惰性创建草稿，逐步更新 ─────────────────────────────────
-    draft = [None]
-    buf: list[str] = []
+    # ── 编辑器：思考消息 + 文字草稿 分别维护 ────────────────────────────────
+    thinking_msg = [None]
+    thinking_buf: list[str] = []
+    text_draft = [None]
+    text_buf: list[str] = []
 
     async def _editor():
         loop = asyncio.get_event_loop()
-        last_edit = loop.time()
-        THROTTLE = 1.2
+        thinking_last = 0.0
+        text_last = 0.0
+        THINKING_THROTTLE = 1.5
+        TEXT_THROTTLE = 0.5
+
         while True:
             sentinel = False
             while True:
                 try:
-                    chunk = chunk_queue.get_nowait()
+                    kind, chunk = event_queue.get_nowait()
                 except asyncio.QueueEmpty:
                     break
-                if chunk is None:
+                if kind is None:
                     sentinel = True
                     break
-                buf.append(chunk)
+                if kind == "thinking":
+                    thinking_buf.append(chunk)
+                else:
+                    text_buf.append(chunk)
 
-            if buf:
-                if draft[0] is None:          # 首个 token：发出占位消息
-                    draft[0] = await message.channel.send("▌")
-                now = loop.time()
-                if sentinel or now - last_edit >= THROTTLE:
-                    last_edit = now
-                    preview = "".join(buf)
-                    cursor = "" if sentinel else " ▌"
-                    display = (preview[-1890:] if len(preview) > 1890 else preview) + cursor
+            now = loop.time()
+
+            # ── 思考消息（斜体小字，独立持久）──────────────────────────────
+            if thinking_buf and (sentinel or now - thinking_last >= THINKING_THROTTLE):
+                thinking_last = now
+                preview = "".join(thinking_buf)
+                display = f"*💭 {preview[-800:]}*"
+                if thinking_msg[0] is None:
+                    stop_typing.set()
+                    thinking_msg[0] = await message.channel.send(display)
+                else:
                     try:
-                        await draft[0].edit(content=display)
+                        await thinking_msg[0].edit(content=display)
                     except Exception:
                         pass
+
+            # ── 文字草稿（实时预览，完成后删除）────────────────────────────
+            if text_buf and (sentinel or now - text_last >= TEXT_THROTTLE):
+                text_last = now
+                preview = "".join(text_buf)
+                cursor = "" if sentinel else " ▌"
+                display = (preview[-1890:] if len(preview) > 1890 else preview) + cursor
+                if text_draft[0] is None:
+                    stop_typing.set()
+                    text_draft[0] = await message.channel.send("▌")
+                try:
+                    await text_draft[0].edit(content=display)
+                except Exception:
+                    pass
 
             if sentinel:
                 break
@@ -246,41 +277,38 @@ async def _invoke_agent_streaming(user_input: str, message) -> None:
         result_state = await engine.ainvoke(init_state, config=config)
     finally:
         set_stream_callback(None)
-        chunk_queue.put_nowait(None)
+        event_queue.put_nowait((None, None))
         await editor_task
+        stop_typing.set()
         typing_task.cancel()
 
-    from framework.base_interface import BaseInterface
     final_text = BaseInterface._extract_response(result_state)
 
+    # 删除文字草稿（带 "(edited)"）
+    if text_draft[0]:
+        try:
+            await text_draft[0].delete()
+        except Exception:
+            pass
+
+    # 思考消息更新为完整内容（保留在频道中）
+    if thinking_msg[0] and thinking_buf:
+        full = "".join(thinking_buf)
+        try:
+            await thinking_msg[0].edit(content=f"*💭 {full[-1500:]}*")
+        except Exception:
+            pass
+
     if not final_text:
-        if draft[0]:
-            try:
-                await draft[0].delete()
-            except Exception:
-                pass
         await message.channel.send(f"（{agent_name} 没有输出，请重试）")
         return
 
     clean_text, file_paths = _extract_attachments(final_text)
     chunks = split_fence_aware(clean_text) if clean_text else []
 
-    if chunks:
-        # 将草稿编辑为最终第一块（不删除再发，避免遮盖思考历史）
-        if draft[0]:
-            try:
-                await draft[0].edit(content=chunks[0])
-            except Exception:
-                await message.channel.send(chunks[0])
-        else:
-            await message.channel.send(chunks[0])
-        for chunk in chunks[1:]:
-            await message.channel.send(chunk)
-    elif draft[0]:
-        try:
-            await draft[0].delete()
-        except Exception:
-            pass
+    # 发新消息（非编辑，无 "(edited)" 标记）
+    for chunk in chunks:
+        await message.channel.send(chunk)
 
     for path in file_paths:
         if not os.path.isfile(path):
