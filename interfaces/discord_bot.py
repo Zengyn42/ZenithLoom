@@ -150,17 +150,21 @@ async def _invoke_agent_async(user_input: str, message=None) -> str:
     return result
 
 
-async def _invoke_agent_streaming(user_input: str, message) -> str:
+async def _invoke_agent_streaming(user_input: str, message) -> None:
     """
-    流式模式：立即发送占位消息，逐 token 编辑（节流 1.2s），完成后替换为最终回复。
-    返回最终回复字符串（已由本函数全程处理 Discord 消息，调用方无需再发送）。
+    流式模式：
+    - 持续显示 "is typing" 指示器
+    - 首个文字 token 到达时发出占位消息并逐步编辑（1.2s 节流）
+    - ANSI 转义码和思考块内容在 Discord 侧过滤，不显示乱码
+    - 完成后将草稿编辑为最终回复（而非删除再新发，避免遮盖历史）
+    - 直接处理全部 Discord 消息，返回 None 通知调用方无需再发送
     """
     from framework.claude.node import set_stream_callback
 
     engine = _controller._graph
     config = _controller.get_config()
+    agent_name = _loader.name if _loader else "Agent"
 
-    # 刷新历史文件
     history_limit = (_loader.json.get("channel_history_limit", 0) if _loader else 0)
     if history_limit and message is not None:
         await _refresh_history_file(message.channel, history_limit, exclude_msg_id=message.id)
@@ -169,18 +173,44 @@ async def _invoke_agent_streaming(user_input: str, message) -> str:
     if _current_project_root:
         init_state["project_root"] = _current_project_root
 
-    # 立即发送占位消息
-    draft = await message.channel.send("▌")
+    # ── 持续 typing 指示器（每 5 秒续命）──────────────────────────────────
+    async def _typing_loop():
+        try:
+            while True:
+                await message.channel.trigger_typing()
+                await asyncio.sleep(5)
+        except asyncio.CancelledError:
+            pass
 
-    buf: list[str] = []
+    typing_task = asyncio.create_task(_typing_loop())
+
+    # ── Discord 回调：过滤 ANSI + 思考块，只排队纯文本 ─────────────────────
     chunk_queue: asyncio.Queue = asyncio.Queue()
+    _in_thinking = [False]
+
+    def _discord_cb(text: str) -> None:
+        if "\x1b[2m" in text:        # 进入思考块
+            _in_thinking[0] = True
+            return
+        if "\x1b[0m" in text:        # 退出思考块
+            _in_thinking[0] = False
+            return
+        if _in_thinking[0]:          # 思考内容跳过
+            return
+        if "\x1b" in text:           # 其余 ANSI 跳过
+            return
+        if text:
+            chunk_queue.put_nowait(text)
+
+    # ── 编辑器任务：惰性创建草稿，逐步更新 ─────────────────────────────────
+    draft = [None]
+    buf: list[str] = []
 
     async def _editor():
         loop = asyncio.get_event_loop()
         last_edit = loop.time()
         THROTTLE = 1.2
         while True:
-            # 排空队列
             sentinel = False
             while True:
                 try:
@@ -193,6 +223,8 @@ async def _invoke_agent_streaming(user_input: str, message) -> str:
                 buf.append(chunk)
 
             if buf:
+                if draft[0] is None:          # 首个 token：发出占位消息
+                    draft[0] = await message.channel.send("▌")
                 now = loop.time()
                 if sentinel or now - last_edit >= THROTTLE:
                     last_edit = now
@@ -200,7 +232,7 @@ async def _invoke_agent_streaming(user_input: str, message) -> str:
                     cursor = "" if sentinel else " ▌"
                     display = (preview[-1890:] if len(preview) > 1890 else preview) + cursor
                     try:
-                        await draft.edit(content=display)
+                        await draft[0].edit(content=display)
                     except Exception:
                         pass
 
@@ -209,32 +241,55 @@ async def _invoke_agent_streaming(user_input: str, message) -> str:
             await asyncio.sleep(0.1)
 
     editor_task = asyncio.create_task(_editor())
-    set_stream_callback(lambda t: chunk_queue.put_nowait(t))
+    set_stream_callback(_discord_cb)
     try:
         result_state = await engine.ainvoke(init_state, config=config)
     finally:
         set_stream_callback(None)
-        chunk_queue.put_nowait(None)  # sentinel
+        chunk_queue.put_nowait(None)
         await editor_task
+        typing_task.cancel()
 
-    # 从最终 state 提取最后一条 AI 消息
     from framework.base_interface import BaseInterface
     final_text = BaseInterface._extract_response(result_state)
 
     if not final_text:
+        if draft[0]:
+            try:
+                await draft[0].delete()
+            except Exception:
+                pass
+        await message.channel.send(f"（{agent_name} 没有输出，请重试）")
+        return
+
+    clean_text, file_paths = _extract_attachments(final_text)
+    chunks = split_fence_aware(clean_text) if clean_text else []
+
+    if chunks:
+        # 将草稿编辑为最终第一块（不删除再发，避免遮盖思考历史）
+        if draft[0]:
+            try:
+                await draft[0].edit(content=chunks[0])
+            except Exception:
+                await message.channel.send(chunks[0])
+        else:
+            await message.channel.send(chunks[0])
+        for chunk in chunks[1:]:
+            await message.channel.send(chunk)
+    elif draft[0]:
         try:
-            await draft.delete()
+            await draft[0].delete()
         except Exception:
             pass
-        return ""
 
-    # 删除占位消息，分块发送最终回复
-    try:
-        await draft.delete()
-    except Exception:
-        pass
-
-    return final_text
+    for path in file_paths:
+        if not os.path.isfile(path):
+            await message.channel.send(f"⚠️ 文件不存在：`{path}`")
+            continue
+        try:
+            await message.channel.send(file=discord.File(path))
+        except discord.HTTPException as e:
+            await message.channel.send(f"⚠️ 文件发送失败：{e}")
 
 
 # ==========================================
@@ -281,13 +336,13 @@ async def on_message(message: discord.Message):
     full_text = None
 
     if _discord_streaming:
-        # 流式模式：立即占位 → 逐 token 编辑 → 最终回复
+        # 流式模式：_invoke_agent_streaming 全权处理所有 Discord 消息
         try:
-            full_text = await _invoke_agent_streaming(user_input, message)
+            await _invoke_agent_streaming(user_input, message)
         except Exception as e:
             logger.error(f"[agent] 流式调用出错: {e}", exc_info=is_debug())
             await message.channel.send(f"{agent_name} 出错了: {e}")
-            return
+        return
     else:
         # 非流式模式：typing 占位 → 收集完整回复 → 发送
         async with message.channel.typing():
