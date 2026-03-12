@@ -131,6 +131,9 @@ class AgentRefNode:
         # 清理子图产生的孤儿 session（磁盘文件）
         self._cleanup_orphan_sessions(last_state, original_ns_keys)
 
+        # 辩论完成后才计入 consult_count，确保 max_retry 在重入时生效
+        out["consult_count"] = state.get("consult_count", 0) + 1
+
         logger.info(
             f"[agent_ref] {self._loader.name!r} done, "
             f"out_keys={list(out.keys())}"
