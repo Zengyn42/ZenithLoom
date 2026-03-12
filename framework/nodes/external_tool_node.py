@@ -15,6 +15,7 @@ node_config fields:
 import asyncio
 import json
 import logging
+import re
 import shlex
 import subprocess
 
@@ -25,11 +26,9 @@ from framework.config import AgentConfig
 logger = logging.getLogger(__name__)
 
 
-class _SafeDict(dict):
-    """format_map helper: unknown keys stay as {key} instead of raising KeyError."""
-
-    def __missing__(self, key: str) -> str:
-        return f"{{{key}}}"
+def _substitute(template: str, state: dict) -> str:
+    """Replace {word} placeholders from state; leave all other {…} (e.g. JSON) untouched."""
+    return re.sub(r"\{(\w+)\}", lambda m: str(state[m.group(1)]) if m.group(1) in state else m.group(0), template)
 
 
 def _run_subprocess(cmd: list[str], timeout: float) -> subprocess.CompletedProcess:
@@ -65,9 +64,8 @@ class ExternalToolNode:
         self._description: str = inner.get("description", "")
 
     async def __call__(self, state: dict) -> dict:
-        # 1. Resolve {field} templates from state
-        safe = _SafeDict(state)
-        cmd = [s.format_map(safe) for s in self._command]
+        # 1. Resolve {field} templates from state (only \w+ keys; JSON braces are left untouched)
+        cmd = [_substitute(s, state) for s in self._command]
 
         logger.debug("[external_tool] run: %s", cmd)
 
