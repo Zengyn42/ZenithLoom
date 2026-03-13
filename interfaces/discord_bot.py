@@ -8,6 +8,7 @@
 import asyncio
 import logging
 import os
+import tempfile
 import discord
 from discord.ext import commands
 from dotenv import load_dotenv
@@ -358,6 +359,26 @@ async def on_message(message: discord.Message):
         return
 
     user_input = message.content.strip()
+
+    # ── 附件处理：下载到临时目录，路径附加到 user_input ──────────────
+    if message.attachments:
+        workspace = (_loader.json.get("workspace", "") if _loader else "") or _current_project_root
+        attach_dir = os.path.join(workspace, ".discord_attachments") if workspace else tempfile.mkdtemp(prefix="discord_attach_")
+        os.makedirs(attach_dir, exist_ok=True)
+        attached_paths: list[str] = []
+        for att in message.attachments:
+            safe_name = f"{message.id}_{att.filename}"
+            dest = os.path.join(attach_dir, safe_name)
+            try:
+                await att.save(dest)
+                attached_paths.append(dest)
+                logger.info(f"[discord] 附件已保存: {dest} ({att.size} bytes)")
+            except Exception as e:
+                logger.warning(f"[discord] 附件下载失败 {att.filename}: {e}")
+        if attached_paths:
+            hint = "\n\n[用户上传了以下文件，请用 Read 工具查看]\n" + "\n".join(attached_paths)
+            user_input = (user_input + hint) if user_input else hint.strip()
+
     if not user_input:
         return
 
