@@ -65,6 +65,8 @@ class AgentNode:
 
         # 节点 ID（用于 node_sessions 字典的键）
         self._node_id = node_config.get("id", "claude_main")
+        # session_key：多个节点共享同一 session 时使用（如 debate 子图的 Claude 节点）
+        self._session_key = node_config.get("session_key", self._node_id)
 
         # 资源锁
         self._resource_lock = node_config.get("resource_lock")
@@ -108,14 +110,14 @@ class AgentNode:
         """
 
     async def __call__(self, state: dict) -> dict:
-        latest_input = state["messages"][-1].content
+        msgs = state["messages"]
+        latest_input = msgs[-1].content
         # project_root（!setproject）优先；退回 per-session workspace
         project_root = state.get("project_root", "") or state.get("workspace", "") or None
 
-        # node_sessions UUID 路由
+        # node_sessions UUID 路由（session_key 允许多节点共享 session）
         ns = dict(state.get("node_sessions") or {})
-        # 首先尝试 node_id 键，兼容旧字段 claude_session_id（仅 claude_main）
-        session_id = ns.get(self._node_id) or (
+        session_id = ns.get(self._session_key) or (
             state.get("claude_session_id", "")
             if self._node_id == "claude_main"
             else ""
@@ -175,7 +177,7 @@ class AgentNode:
         routing_target = signal.get("route", "") if signal else ""
         routing_context = signal.get("context", "") if signal else ""
 
-        ns[self._node_id] = new_session_id or session_id
+        ns[self._session_key] = new_session_id or session_id
 
         if routing_target:
             logger.info(f"[{self._node_id}] routing signal: target={routing_target!r}")

@@ -362,24 +362,28 @@ class GeminiNode(_GeminiSessionMixin, AgentNode):
         routing_context = state.get("routing_context", "")
         msgs = state.get("messages", [])
 
+        ns = dict(state.get("node_sessions") or {})
+        session_id = ns.get(self._session_key, "")
+        workspace = state.get("workspace", "")
+
         if routing_context:
             prompt = routing_context
             prompt_src = "routing_context"
-        elif len(msgs) > 1:
-            # 多轮对话（辩论模式）：把完整历史格式化进 prompt，让 Gemini 看到全局上下文
+        elif len(msgs) > 1 and not session_id:
+            # 无 session 的多轮（首次进入辩论）：完整历史格式化进 prompt
             parts = []
             for m in msgs:
                 role = "议题" if getattr(m, "type", "") == "human" else "发言"
                 parts.append(f"[{role}]:\n{m.content}")
             prompt = "\n\n---\n\n".join(parts)
+            topic = msgs[0].content if msgs and getattr(msgs[0], "type", "") == "human" else ""
+            if topic:
+                prompt += f"\n\n---\n\n[原始要求（请严格遵守）]:\n{topic}\n请基于以上讨论继续发言。"
             prompt_src = f"full_history ({len(msgs)} msgs)"
         else:
+            # 有 session（resume）：只传最新消息，历史已在 session 中
             prompt = msgs[-1].content if msgs else ""
-            prompt_src = "messages[-1]"
-
-        ns = dict(state.get("node_sessions") or {})
-        session_id = ns.get(self._node_id, "")
-        workspace = state.get("workspace", "")
+            prompt_src = "messages[-1]" if not session_id else f"resume({session_id[:8]})"
 
         if is_debug():
             logger.debug(
@@ -407,7 +411,7 @@ class GeminiNode(_GeminiSessionMixin, AgentNode):
                 "node_sessions": ns,
             }
 
-        ns[self._node_id] = new_session_id or session_id
+        ns[self._session_key] = new_session_id or session_id
         logger.info(f"[{self._node_id}] done, consult_count→{state.get('consult_count', 0) + 1}")
         return {
             "messages": [AIMessage(content=reply)],
