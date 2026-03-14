@@ -90,7 +90,9 @@ class GraphController:
             config=self.get_config(),
         )
 
-        # 将最新 node_sessions 写回 sessions.json
+        # 将最新 node_sessions 从 checkpoint 同步到 sessions.json（单向：checkpoint → sessions.json）
+        # sessions.json 中的 node_sessions 是冗余副本，LangGraph 不会读取它；
+        # 实际运行时各节点从 checkpoint 恢复的 state["node_sessions"] 获取 UUID。
         ns = result.get("node_sessions") or {}
         if ns:
             name = self._session_mgr.find_name_by_thread_id(self._active_thread_id)

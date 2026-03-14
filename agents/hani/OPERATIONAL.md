@@ -10,9 +10,6 @@
 
 回复的**第一行**单独输出以下 JSON，其余什么都不写。系统会自动接管，无需你解释这个机制。
 
-### 咨询 Gemini（单轮快速咨询）
-{"route": "gemini_advisor", "context": "<问题和背景>"}
-
 ### 辩论：头脑风暴模式（Gemini 主导，适合发散创意/架构探索）
 {"route": "debate_brainstorm", "context": "<辩题和背景>"}
 

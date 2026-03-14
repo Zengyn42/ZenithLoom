@@ -140,7 +140,6 @@ class AgentLoader:
 
         # Priority 3: GraphSpec 默认图
         from framework.claude.node import ClaudeNode
-        from framework.gemini.node import GeminiNode
         from framework.graph import build_agent_graph, GraphSpec
 
         # 向后兼容旧 "vram_flush" 字段
@@ -152,10 +151,6 @@ class AgentLoader:
         claude_node_config = {**self._json}
         agent_node = ClaudeNode(config, node_config=claude_node_config, system_prompt=system_prompt)
 
-        # GeminiNode — model 从 agent.json 顶层 gemini_model 字段读（向后兼容）
-        gemini_node_config = {"model": self._json.get("gemini_model", "gemini-2.5-flash")}
-        gemini_node = GeminiNode(config, node_config=gemini_node_config)
-
         logger.info(f"[agent_loader] building graph for {self.name!r}")
         if is_debug():
             logger.debug(f"[agent_loader] db={config.db_path!r}")
@@ -163,7 +158,6 @@ class AgentLoader:
         return await build_agent_graph(
             config=config,
             agent_node=agent_node,
-            gemini=gemini_node,
             checkpointer=checkpointer,
             spec=spec,
         )
