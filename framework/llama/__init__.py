@@ -1,3 +1,3 @@
-from framework.llama.node import LlamaNode
+from framework.llama.node import OllamaNode, LlamaNode  # LlamaNode is alias
 
-__all__ = ["LlamaNode"]
+__all__ = ["OllamaNode", "LlamaNode"]
