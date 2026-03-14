@@ -552,15 +552,14 @@ class GeminiCLINode(AgentNode):
                 f"model={model} 超时 ({self._timeout}s)"
             )
         except FileNotFoundError:
-            raise RuntimeError(
-                "gemini CLI 未安装或不在 PATH 中。"
-                "请先运行: npm install -g @google/gemini-cli"
-            )
+            raise  # 保持原类型，让调用者区分"CLI 未安装"与"模型错误"
 
         if proc.returncode != 0:
             stderr_text = stderr_bytes.decode(errors="replace")[:500]
-            stderr_lower = stderr_text.lower()
-            if any(kw in stderr_lower for kw in _CAPACITY_KEYWORDS):
+            # 同时检查 stdout，CLI 可能把错误写进 JSON output
+            stdout_err = stdout_bytes.decode(errors="replace")[:300]
+            combined_lower = (stderr_text + stdout_err).lower()
+            if any(kw in combined_lower for kw in _CAPACITY_KEYWORDS):
                 raise _GeminiCapacityError(
                     f"model={model} 容量不足: {stderr_text}"
                 )
@@ -670,9 +669,19 @@ class GeminiCLINode(AgentNode):
                     logger.debug(f"[gemini-cli] reply_preview={reply[:100]!r}")
                 logger.info(f"[gemini-cli] done model={model} sid={new_sid[:8] if new_sid else '?'}")
                 return reply, new_sid
+            except FileNotFoundError:
+                raise RuntimeError(
+                    "gemini CLI 未安装或不在 PATH 中。"
+                    "请先运行: npm install -g @google/gemini-cli"
+                )
             except _GeminiCapacityError as e:
                 _unavailable_models[model] = time.monotonic()
                 logger.warning(f"[gemini-cli] {e} (标记不可用 {_UNAVAILABLE_COOLDOWN}s)")
+                last_error = e
+                continue
+            except RuntimeError as e:
+                # 非容量错误（如退出码异常、JSON 解析失败）→ 跳过此模型，不标记为不可用
+                logger.warning(f"[gemini-cli] model={model} 失败，尝试下一个: {e}")
                 last_error = e
                 continue
 
