@@ -430,18 +430,55 @@ GeminiNode = GeminiCodeAssistNode
 # GeminiCLINode — GEMINI_CLI 节点类型（Gemini CLI subprocess）
 # ---------------------------------------------------------------------------
 
+class _GeminiCapacityError(RuntimeError):
+    """Gemini CLI 模型容量不足（429 / CAPACITY_EXHAUSTED）。"""
+    pass
+
+
+# 模型降级链：优先 Pro，再 Flash；每类内从新到旧
+_MODEL_FALLBACK_CHAIN: list[str] = [
+    "gemini-3-pro-preview",
+    "gemini-2.5-pro",
+    "gemini-1.5-pro",
+    "gemini-3-flash-preview",
+    "gemini-2.5-flash",
+    "gemini-1.5-flash",
+]
+
+# stderr 中出现这些关键词则判定为容量/配额错误
+_CAPACITY_KEYWORDS = ("capacity", "429", "quota", "exhausted", "overloaded", "rate_limit")
+
+# 跨实例共享：记录不可用的模型及其失败时间戳
+# 同一进程内所有 GeminiCLINode 实例共享，避免重复探测
+_unavailable_models: dict[str, float] = {}  # model -> time.monotonic() of failure
+_UNAVAILABLE_COOLDOWN = 300  # 5 分钟后重新尝试
+
+# 跨实例共享：记录 session 实际使用的模型
+# 降级后 session 绑定的模型与 node_config 配置的不同，resume 时需要用实际模型
+_session_effective_model: dict[str, str] = {}  # session_id -> actual model used
+
+
 class GeminiCLINode(AgentNode):
     """
     Gemini CLI subprocess 节点（GEMINI_CLI 节点类型）。
 
     通过 `gemini -p "prompt" -m model -o json --yolo` 子进程调用，
-    支持 Gemini CLI 可用的所有模型（包括 gemini-3.1-pro 等高级模型）。
+    支持 Gemini CLI 可用的所有模型（包括 gemini-3-pro-preview 等高级模型）。
+
+    模型降级机制：
+      当主模型返回容量不足（429 / CAPACITY_EXHAUSTED）或超时时，
+      自动按降级链尝试下一个模型：
+        3-pro → 2.5-pro → 1.5-pro → 3-flash → 2.5-flash → 1.5-flash
+      仅对新 session 生效；resume 已有 session 时不降级（session 绑定模型）。
 
     Session 管理由 Gemini CLI 自身处理：
       - 新建：不传 --resume → CLI 自动创建 session
       - 续接：--resume session_id → CLI 恢复已有 session
       - session_id 从 JSON 输出的 "session_id" 字段获取
     """
+
+    # 默认超时：60 秒（容量错误通常几秒内返回，挂死的请求不值得等更久）
+    _DEFAULT_TIMEOUT = 60
 
     def __init__(self, config: AgentConfig, node_config: dict):
         super().__init__(config, node_config)
@@ -451,42 +488,52 @@ class GeminiCLINode(AgentNode):
             or "gemini-2.5-pro"
         )
         self._system_prompt: str = node_config.get("system_prompt") or _GEMINI_SYSTEM
-        logger.info(f"[gemini-cli] node={self._node_id} model={self._model}")
+        self._timeout: int = node_config.get("timeout") or self._DEFAULT_TIMEOUT
+        logger.info(f"[gemini-cli] node={self._node_id} model={self._model} timeout={self._timeout}s")
 
-    async def call_llm(
+    def _build_fallback_chain(self) -> list[str]:
+        """从配置的主模型开始，返回降级链（跳过已知不可用的模型）。"""
+        now = time.monotonic()
+        # 清理过期记录
+        expired = [m for m, t in _unavailable_models.items() if now - t > _UNAVAILABLE_COOLDOWN]
+        for m in expired:
+            del _unavailable_models[m]
+            logger.info(f"[gemini-cli] 模型 {m} 冷却期结束，重新可用")
+
+        if self._model in _MODEL_FALLBACK_CHAIN:
+            idx = _MODEL_FALLBACK_CHAIN.index(self._model)
+            chain = [m for m in _MODEL_FALLBACK_CHAIN[idx:] if m not in _unavailable_models]
+            if not chain:
+                # 所有模型都不可用，忽略缓存强制重试
+                logger.warning("[gemini-cli] 所有模型均标记为不可用，忽略缓存重试")
+                return _MODEL_FALLBACK_CHAIN[idx:]
+            return chain
+        # 自定义模型不在链中：只用它自己，不降级
+        return [self._model]
+
+    async def _run_cli(
         self,
-        prompt: str,
+        full_prompt: str,
+        model: str,
         session_id: str = "",
-        tools: list[str] | None = None,
         cwd: str | None = None,
     ) -> tuple[str, str]:
-        """调用 Gemini CLI subprocess，返回 (reply, session_id)。"""
-        # 首次调用（无 session）时嵌入 system prompt
-        if not session_id and self._system_prompt:
-            full_prompt = (
-                f"[System Instructions]\n{self._system_prompt}\n\n"
-                f"[Task]\n{prompt}"
-            )
-        else:
-            full_prompt = prompt
+        """
+        执行单次 Gemini CLI 调用。
 
+        容量/配额错误 → raise _GeminiCapacityError
+        其他错误     → raise RuntimeError
+        成功         → return (reply, session_id)
+        """
         cmd = [
             "gemini",
             "-p", full_prompt,
-            "-m", self._model,
+            "-m", model,
             "-o", "json",
             "--yolo",
         ]
         if session_id:
             cmd.extend(["--resume", session_id])
-
-        sid_short = session_id[:8] if session_id else "new"
-        logger.info(
-            f"[gemini-cli] model={self._model} sid={sid_short} "
-            f"prompt_len={len(full_prompt)}"
-        )
-        if is_debug():
-            logger.debug(f"[gemini-cli] cmd={' '.join(cmd[:6])}...")
 
         try:
             proc = await asyncio.create_subprocess_exec(
@@ -495,7 +542,15 @@ class GeminiCLINode(AgentNode):
                 stderr=asyncio.subprocess.PIPE,
                 cwd=cwd or None,
             )
-            stdout_bytes, stderr_bytes = await proc.communicate()
+            stdout_bytes, stderr_bytes = await asyncio.wait_for(
+                proc.communicate(), timeout=self._timeout
+            )
+        except asyncio.TimeoutError:
+            proc.kill()
+            await proc.wait()
+            raise _GeminiCapacityError(
+                f"model={model} 超时 ({self._timeout}s)"
+            )
         except FileNotFoundError:
             raise RuntimeError(
                 "gemini CLI 未安装或不在 PATH 中。"
@@ -504,6 +559,11 @@ class GeminiCLINode(AgentNode):
 
         if proc.returncode != 0:
             stderr_text = stderr_bytes.decode(errors="replace")[:500]
+            stderr_lower = stderr_text.lower()
+            if any(kw in stderr_lower for kw in _CAPACITY_KEYWORDS):
+                raise _GeminiCapacityError(
+                    f"model={model} 容量不足: {stderr_text}"
+                )
             raise RuntimeError(
                 f"Gemini CLI 退出码 {proc.returncode}: {stderr_text}"
             )
@@ -518,11 +578,108 @@ class GeminiCLINode(AgentNode):
 
         reply = data.get("response", "")
         new_sid = data.get("session_id", session_id)
-
-        if is_debug():
-            logger.debug(f"[gemini-cli] reply_preview={reply[:100]!r}")
-        logger.info(f"[gemini-cli] done sid={new_sid[:8] if new_sid else '?'}")
         return reply.strip(), new_sid
+
+    async def call_llm(
+        self,
+        prompt: str,
+        session_id: str = "",
+        tools: list[str] | None = None,
+        cwd: str | None = None,
+    ) -> tuple[str, str]:
+        """调用 Gemini CLI subprocess，返回 (reply, session_id)。支持模型降级。"""
+        # 首次调用（无 session）时嵌入 system prompt
+        if not session_id and self._system_prompt:
+            full_prompt = (
+                f"[System Instructions]\n{self._system_prompt}\n\n"
+                f"[Task]\n{prompt}"
+            )
+        else:
+            full_prompt = prompt
+
+        # resume 已有 session：先用实际模型，失败则换模型继续 resume
+        if session_id:
+            effective_model = _session_effective_model.get(session_id, self._model)
+            sid_short = session_id[:8]
+            # 构建 resume 降级链：实际模型优先，然后是其余可用模型
+            resume_chain = [effective_model]
+            for m in self._build_fallback_chain():
+                if m != effective_model:
+                    resume_chain.append(m)
+
+            for j, model in enumerate(resume_chain):
+                if j == 0:
+                    logger.info(
+                        f"[gemini-cli] resume model={model} sid={sid_short} "
+                        f"prompt_len={len(full_prompt)}"
+                    )
+                else:
+                    logger.warning(
+                        f"[gemini-cli] resume 降级: sid={sid_short} 换模型 → {model}"
+                    )
+                try:
+                    reply, new_sid = await self._run_cli(
+                        full_prompt, model, session_id=session_id, cwd=cwd
+                    )
+                    _session_effective_model[new_sid or session_id] = model
+                    _unavailable_models.pop(model, None)
+                    if j > 0:
+                        logger.warning(f"[gemini-cli] resume 降级成功: → {model}")
+                    logger.info(f"[gemini-cli] done sid={new_sid[:8] if new_sid else '?'}")
+                    return reply, new_sid
+                except _GeminiCapacityError as e:
+                    _unavailable_models[model] = time.monotonic()
+                    logger.warning(f"[gemini-cli] {e} (标记不可用 {_UNAVAILABLE_COOLDOWN}s)")
+                    continue
+                except RuntimeError as e:
+                    # 非容量错误（如 session 不兼容）→ 跳过此模型但不标记为不可用
+                    logger.warning(f"[gemini-cli] resume model={model} 失败: {e}")
+                    continue
+
+            # 所有模型 resume 均失败
+            raise RuntimeError(
+                f"Gemini CLI resume 全部失败 sid={sid_short}，"
+                f"已尝试 {len(resume_chain)} 个模型"
+            )
+
+        # 新 session：按降级链尝试
+        chain = self._build_fallback_chain()
+        last_error: Exception | None = None
+
+        for i, model in enumerate(chain):
+            if i == 0:
+                logger.info(
+                    f"[gemini-cli] model={model} prompt_len={len(full_prompt)}"
+                )
+            else:
+                logger.warning(
+                    f"[gemini-cli] 降级尝试: {self._model} → {model} ({i+1}/{len(chain)})"
+                )
+            try:
+                reply, new_sid = await self._run_cli(
+                    full_prompt, model, cwd=cwd
+                )
+                _unavailable_models.pop(model, None)  # 成功则清除不可用标记
+                if new_sid:
+                    _session_effective_model[new_sid] = model  # 记录 session 实际模型
+                if i > 0:
+                    logger.warning(
+                        f"[gemini-cli] 降级成功: {self._model} → {model}"
+                    )
+                if is_debug():
+                    logger.debug(f"[gemini-cli] reply_preview={reply[:100]!r}")
+                logger.info(f"[gemini-cli] done model={model} sid={new_sid[:8] if new_sid else '?'}")
+                return reply, new_sid
+            except _GeminiCapacityError as e:
+                _unavailable_models[model] = time.monotonic()
+                logger.warning(f"[gemini-cli] {e} (标记不可用 {_UNAVAILABLE_COOLDOWN}s)")
+                last_error = e
+                continue
+
+        # 全部降级失败
+        raise RuntimeError(
+            f"Gemini CLI 所有模型均不可用 (tried {len(chain)}): {last_error}"
+        )
 
     async def __call__(self, state: dict) -> dict:
         """
