@@ -21,7 +21,7 @@
       {
         "id": "gemini_critique_1",
         "type": "GEMINI_CLI",
-        "model": "gemini-3.1-pro",
+        "model": "gemini-2.5-pro",
         "session_key": "gemini_debate",
         "system_prompt": "你是一位资深技术顾问，正在参与一场多轮协作设计讨论。\n你的职责：对方案进行补充和完善，从可扩展性、可维护性、性能、安全性等维度提出改进建议。\n每轮发言从不同维度切入：第一轮关注方向性问题，后续轮次深入实现细节、团队能力匹配、技术栈兼容性等。\n以协作态度帮助方案变得更完善。不要执行任何操作，只做分析和思考。"
       },
@@ -34,7 +34,7 @@
       {
         "id": "gemini_critique_2",
         "type": "GEMINI_CLI",
-        "model": "gemini-3.1-pro",
+        "model": "gemini-2.5-pro",
         "session_key": "gemini_debate"
       },
       {

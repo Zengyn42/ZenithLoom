@@ -139,7 +139,7 @@ class AgentLoader:
             )
 
         # Priority 3: GraphSpec 默认图
-        from framework.claude.node import ClaudeNode
+        from framework.claude.node import ClaudeSDKNode
         from framework.graph import build_agent_graph, GraphSpec
 
         # 向后兼容旧 "vram_flush" 字段
@@ -147,9 +147,9 @@ class AgentLoader:
             graph_dict["use_vram_flush"] = bool(self._json.get("vram_flush", False))
         spec = GraphSpec.from_dict(graph_dict)
 
-        # ClaudeNode — model 从 agent.json 顶层 claude_model 字段读（向后兼容）
+        # ClaudeSDKNode — model 从 agent.json 顶层 claude_model 字段读（向后兼容）
         claude_node_config = {**self._json}
-        agent_node = ClaudeNode(config, node_config=claude_node_config, system_prompt=system_prompt)
+        agent_node = ClaudeSDKNode(config, node_config=claude_node_config, system_prompt=system_prompt)
 
         logger.info(f"[agent_loader] building graph for {self.name!r}")
         if is_debug():

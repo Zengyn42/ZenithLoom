@@ -42,8 +42,8 @@ GeminiAPI:
 import logging
 
 from framework.config import AgentConfig
-from framework.nodes.claude_node import ClaudeNode
-from framework.nodes.gemini_node import (
+from framework.claude.node import ClaudeSDKNode
+from framework.gemini.node import (
     GeminiQuotaError,
     _CodeAssistClient,
     _GEMINI_SYSTEM,
@@ -61,7 +61,7 @@ class ClaudeAPI:
     """
 
     def __init__(self, config: AgentConfig, system_prompt: str = ""):
-        self._node = ClaudeNode(config, system_prompt)
+        self._node = ClaudeSDKNode(config, system_prompt)
         self._session_id: str = ""
 
     @property
@@ -96,8 +96,8 @@ class ClaudeAPI:
             logger.info(f"[ClaudeAPI] session reset (was {old[:8]})")
 
     @property
-    def node(self) -> ClaudeNode:
-        """暴露底层 ClaudeNode，供需要 call_claude() 完整签名的场景使用。"""
+    def node(self) -> ClaudeSDKNode:
+        """暴露底层 ClaudeSDKNode，供需要 call_claude() 完整签名的场景使用。"""
         return self._node
 
 
@@ -114,7 +114,7 @@ class GeminiAPI:
     GeminiQuotaError（403/429）不捕获，直接穿透给调用方（LangGraph 图）。
     """
 
-    def __init__(self, config: AgentConfig, claude_api: ClaudeAPI, model: str = "gemini-3.1-pro"):
+    def __init__(self, config: AgentConfig, claude_api: ClaudeAPI, model: str = "gemini-2.5-pro"):
         self._client = _CodeAssistClient(model)
         self._claude = claude_api
 

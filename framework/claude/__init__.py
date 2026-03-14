@@ -1,3 +1,3 @@
-from framework.claude.node import ClaudeNode
+from framework.claude.node import ClaudeSDKNode, ClaudeNode
 
-__all__ = ["ClaudeNode"]
+__all__ = ["ClaudeSDKNode", "ClaudeNode"]

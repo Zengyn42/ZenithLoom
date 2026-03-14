@@ -1,7 +1,7 @@
 """
 框架级 Claude SDK 节点 — framework/claude/node.py
 
-ClaudeNode 继承 AgentNode，实现 call_llm() 接口：
+ClaudeSDKNode 继承 AgentNode，实现 call_llm() 接口：
   call_llm(prompt, session_id, tools, cwd) -> (text, new_session_id)
     - session_id 空 -> 新建 session
     - session_id 非空 -> resume 已有 session（~/.claude/ 本地存储）
@@ -14,7 +14,7 @@ sdk_query() 通过 wait_for_result_and_end_input() 关闭 stdin，
 普通 Exception 再推入消息流，因此异常捕获需检测消息内容而非类型。
 
 基类 AgentNode.__call__() 处理所有图协议逻辑（路由、注入、信号检测）；
-ClaudeNode 只负责 Claude SDK 调用。
+ClaudeSDKNode 只负责 Claude SDK 调用。
 """
 
 import contextvars
@@ -49,7 +49,7 @@ from framework.token_tracker import update_token_stats
 logger = logging.getLogger(__name__)
 
 
-class ClaudeNode(AgentNode):
+class ClaudeSDKNode(AgentNode):
     """
     Claude SDK LLM 节点。
 
@@ -245,3 +245,7 @@ class ClaudeNode(AgentNode):
         except Exception as e:
             logger.warning(f"[claude] list_sessions failed: {e}")
             return []
+
+
+# 向后兼容别名
+ClaudeNode = ClaudeSDKNode

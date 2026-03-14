@@ -3,6 +3,6 @@
 
 实现已移至 framework/claude/node.py
 """
-from framework.claude.node import ClaudeNode  # noqa: F401
+from framework.claude.node import ClaudeSDKNode, ClaudeNode  # noqa: F401
 
-__all__ = ["ClaudeNode"]
+__all__ = ["ClaudeSDKNode", "ClaudeNode"]
