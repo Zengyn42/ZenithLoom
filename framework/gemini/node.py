@@ -1,12 +1,13 @@
 """
 框架级 Gemini 节点 — framework/gemini/node.py
 
-GeminiNode(AgentNode)  →  GEMINI_CLI 节点类型
-  Gemini 作为咨询 agent，重写 __call__()：
-    - 读取 state["routing_context"] 作为提问
-    - 调用 call_llm() 获取回复
-    - 清除 routing_target / routing_context
-    - 增加 consult_count
+两种实现：
+  GeminiCodeAssistNode(AgentNode) — Code Assist HTTP API（GEMINI_API 节点类型）
+  GeminiCLINode(AgentNode)        — Gemini CLI subprocess（GEMINI_CLI 节点类型）
+
+共同接口：
+  call_llm(prompt, session_id, tools, cwd) -> (text, new_session_id)
+  __call__(state) -> dict（读取 routing_context / messages，更新 node_sessions）
 
 安全守则（防止账号/钱包被打）：
   - 每次 API 调用前强制 jitter sleep，时长随 prompt 长度线性缩放：
@@ -248,7 +249,7 @@ class _GeminiSessionMixin:
         self._default_model = (
             node_config.get("model")
             or node_config.get("gemini_model")
-            or "gemini-3.1-pro"
+            or "gemini-2.5-pro"
         )
         self._clients: dict[str, _CodeAssistClient] = {}
         self._records: dict[str, ConversationRecord] = {}
@@ -310,21 +311,20 @@ class _GeminiSessionMixin:
 
 
 # ---------------------------------------------------------------------------
-# GeminiNode — GEMINI_CLI 节点类型（继承 AgentNode）
+# GeminiCodeAssistNode — GEMINI_API 节点类型（Code Assist HTTP API）
 # ---------------------------------------------------------------------------
 
-class GeminiNode(_GeminiSessionMixin, AgentNode):
+class GeminiCodeAssistNode(_GeminiSessionMixin, AgentNode):
     """
-    Gemini 咨询 agent（GEMINI_CLI 节点类型）。
+    Gemini Code Assist API 节点（GEMINI_API 节点类型）。
+
+    通过 Code Assist HTTP API 调用 Gemini，模型范围受 API 白名单限制
+    （gemini-2.5-pro / gemini-2.5-flash）。
 
     重写 __call__()：
       - 读取 state["routing_context"] 作为提问
       - 清除 routing_target / routing_context
       - 增加 consult_count
-
-    不调用 super().__call__()，因为：
-      - prompt 来自 routing_context，不是 messages[-1]
-      - Gemini 不需要信号解析（不会再路由到其他节点）
     """
 
     def __init__(self, config: AgentConfig, node_config: dict):
@@ -416,6 +416,173 @@ class GeminiNode(_GeminiSessionMixin, AgentNode):
         return {
             "messages": [AIMessage(content=reply)],
             "routing_target": "",     # 清除路由信号，让 validate 正常路由
+            "routing_context": "",
+            "consult_count": state.get("consult_count", 0) + 1,
+            "node_sessions": ns,
+        }
+
+
+# 向后兼容别名
+GeminiNode = GeminiCodeAssistNode
+
+
+# ---------------------------------------------------------------------------
+# GeminiCLINode — GEMINI_CLI 节点类型（Gemini CLI subprocess）
+# ---------------------------------------------------------------------------
+
+class GeminiCLINode(AgentNode):
+    """
+    Gemini CLI subprocess 节点（GEMINI_CLI 节点类型）。
+
+    通过 `gemini -p "prompt" -m model -o json --yolo` 子进程调用，
+    支持 Gemini CLI 可用的所有模型（包括 gemini-3.1-pro 等高级模型）。
+
+    Session 管理由 Gemini CLI 自身处理：
+      - 新建：不传 --resume → CLI 自动创建 session
+      - 续接：--resume session_id → CLI 恢复已有 session
+      - session_id 从 JSON 输出的 "session_id" 字段获取
+    """
+
+    def __init__(self, config: AgentConfig, node_config: dict):
+        super().__init__(config, node_config)
+        self._model = (
+            node_config.get("model")
+            or node_config.get("gemini_model")
+            or "gemini-2.5-pro"
+        )
+        self._system_prompt: str = node_config.get("system_prompt") or _GEMINI_SYSTEM
+        logger.info(f"[gemini-cli] node={self._node_id} model={self._model}")
+
+    async def call_llm(
+        self,
+        prompt: str,
+        session_id: str = "",
+        tools: list[str] | None = None,
+        cwd: str | None = None,
+    ) -> tuple[str, str]:
+        """调用 Gemini CLI subprocess，返回 (reply, session_id)。"""
+        # 首次调用（无 session）时嵌入 system prompt
+        if not session_id and self._system_prompt:
+            full_prompt = (
+                f"[System Instructions]\n{self._system_prompt}\n\n"
+                f"[Task]\n{prompt}"
+            )
+        else:
+            full_prompt = prompt
+
+        cmd = [
+            "gemini",
+            "-p", full_prompt,
+            "-m", self._model,
+            "-o", "json",
+            "--yolo",
+        ]
+        if session_id:
+            cmd.extend(["--resume", session_id])
+
+        sid_short = session_id[:8] if session_id else "new"
+        logger.info(
+            f"[gemini-cli] model={self._model} sid={sid_short} "
+            f"prompt_len={len(full_prompt)}"
+        )
+        if is_debug():
+            logger.debug(f"[gemini-cli] cmd={' '.join(cmd[:6])}...")
+
+        try:
+            proc = await asyncio.create_subprocess_exec(
+                *cmd,
+                stdout=asyncio.subprocess.PIPE,
+                stderr=asyncio.subprocess.PIPE,
+                cwd=cwd or None,
+            )
+            stdout_bytes, stderr_bytes = await proc.communicate()
+        except FileNotFoundError:
+            raise RuntimeError(
+                "gemini CLI 未安装或不在 PATH 中。"
+                "请先运行: npm install -g @google/gemini-cli"
+            )
+
+        if proc.returncode != 0:
+            stderr_text = stderr_bytes.decode(errors="replace")[:500]
+            raise RuntimeError(
+                f"Gemini CLI 退出码 {proc.returncode}: {stderr_text}"
+            )
+
+        stdout_text = stdout_bytes.decode(errors="replace")
+        try:
+            data = json.loads(stdout_text)
+        except json.JSONDecodeError as e:
+            raise RuntimeError(
+                f"Gemini CLI JSON 解析失败: {e}\nstdout={stdout_text[:300]}"
+            )
+
+        reply = data.get("response", "")
+        new_sid = data.get("session_id", session_id)
+
+        if is_debug():
+            logger.debug(f"[gemini-cli] reply_preview={reply[:100]!r}")
+        logger.info(f"[gemini-cli] done sid={new_sid[:8] if new_sid else '?'}")
+        return reply.strip(), new_sid
+
+    async def __call__(self, state: dict) -> dict:
+        """
+        读取 routing_context / messages 作为 prompt，调用 Gemini CLI。
+        """
+        routing_context = state.get("routing_context", "")
+        msgs = state.get("messages", [])
+
+        ns = dict(state.get("node_sessions") or {})
+        session_id = ns.get(self._session_key, "")
+        workspace = state.get("workspace", "")
+
+        if routing_context:
+            prompt = routing_context
+            prompt_src = "routing_context"
+        elif len(msgs) > 1 and not session_id:
+            parts = []
+            for m in msgs:
+                role = "议题" if getattr(m, "type", "") == "human" else "发言"
+                parts.append(f"[{role}]:\n{m.content}")
+            prompt = "\n\n---\n\n".join(parts)
+            topic = msgs[0].content if msgs and getattr(msgs[0], "type", "") == "human" else ""
+            if topic:
+                prompt += f"\n\n---\n\n[原始要求（请严格遵守）]:\n{topic}\n请基于以上讨论继续发言。"
+            prompt_src = f"full_history ({len(msgs)} msgs)"
+        else:
+            prompt = msgs[-1].content if msgs else ""
+            prompt_src = "messages[-1]" if not session_id else f"resume({session_id[:8]})"
+
+        if is_debug():
+            logger.debug(
+                f"[{self._node_id}] prompt_src={prompt_src} "
+                f"prompt_preview={prompt[:120]!r} "
+                f"session_id={session_id[:8] if session_id else 'new'}"
+            )
+
+        try:
+            async with acquire_resource(
+                self._resource_lock,
+                timeout=self._resource_timeout,
+                holder=self._node_id,
+            ):
+                reply, new_session_id = await self.call_llm(
+                    prompt, session_id=session_id, cwd=workspace or None
+                )
+        except Exception as e:
+            logger.error(f"[{self._node_id}] Gemini CLI 失败: {e}")
+            return {
+                "messages": [AIMessage(content=f"[Gemini CLI 失败: {e}]")],
+                "routing_target": "",
+                "routing_context": "",
+                "consult_count": state.get("consult_count", 0) + 1,
+                "node_sessions": ns,
+            }
+
+        ns[self._session_key] = new_session_id or session_id
+        logger.info(f"[{self._node_id}] done, consult_count→{state.get('consult_count', 0) + 1}")
+        return {
+            "messages": [AIMessage(content=reply)],
+            "routing_target": "",
             "routing_context": "",
             "consult_count": state.get("consult_count", 0) + 1,
             "node_sessions": ns,

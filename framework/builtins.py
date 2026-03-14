@@ -5,8 +5,9 @@
 import 时自动执行注册（无副作用，幂等）。
 
 节点类型（NodeFactory：每次调用返回新实例）：
-  CLAUDE_CLI       — ClaudeNode(AgentNode)，Claude Code SDK 实现
-  GEMINI_CLI       — GeminiNode(AgentNode)，Gemini 单轮对话实现
+  CLAUDE_CLI       — ClaudeSDKNode(AgentNode)，Claude Code SDK subprocess（别名 CLAUDE_SDK）
+  GEMINI_CLI       — GeminiCLINode(AgentNode)，Gemini CLI subprocess（支持高级模型）
+  GEMINI_API       — GeminiCodeAssistNode(AgentNode)，Gemini Code Assist HTTP API
   LOCAL_VLLM       — LlamaNode(AgentNode)，本地 vLLM/Ollama 实现（stub）
   GIT_SNAPSHOT     — GitSnapshotNode，提交前自动快照
   GIT_ROLLBACK     — GitRollbackNode，验证失败时回退
@@ -38,14 +39,26 @@ logger = logging.getLogger(__name__)
 
 @register_node("CLAUDE_CLI")
 def _(config, node_config):
-    from framework.claude.node import ClaudeNode
-    return ClaudeNode(config, node_config, system_prompt=node_config.get("system_prompt", ""))
+    from framework.claude.node import ClaudeSDKNode
+    return ClaudeSDKNode(config, node_config, system_prompt=node_config.get("system_prompt", ""))
+
+
+@register_node("CLAUDE_SDK")
+def _(config, node_config):
+    from framework.claude.node import ClaudeSDKNode
+    return ClaudeSDKNode(config, node_config, system_prompt=node_config.get("system_prompt", ""))
 
 
 @register_node("GEMINI_CLI")
 def _(config, node_config):
-    from framework.gemini.node import GeminiNode
-    return GeminiNode(config, node_config)
+    from framework.gemini.node import GeminiCLINode
+    return GeminiCLINode(config, node_config)
+
+
+@register_node("GEMINI_API")
+def _(config, node_config):
+    from framework.gemini.node import GeminiCodeAssistNode
+    return GeminiCodeAssistNode(config, node_config)
 
 
 @register_node("LOCAL_VLLM")

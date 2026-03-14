@@ -14,7 +14,7 @@
       {
         "id": "gemini_propose",
         "type": "GEMINI_CLI",
-        "model": "gemini-3.1-pro",
+        "model": "gemini-2.5-pro",
         "session_key": "gemini_debate",
         "system_prompt": "你是一位资深技术顾问，正在参与一场多轮专业辩论。\n你的职责：提出方案、回应质疑、修订完善、最终总结。\n每轮发言要求：结构清晰、有理有据、言简意赅。\n承认合理的批评，坚守有价值的立场。\n不要执行任何操作，只做分析和思考。"
       },
@@ -28,7 +28,7 @@
       {
         "id": "gemini_revise",
         "type": "GEMINI_CLI",
-        "model": "gemini-3.1-pro",
+        "model": "gemini-2.5-pro",
         "session_key": "gemini_debate"
       },
       {
@@ -40,7 +40,7 @@
       {
         "id": "gemini_conclusion",
         "type": "GEMINI_CLI",
-        "model": "gemini-3.1-pro",
+        "model": "gemini-2.5-pro",
         "session_key": "gemini_debate"
       }
     ],

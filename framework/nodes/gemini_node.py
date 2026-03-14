@@ -3,6 +3,11 @@
 
 实现已移至 framework/gemini/node.py
 """
-from framework.gemini.node import GeminiNode, GeminiQuotaError  # noqa: F401
+from framework.gemini.node import (  # noqa: F401
+    GeminiCLINode,
+    GeminiCodeAssistNode,
+    GeminiNode,
+    GeminiQuotaError,
+)
 
-__all__ = ["GeminiNode", "GeminiQuotaError"]
+__all__ = ["GeminiCLINode", "GeminiCodeAssistNode", "GeminiNode", "GeminiQuotaError"]
