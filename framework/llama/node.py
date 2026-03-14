@@ -1,22 +1,22 @@
 """
-框架级 Llama LLM 节点 — framework/llama/node.py
+框架级 Ollama LLM 节点 — framework/llama/node.py
 
-LlamaNode 继承 AgentNode，实现 call_llm() 接口：
+OllamaNode 继承 AgentNode，实现 call_llm() 接口：
   call_llm(prompt, session_id, tools, cwd) → (text, session_id)
 
-通过 Ollama / vLLM HTTP API 调用本地 Llama 模型。
-Llama 本身无持久 session，返回传入的 session_id 不变（无 resume 能力）。
+通过 Ollama HTTP API 调用本地模型（llama、qwen 等）。
+Ollama 无持久 session，返回传入的 session_id 不变。
+keep_alive=-1 确保模型常驻 RAM（防止 5 分钟后自动卸载）。
 
 agent.json 配置：
-  "llm": "llama"
-  node_config["model"]: "llama-3.3-70b"          # 模型名
-  node_config["endpoint"]: "http://localhost:11434"  # Ollama endpoint
-  node_config["resource_lock"]: "GPU_0_VRAM_22GB"   # 可选：GPU 资源锁
-
-TODO: 当前为存根，完整实现待 Asa agent 上线时补充。
+  node_config["model"]:    "llama3.2:3b"              # 模型名
+  node_config["endpoint"]: "http://localhost:11434"    # Ollama endpoint（默认）
+  node_config["timeout"]:  120                         # 超时秒数（默认）
 """
 
 import logging
+
+import httpx
 
 from framework.config import AgentConfig
 from framework.debug import is_debug
@@ -25,24 +25,21 @@ from framework.nodes.agent_node import AgentNode
 logger = logging.getLogger(__name__)
 
 
-class LlamaNode(AgentNode):
+class OllamaNode(AgentNode):
     """
-    Llama LLM 节点（Ollama / vLLM），继承 AgentNode。
+    Ollama LLM 节点，继承 AgentNode。
 
-    call_llm() 实现 Ollama API 调用；
+    通过 Ollama /api/chat 端点调用本地模型。
     基类 AgentNode.__call__() 处理所有图协议逻辑。
     """
 
     def __init__(self, config: AgentConfig, node_config: dict):
         super().__init__(config, node_config)
         self._model = node_config.get("model", "llama3")
-        self._endpoint = node_config.get("endpoint") or node_config.get("llama_endpoint")
-        if not self._endpoint:
-            raise ValueError(
-                "LlamaNode: 'endpoint' required in node_config "
-                "(e.g. {\"endpoint\": \"http://localhost:11434\"})"
-            )
-        logger.info(f"[llama] model={self._model} endpoint={self._endpoint}")
+        self._endpoint = node_config.get("endpoint", "http://localhost:11434")
+        self._timeout = node_config.get("timeout", 120)
+        self._system_prompt = node_config.get("system_prompt", "")
+        logger.info(f"[ollama] model={self._model} endpoint={self._endpoint}")
 
     async def call_llm(
         self,
@@ -52,30 +49,60 @@ class LlamaNode(AgentNode):
         cwd: str | None = None,
     ) -> tuple[str, str]:
         """
-        调用 Llama（Ollama API）。返回 (text, session_id)。
+        调用 Ollama /api/chat。返回 (text, session_id)。
 
-        session_id 语义：Llama 本身无持久 session，
-        返回传入的 session_id 不变（无 resume 能力）。
+        session_id 语义：Ollama 无持久 session，返回传入值不变。
+        tools/cwd：Phase 1 忽略，Ollama tool call 支持推迟到 Phase 2。
+        keep_alive=-1：模型常驻 RAM，防止 5 分钟后自动卸载。
         """
         if is_debug():
-            logger.debug(f"[llama] prompt_len={len(prompt)} cwd={cwd!r}")
+            logger.debug(f"[ollama] model={self._model} prompt_len={len(prompt)}")
 
-        # TODO: 实现 Ollama /api/chat HTTP 调用
-        # import httpx
-        # async with httpx.AsyncClient() as client:
-        #     resp = await client.post(f"{self._endpoint}/api/chat", json={
-        #         "model": self._model,
-        #         "messages": [{"role": "user", "content": prompt}],
-        #         "stream": False,
-        #     })
-        #     data = resp.json()
-        #     return data["message"]["content"], session_id
+        messages = []
+        if self._system_prompt:
+            messages.append({"role": "system", "content": self._system_prompt})
+        messages.append({"role": "user", "content": prompt})
 
-        raise NotImplementedError(
-            "LlamaNode.call_llm 尚未实现。"
-            f"请配置 Ollama 并实现 {self._endpoint}/api/chat 调用。"
-        )
+        payload = {
+            "model": self._model,
+            "messages": messages,
+            "stream": False,
+            "keep_alive": -1,
+        }
+
+        try:
+            async with httpx.AsyncClient(timeout=self._timeout) as client:
+                response = await client.post(
+                    f"{self._endpoint}/api/chat",
+                    json=payload,
+                )
+        except httpx.ConnectError as e:
+            msg = (
+                f"[Ollama 连接失败] 无法连接到 {self._endpoint}，"
+                f"请确认 Ollama 正在运行。({e})"
+            )
+            logger.error(msg)
+            return msg, session_id
+        except httpx.TimeoutException:
+            msg = f"[Ollama 超时] 模型 {self._model} 响应超时（{self._timeout}s）"
+            logger.error(msg)
+            return msg, session_id
+
+        if response.status_code != 200:
+            body = response.json() if response.content else {}
+            error = body.get("error", f"HTTP {response.status_code}")
+            msg = f"[Ollama 错误] {error}"
+            logger.error(msg)
+            return msg, session_id
+
+        data = response.json()
+        text = data["message"]["content"]
+        return text, session_id
 
     def get_recent_history(self, session_id: str, limit: int = 10) -> list:
-        """Llama 无持久 session，返回空列表。"""
+        """Ollama 无持久 session，返回空列表。"""
         return []
+
+
+# Backward compatibility alias — builtins.py imports LlamaNode directly from this module
+LlamaNode = OllamaNode
