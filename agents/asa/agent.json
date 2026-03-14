@@ -1,23 +1,27 @@
 {
   "name": "asa",
   "llm": "llama",
-  "workspace": "/home/kingy/Foundation/EdenGateway",
-  "vram_flush": true,
   "channel_history_limit": 20,
-  "heartbeat": true,
-  "llama_model": "llama-3.3-70b",
-  "llama_endpoint": "http://localhost:11434",
-  "tools": ["Read", "Write", "Edit", "Bash", "Glob", "Grep"],
-  "permission_mode": "bypassPermissions",
+  "graph": {
+    "nodes": [
+      {
+        "id": "llama_main",
+        "type": "OLLAMA",
+        "model": "llama3.2:3b",
+        "endpoint": "http://localhost:11434",
+        "first_turn_suffix": "Asa:",
+        "user_msg_prefix": "",
+        "tombstone_enabled": false,
+        "tool_rules": []
+      }
+    ],
+    "edges": [
+      {"from": "__start__", "to": "llama_main"},
+      {"from": "llama_main", "to": "__end__"}
+    ]
+  },
   "max_retries": 2,
-  "max_gemini_consults": 1,
   "db_path": "asa.db",
   "sessions_file": "sessions.json",
-  "claude_model": null,
-  "persona_files": ["SOUL.md"],
-  "first_turn_suffix": "Asa:",
-  "user_msg_prefix": "",
-  "gemini_mention_pattern": "@[Gg]emini",
-  "tombstone_enabled": true,
-  "tool_rules": []
+  "persona_files": ["SOUL.md"]
 }
