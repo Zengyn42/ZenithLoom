@@ -8,7 +8,8 @@ import 时自动执行注册（无副作用，幂等）。
   CLAUDE_CLI       — ClaudeSDKNode(AgentNode)，Claude Code SDK subprocess（别名 CLAUDE_SDK）
   GEMINI_CLI       — GeminiCLINode(AgentNode)，Gemini CLI subprocess（支持高级模型）
   GEMINI_API       — GeminiCodeAssistNode(AgentNode)，Gemini Code Assist HTTP API
-  LOCAL_VLLM       — LlamaNode(AgentNode)，本地 vLLM/Ollama 实现（stub）
+  OLLAMA           — OllamaNode(AgentNode)，Ollama HTTP API（别名 LOCAL_VLLM）
+  LOCAL_VLLM       — OllamaNode(AgentNode)，同 OLLAMA（向后兼容别名）
   GIT_SNAPSHOT     — GitSnapshotNode，提交前自动快照
   GIT_ROLLBACK     — GitRollbackNode，验证失败时回退
   VALIDATE         — ValidateNode，输出质量验证
@@ -59,6 +60,12 @@ def _(config, node_config):
 def _(config, node_config):
     from framework.gemini.node import GeminiCodeAssistNode
     return GeminiCodeAssistNode(config, node_config)
+
+
+@register_node("OLLAMA")
+def _(config, node_config):
+    from framework.llama.node import LlamaNode
+    return LlamaNode(config, node_config)
 
 
 @register_node("LOCAL_VLLM")
