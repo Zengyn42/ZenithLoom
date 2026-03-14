@@ -65,7 +65,7 @@ def _probe_claude() -> bool:
 def _probe_gemini() -> bool:
     try:
         r = subprocess.run(
-            ["gemini", "-p", "Reply with just OK."],
+            ["gemini", "-m", "gemini-2.5-flash", "-p", "Reply with just OK."],
             capture_output=True,
             text=True,
             timeout=30,
