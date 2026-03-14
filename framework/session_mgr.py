@@ -164,6 +164,22 @@ class SessionManager:
                 return name
         return None
 
+    def list_by_prefix(self, prefix: str) -> dict[str, SessionEnvelope]:
+        """列出 name 以 prefix 开头的所有 sessions。"""
+        return {n: e for n, e in self._sessions.items() if n.startswith(prefix)}
+
+    def delete_by_prefix(self, prefix: str) -> int:
+        """删除 name 以 prefix 开头的所有 sessions 及其 checkpoint 行。返回删除的 session 数。"""
+        to_delete = [n for n in self._sessions if n.startswith(prefix)]
+        if not to_delete:
+            return 0
+        for name in to_delete:
+            env = self._sessions.pop(name)
+            self.reset(env.thread_id)
+        self._save()
+        logger.info(f"[session] delete_by_prefix {prefix!r} → {len(to_delete)} sessions")
+        return len(to_delete)
+
     # ------------------------------------------------------------------
     # LangGraph checkpoint management
     # ------------------------------------------------------------------

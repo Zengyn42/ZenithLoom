@@ -248,7 +248,7 @@ class _GeminiSessionMixin:
         self._default_model = (
             node_config.get("model")
             or node_config.get("gemini_model")
-            or "gemini-2.5-flash"
+            or "gemini-3.1-pro"
         )
         self._clients: dict[str, _CodeAssistClient] = {}
         self._records: dict[str, ConversationRecord] = {}

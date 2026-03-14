@@ -19,7 +19,7 @@ def _keep_last_2(existing: list, new) -> list:
 
 class BaseAgentState(TypedDict):
     messages: Annotated[list[BaseMessage], _keep_last_2]
-    routing_target: str   # 路由目标节点 ID（Claude 写入，如 "gemini_advisor"；空 = 无路由请求）
+    routing_target: str   # 路由目标节点 ID（Claude 写入，如 "debate_brainstorm"；空 = 无路由请求）
     routing_context: str  # 路由上下文（问题/背景，目标节点读取；替代旧 gemini_context）
     workspace: str        # 当前工作目录（per-session，GraphController 注入）
     project_root: str     # 运行时覆盖目录（!setproject 设置）
@@ -29,7 +29,7 @@ class BaseAgentState(TypedDict):
     retry_count: int      # 当轮回退重试次数
     rollback_reason: str  # 触发回退的原因（非空 = 需要回退）
     claude_session_id: str  # SDK resume 用的 session UUID（向后兼容，镜像 node_sessions["claude_main"]）
-    node_sessions: dict     # {"claude_main": uuid, "gemini_advisor": uuid, ...} — 所有节点 session UUID
+    node_sessions: dict     # {"claude_main": uuid, ...} — 所有节点 session UUID
     knowledge_vault: str    # 知识库根路径（Obsidian vault 或任意 .md 目录）；agent 用 Read/Glob/Grep 按需读取
     project_docs: str       # 当前子项目 /docs/ 路径（技术文档，随 repo 走）
     debate_conclusion: str  # 辩论子图最终结论（最后发言节点的输出，由 AgentRefNode 写入）

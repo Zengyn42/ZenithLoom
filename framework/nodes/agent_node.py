@@ -53,7 +53,7 @@ class AgentNode:
       - node_sessions UUID 路由（读取/写入 state["node_sessions"]）
       - 资源锁（acquire_resource）
       - 动态注入（rollback warning、Gemini 建议、project_meta）
-      - consult_gemini 信号检测（路由到 gemini_advisor）
+      - 路由信号检测（routing_target）
       - tool_rules 关键词匹配
     """
 
@@ -257,7 +257,7 @@ class AgentNode:
                 f"【系统指令·强制咨询】用户明确要求咨询 Gemini，关于：{topic}\n"
                 f"请把这个问题组装成专业提问，"
                 f"**第一行且只有第一行**输出以下 JSON，不要任何前缀或解释：\n"
-                f'{{"route": "gemini_advisor", "context": "<提炼后的问题>|<相关项目状态>"}}'
+                f'{{"route": "debate_brainstorm", "context": "<提炼后的问题>|<相关项目状态>"}}'
             )
         return f"{prefix}{user_input}" if prefix else user_input
 

@@ -82,7 +82,7 @@ async def test_hani_graph_with_debate():
     node_ids = set(g.nodes)
 
     required = {
-        "claude_main", "gemini_advisor", "validate",
+        "claude_main", "validate",
         "git_snapshot", "git_rollback",
         "debate_brainstorm", "debate_design",
     }

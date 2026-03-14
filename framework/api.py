@@ -114,7 +114,7 @@ class GeminiAPI:
     GeminiQuotaError（403/429）不捕获，直接穿透给调用方（LangGraph 图）。
     """
 
-    def __init__(self, config: AgentConfig, claude_api: ClaudeAPI, model: str = "gemini-2.5-flash"):
+    def __init__(self, config: AgentConfig, claude_api: ClaudeAPI, model: str = "gemini-3.1-pro"):
         self._client = _CodeAssistClient(model)
         self._claude = claude_api
 

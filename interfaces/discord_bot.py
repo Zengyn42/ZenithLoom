@@ -9,6 +9,8 @@ import asyncio
 import logging
 import os
 import tempfile
+from datetime import datetime, timezone
+
 import discord
 from discord.ext import commands
 from dotenv import load_dotenv
@@ -39,6 +41,64 @@ _discord_streaming: bool = True
 # 每个频道的并发锁（防止多条消息同时被处理）
 _channel_locks: dict = {}
 
+# Per-channel：活跃 session 名称（channel_id → session name in sessions.json）
+_channel_active_session: dict[int, str] = {}
+
+# Per-channel：正在运行的 agent task（用于 !stop）
+_channel_tasks: dict[int, asyncio.Task] = {}
+
+
+# ==========================================
+# Per-channel session 辅助函数
+# ==========================================
+def _channel_prefix(channel_id: int) -> str:
+    """Discord 频道的 session name 前缀。"""
+    return f"discord-{channel_id}"
+
+
+def _channel_default_session(channel_id: int) -> str:
+    """频道的默认 session 名称。"""
+    return f"discord-{channel_id}"
+
+
+def _ensure_channel_session(channel_id: int) -> str:
+    """确保频道有 session，不存在则自动创建。返回 session name。"""
+    name = _channel_active_session.get(channel_id)
+    if name and _session_mgr and _session_mgr.get_envelope(name):
+        return name
+    default = _channel_default_session(channel_id)
+    if _session_mgr and not _session_mgr.get_envelope(default):
+        _session_mgr.create_session(default)
+    _channel_active_session[channel_id] = default
+    return default
+
+
+def _get_channel_config(channel_id: int) -> dict:
+    """获取频道活跃 session 对应的 LangGraph config。"""
+    name = _channel_active_session.get(channel_id, _channel_default_session(channel_id))
+    env = _session_mgr.get_envelope(name) if _session_mgr else None
+    tid = env.thread_id if env else _channel_default_session(channel_id)
+    return {"configurable": {"thread_id": tid}}
+
+
+def _get_channel_workspace(channel_id: int) -> str:
+    """获取频道活跃 session 的工作目录。"""
+    name = _channel_active_session.get(channel_id, _channel_default_session(channel_id))
+    env = _session_mgr.get_envelope(name) if _session_mgr else None
+    return env.workspace if env else ""
+
+
+async def _cleanup_channel(channel_id: int) -> int:
+    """删除频道的所有 sessions + checkpoints，清理内存数据。返回删除的 session 数。"""
+    if not _session_mgr:
+        return 0
+    prefix = _channel_prefix(channel_id)
+    deleted = _session_mgr.delete_by_prefix(prefix)
+    _channel_active_session.pop(channel_id, None)
+    _channel_locks.pop(channel_id, None)
+    _channel_tasks.pop(channel_id, None)
+    return deleted
+
 
 # ==========================================
 # 身份认证白名单（从 loader.config 读取）
@@ -65,12 +125,6 @@ def split_fence_aware(text: str, max_chars: int = DISCORD_MAX_CHARS) -> list[str
 
 
 # ==========================================
-# 当前项目目录
-# ==========================================
-_current_project_root: str = ""
-
-
-# ==========================================
 # 文件发送解析（图片 / 视频）— delegated to BaseInterface
 # ==========================================
 def _extract_attachments(text: str) -> tuple[str, list[str]]:
@@ -89,7 +143,7 @@ async def _refresh_history_file(channel, limit: int, exclude_msg_id: int) -> str
     返回文件绝对路径，写入失败或无 workspace 时返回 None。
     Agent 仅在用户主动要求时通过 Read 工具读取该文件，不自动注入。
     """
-    workspace = (_loader.json.get("workspace", "") if _loader else "") or _current_project_root
+    workspace = (_loader.json.get("workspace", "") if _loader else "") or _get_channel_workspace(channel.id)
     if not workspace:
         return None
 
@@ -121,7 +175,9 @@ async def _refresh_history_file(channel, limit: int, exclude_msg_id: int) -> str
 # ==========================================
 async def _invoke_agent_async(user_input: str, message=None) -> str:
     engine = _controller._graph
-    config = _controller.get_config()
+    channel_id = message.channel.id if message else 0
+    config = _get_channel_config(channel_id)
+    workspace = _get_channel_workspace(channel_id)
 
     # 后台刷新历史文件（Agent 不会自动读取，只在被要求时用 Read 工具读取）
     history_limit = (_loader.json.get("channel_history_limit", 0) if _loader else 0)
@@ -133,11 +189,11 @@ async def _invoke_agent_async(user_input: str, message=None) -> str:
             logger.debug(f"[discord] 历史文件已刷新: {history_path}")
 
     if is_debug():
-        logger.debug(f"[agent] input_len={len(user_input)} project_root={_current_project_root!r}")
+        logger.debug(f"[agent] input_len={len(user_input)} workspace={workspace!r}")
 
     init_state: dict = {"messages": [HumanMessage(content=user_input)]}
-    if _current_project_root:
-        init_state["project_root"] = _current_project_root
+    if workspace:
+        init_state["project_root"] = workspace
 
     full_response = []
     async for chunk, _ in engine.astream(
@@ -177,7 +233,8 @@ async def _invoke_agent_streaming(user_input: str, message) -> None:
 
     async with lock:
         engine = _controller._graph
-        config = _controller.get_config()
+        config = _get_channel_config(channel_id)
+        workspace = _get_channel_workspace(channel_id)
         agent_name = _loader.name if _loader else "Agent"
 
         history_limit = (_loader.json.get("channel_history_limit", 0) if _loader else 0)
@@ -185,8 +242,8 @@ async def _invoke_agent_streaming(user_input: str, message) -> None:
             await _refresh_history_file(message.channel, history_limit, exclude_msg_id=message.id)
 
         init_state: dict = {"messages": [HumanMessage(content=user_input)]}
-        if _current_project_root:
-            init_state["project_root"] = _current_project_root
+        if workspace:
+            init_state["project_root"] = workspace
 
         # ── Typing 指示器：context manager 自动续命，兼容 DM/群组频道 ────────
         typing_ctx = message.channel.typing()
@@ -278,6 +335,17 @@ async def _invoke_agent_streaming(user_input: str, message) -> None:
         set_stream_callback(_discord_cb)
         try:
             result_state = await engine.ainvoke(init_state, config=config)
+        except asyncio.CancelledError:
+            set_stream_callback(None)
+            event_queue.put_nowait((None, None))
+            await editor_task
+            await typing_ctx.__aexit__(None, None, None)
+            if text_draft[0]:
+                try:
+                    await text_draft[0].delete()
+                except Exception:
+                    pass
+            raise
         finally:
             set_stream_callback(None)
             event_queue.put_nowait((None, None))
@@ -341,11 +409,40 @@ async def on_ready():
     else:
         logger.warning("[Auth] 白名单为空，任何人均可使用")
 
+    # ── 从 sessions.json 恢复 per-channel 活跃 session ──────────────
+    if _session_mgr:
+        best: dict[int, tuple[str, str]] = {}  # channel_id → (name, updated_at)
+        for sname, env in _session_mgr.list_by_prefix("discord-").items():
+            parts = sname.split("-", 2)  # "discord-{channel_id}" or "discord-{channel_id}-{name}"
+            if len(parts) < 2:
+                continue
+            try:
+                cid = int(parts[1])
+            except ValueError:
+                continue
+            if cid not in best or env.updated_at > best[cid][1]:
+                best[cid] = (sname, env.updated_at)
+        for cid, (sname, _) in best.items():
+            _channel_active_session[cid] = sname
+        if best:
+            logger.info(f"[Discord] 恢复了 {len(best)} 个频道的活跃 session")
+
     if _loader and _loader.json.get("heartbeat"):
         from framework.heartbeat import heartbeat_loop, run_heartbeat_once
         logger.info(f"[Discord] heartbeat 已启动（agent={agent_name}）")
         await run_heartbeat_once()
         asyncio.create_task(heartbeat_loop())
+
+
+@bot.event
+async def on_guild_channel_delete(channel):
+    """频道被删除时自动清理所有相关 sessions + checkpoints。"""
+    task = _channel_tasks.get(channel.id)
+    if task and not task.done():
+        task.cancel()
+    deleted = await _cleanup_channel(channel.id)
+    if deleted:
+        logger.info(f"[Discord] 已清理已删频道 {channel.id} 的 {deleted} 个 sessions")
 
 
 @bot.event
@@ -359,10 +456,14 @@ async def on_message(message: discord.Message):
         return
 
     user_input = message.content.strip()
+    channel_id = message.channel.id
+
+    # ── 确保频道有 session ──────────────────────────────────────────
+    _ensure_channel_session(channel_id)
 
     # ── 附件处理：下载到临时目录，路径附加到 user_input ──────────────
     if message.attachments:
-        workspace = (_loader.json.get("workspace", "") if _loader else "") or _current_project_root
+        workspace = (_loader.json.get("workspace", "") if _loader else "") or _get_channel_workspace(channel_id)
         attach_dir = os.path.join(workspace, ".discord_attachments") if workspace else tempfile.mkdtemp(prefix="discord_attach_")
         os.makedirs(attach_dir, exist_ok=True)
         attached_paths: list[str] = []
@@ -386,22 +487,37 @@ async def on_message(message: discord.Message):
     full_text = None
 
     if _discord_streaming:
-        # 流式模式：_invoke_agent_streaming 全权处理所有 Discord 消息
+        # 流式模式：wrapped in tracked task for !stop
+        task = asyncio.create_task(_invoke_agent_streaming(user_input, message))
+        _channel_tasks[channel_id] = task
         try:
-            await _invoke_agent_streaming(user_input, message)
+            await task
+        except asyncio.CancelledError:
+            logger.info(f"[discord] task cancelled for channel {channel_id}")
         except Exception as e:
             logger.error(f"[agent] 流式调用出错: {e}", exc_info=is_debug())
             await message.channel.send(f"{agent_name} 出错了: {e}")
+        finally:
+            _channel_tasks.pop(channel_id, None)
         return
     else:
-        # 非流式模式：typing 占位 → 收集完整回复 → 发送
+        # 非流式模式：wrapped in tracked task for !stop
         async with message.channel.typing():
+            async def _run_async():
+                return await _invoke_agent_async(user_input, message=message)
+            task = asyncio.create_task(_run_async())
+            _channel_tasks[channel_id] = task
             try:
-                full_text = await _invoke_agent_async(user_input, message=message)
+                full_text = await task
+            except asyncio.CancelledError:
+                logger.info(f"[discord] task cancelled for channel {channel_id}")
+                return
             except Exception as e:
                 logger.error(f"[agent] 调用出错: {e}", exc_info=is_debug())
                 await message.channel.send(f"{agent_name} 出错了: {e}")
                 return
+            finally:
+                _channel_tasks.pop(channel_id, None)
 
     if not full_text:
         await message.channel.send(f"（{agent_name} 没有输出，请重试）")
@@ -444,27 +560,30 @@ async def show_help(ctx):
     await ctx.send(
         "**Agent 命令手册**\n"
         "```\n"
-        "── Session 管理（框架通用）──────────────────────\n"
-        "!new <名称>        创建并切换到新命名 session\n"
-        "!switch <名称>     切换到已有命名 session\n"
-        "!session           显示当前 session 名称和 thread_id\n"
-        "!sessions          列出所有命名 sessions（当前用 ◀ 标注）\n"
-        "!memory            查看 session 消息数和 DB 大小\n"
-        "!compact [N]       压缩 session，保留最近 N 条（默认 20）\n"
+        "── 频道 Session ─────────────────────────────────\n"
+        "!new <名称>        在当前频道创建新 session\n"
+        "!switch <名称>     切换当前频道的 session\n"
+        "!session           显示当前频道的 session 信息\n"
+        "!sessions          列出当前频道的所有 sessions\n"
+        "!stop              停止当前频道正在运行的任务\n"
+        "!channels          列出所有频道的 session 数据\n"
+        "\n"
+        "── 记忆管理 ─────────────────────────────────────\n"
+        "!memory            查看当前 session 的 checkpoint 统计\n"
+        "!compact [N]       压缩当前 session，保留最近 N 条\n"
         "!reset confirm     清空当前 session 全部记忆\n"
-        "!clear             清空 session（无需确认）\n"
+        "!clear             重置当前 session（无需确认）\n"
         "\n"
         "── 工具 ─────────────────────────────────────────\n"
         "!tokens            查看 token 消耗统计\n"
         "!tokens reset      重置 token 计数\n"
-        "!setproject <路径>  设置工作目录\n"
-        "!project           查看当前项目目录\n"
+        "!setproject <路径>  设置当前频道的工作目录\n"
+        "!project           查看当前频道的项目目录\n"
         "!stream            切换流式输出 ON/OFF\n"
         "!debug             查看 debug 模式状态\n"
         "!whoami            显示你的 Discord ID\n"
         "!help              显示此帮助信息\n"
-        "```\n"
-        "**提示**：消息中包含 `@Gemini` 可强制触发 Gemini 架构咨询。"
+        "```"
     )
 
 
@@ -472,36 +591,113 @@ async def show_help(ctx):
 async def new_session_cmd(ctx, *, name: str = ""):
     if not await _check_auth(ctx):
         return
-    iface = _DiscordInterface(_loader)
-    reply = await iface.handle_command("!new", name)
-    await ctx.send(reply or "❌ 创建失败")
+    if not name:
+        await ctx.send("用法：`!new <名称>`")
+        return
+    channel_id = ctx.channel.id
+    full_name = f"{_channel_prefix(channel_id)}-{name}"
+    try:
+        env = _session_mgr.create_session(full_name)
+        _channel_active_session[channel_id] = full_name
+        await ctx.send(f"已创建并切换到 session `{name}`\nthread: `{env.thread_id}`")
+    except ValueError as e:
+        await ctx.send(f"❌ {e}")
 
 
 @bot.command(name="switch")
 async def switch_session_cmd(ctx, *, name: str = ""):
     if not await _check_auth(ctx):
         return
-    iface = _DiscordInterface(_loader)
-    reply = await iface.handle_command("!switch", name)
-    await ctx.send(reply or "❌ 切换失败")
+    if not name:
+        await ctx.send("用法：`!switch <名称>` 或 `!switch default`")
+        return
+    channel_id = ctx.channel.id
+    if name == "default":
+        full_name = _channel_default_session(channel_id)
+    else:
+        full_name = f"{_channel_prefix(channel_id)}-{name}"
+    env = _session_mgr.get_envelope(full_name)
+    if not env:
+        await ctx.send(f"❌ Session `{name}` 不存在。用 `!sessions` 查看可用 sessions。")
+        return
+    _channel_active_session[channel_id] = full_name
+    await ctx.send(f"已切换到 session `{name}`\nthread: `{env.thread_id}`")
 
 
 @bot.command(name="session")
 async def show_session(ctx):
     if not await _check_auth(ctx):
         return
-    iface = _DiscordInterface(_loader)
-    reply = await iface.handle_command("!session", "")
-    await ctx.send(reply)
+    channel_id = ctx.channel.id
+    name = _ensure_channel_session(channel_id)
+    env = _session_mgr.get_envelope(name)
+    display = name.replace(_channel_prefix(channel_id), "").lstrip("-") or "default"
+    await ctx.send(f"当前 session: `{display}`\nthread: `{env.thread_id}`")
 
 
 @bot.command(name="sessions")
 async def list_sessions_cmd(ctx):
     if not await _check_auth(ctx):
         return
-    iface = _DiscordInterface(_loader)
-    reply = await iface.handle_command("!sessions", "")
-    await ctx.send(reply)
+    channel_id = ctx.channel.id
+    prefix = _channel_prefix(channel_id)
+    sessions = _session_mgr.list_by_prefix(prefix)
+    if not sessions:
+        await ctx.send("当前频道没有 session。")
+        return
+    active = _channel_active_session.get(channel_id, _channel_default_session(channel_id))
+    lines = []
+    for name, env in sessions.items():
+        display = name.replace(prefix, "").lstrip("-") or "default"
+        marker = " ◀" if name == active else ""
+        lines.append(f"  {display:<20} thread={env.thread_id}{marker}")
+    await ctx.send(f"**频道 Sessions**\n```\n" + "\n".join(lines) + "\n```")
+
+
+@bot.command(name="stop")
+async def stop_task(ctx):
+    if not await _check_auth(ctx):
+        return
+    task = _channel_tasks.get(ctx.channel.id)
+    if task is None or task.done():
+        await ctx.send("没有正在运行的任务。")
+        return
+    task.cancel()
+    await ctx.send("已停止。")
+
+
+@bot.command(name="channels")
+async def list_channels_cmd(ctx):
+    if not await _check_auth(ctx):
+        return
+    all_discord = _session_mgr.list_by_prefix("discord-")
+    if not all_discord:
+        await ctx.send("没有任何 Discord 频道 session。")
+        return
+    # 按 channel_id 分组
+    grouped: dict[int, list[str]] = {}
+    for sname in all_discord:
+        parts = sname.split("-", 2)
+        if len(parts) < 2:
+            continue
+        try:
+            cid = int(parts[1])
+        except ValueError:
+            continue
+        grouped.setdefault(cid, []).append(sname)
+    # 输出
+    lines = []
+    guild = ctx.guild
+    for cid, names in sorted(grouped.items()):
+        ch = guild.get_channel(cid) if guild else None
+        ch_label = f"#{ch.name}" if ch else f"⚠ orphan({cid})"
+        active = _channel_active_session.get(cid, "")
+        lines.append(f"{ch_label}  ({len(names)} sessions, active={active.split('-', 2)[-1] if active else '?'})")
+        for sname in names:
+            display = sname.replace(f"discord-{cid}", "").lstrip("-") or "default"
+            marker = " ◀" if sname == active else ""
+            lines.append(f"    {display}{marker}")
+    await ctx.send(f"**所有频道 Sessions**\n```\n" + "\n".join(lines) + "\n```")
 
 
 @bot.command(name="debug")
@@ -532,11 +728,13 @@ async def whoami(ctx):
 async def show_memory(ctx):
     if not await _check_auth(ctx):
         return
-    thread_id = _controller.active_thread_id
-    stats = _session_mgr.session_stats(thread_id)
-    name = _session_mgr.find_name_by_thread_id(thread_id) or "默认"
+    channel_id = ctx.channel.id
+    name = _ensure_channel_session(channel_id)
+    env = _session_mgr.get_envelope(name)
+    stats = _session_mgr.session_stats(env.thread_id)
+    display = name.replace(_channel_prefix(channel_id), "").lstrip("-") or "default"
     await ctx.send(
-        f"**Session 状态**（`{name}`）\n"
+        f"**Session 状态**（`{display}`）\n"
         f"- thread: `{stats['thread_id']}`\n"
         f"- checkpoints: `{stats['message_count']}` 条\n"
         f"- DB 大小: `{stats['db_size_kb']} KB`"
@@ -547,9 +745,10 @@ async def show_memory(ctx):
 async def compact_session(ctx, keep: int = 20):
     if not await _check_auth(ctx):
         return
-    thread_id = _controller.active_thread_id
-    deleted = _session_mgr.compact(thread_id, keep_last=keep)
-    _loader.invalidate_engine()
+    channel_id = ctx.channel.id
+    name = _ensure_channel_session(channel_id)
+    env = _session_mgr.get_envelope(name)
+    deleted = _session_mgr.compact(env.thread_id, keep_last=keep)
     await ctx.send(f"Compact 完成：删除了 `{deleted}` 条旧记录，保留最近 `{keep}` 条。")
 
 
@@ -560,13 +759,14 @@ async def reset_session(ctx, confirm: str = ""):
     agent_name = _loader.name if _loader else "Agent"
     if confirm != "confirm":
         await ctx.send(
-            f"此操作将**清空 {agent_name} 的全部记忆**，无法恢复。\n"
+            f"此操作将**清空当前频道 session 的全部记忆**，无法恢复。\n"
             "确认请输入：`!reset confirm`"
         )
         return
-    thread_id = _controller.active_thread_id
-    deleted = _session_mgr.reset(thread_id)
-    _loader.invalidate_engine()
+    channel_id = ctx.channel.id
+    name = _ensure_channel_session(channel_id)
+    env = _session_mgr.get_envelope(name)
+    deleted = _session_mgr.reset(env.thread_id)
     await ctx.send(f"Session 已重置，清空了 `{deleted}` 条记录。{agent_name} 从零开始。")
 
 
@@ -583,9 +783,14 @@ async def show_tokens(ctx, reset: str = ""):
 async def clear_session(ctx):
     if not await _check_auth(ctx):
         return
-    iface = _DiscordInterface(_loader)
-    reply = await iface.handle_command("!clear", "")
-    await ctx.send(reply)
+    channel_id = ctx.channel.id
+    name = _ensure_channel_session(channel_id)
+    env = _session_mgr.get_envelope(name)
+    workspace = env.workspace if env else ""
+    _session_mgr.delete(name)
+    new_env = _session_mgr.create_session(name, workspace=workspace)
+    _channel_active_session[channel_id] = name
+    await ctx.send(f"Session 已重置。(new thread: `{new_env.thread_id[:8]}`)")
 
 
 @bot.command(name="resources")
@@ -601,16 +806,20 @@ async def show_resources(ctx):
 async def set_project(ctx, *, path: str = ""):
     if not await _check_auth(ctx):
         return
-    global _current_project_root
+    channel_id = ctx.channel.id
+    name = _ensure_channel_session(channel_id)
+    env = _session_mgr.get_envelope(name)
     if not path:
-        current = _current_project_root or "（未设置）"
+        current = (env.workspace if env else "") or "（未设置）"
         await ctx.send(f"当前项目目录：`{current}`")
         return
     path = os.path.expanduser(path.strip())
     if not os.path.isdir(path):
         await ctx.send(f"路径不存在：`{path}`")
         return
-    _current_project_root = path
+    env.workspace = path
+    env.updated_at = datetime.now(timezone.utc).isoformat()
+    _session_mgr._save()
     await ctx.send(f"项目目录已设置为：`{path}`\nGit 时间机器已就位。")
 
 
@@ -618,7 +827,10 @@ async def set_project(ctx, *, path: str = ""):
 async def show_project(ctx):
     if not await _check_auth(ctx):
         return
-    current = _current_project_root or "（未设置，全局模式）"
+    channel_id = ctx.channel.id
+    name = _ensure_channel_session(channel_id)
+    env = _session_mgr.get_envelope(name)
+    current = (env.workspace if env else "") or "（未设置，全局模式）"
     await ctx.send(f"当前项目目录：`{current}`")
 
 
