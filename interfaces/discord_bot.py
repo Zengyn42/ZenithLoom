@@ -291,12 +291,10 @@ async def _invoke_agent_streaming(user_input: str, message) -> None:
                 if thinking_buf and (sentinel or now - thinking_last >= THINKING_THROTTLE):
                     thinking_last = now
                     preview = "".join(thinking_buf)
-                    close = "\n*[/thinking]*" if sentinel else ""
-                    max_body = 1860 - len(close)
+                    max_body = 1860
                     body_text = f"…{preview[-max_body:]}" if len(preview) > max_body else preview
-                    # blockquote each line for visual separation + italic-like styling
                     quoted = "\n".join(f"> {line}" if line else ">" for line in body_text.splitlines())
-                    display = f"*💭 [thinking]*\n{quoted}{close}"
+                    display = f"*💭*\n{quoted}"
                     if thinking_msg[0] is None:
                         thinking_msg[0] = await message.channel.send(display)
                     else:
