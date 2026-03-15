@@ -476,8 +476,12 @@ class GeminiCLINode(AgentNode):
       - session_id 从 JSON 输出的 "session_id" 字段获取
     """
 
-    # 默认超时：120 秒（pro 模型处理长 prompt 需要 60-90s，留足余量）
-    _DEFAULT_TIMEOUT = 120
+    # 最小超时：60 秒（短 prompt 的基线）
+    _DEFAULT_TIMEOUT = 60
+    # 动态超时上限：300 秒
+    _MAX_TIMEOUT = 300
+    # 每多少字符增加 1 秒（25k chars → +125s，总 ~185s）
+    _TIMEOUT_CHARS_PER_SEC = 200
 
     def __init__(self, config: AgentConfig, node_config: dict):
         super().__init__(config, node_config)
@@ -534,6 +538,10 @@ class GeminiCLINode(AgentNode):
         if session_id:
             cmd.extend(["--resume", session_id])
 
+        effective_timeout = min(
+            self._MAX_TIMEOUT,
+            max(self._timeout, len(full_prompt) // self._TIMEOUT_CHARS_PER_SEC),
+        )
         try:
             proc = await asyncio.create_subprocess_exec(
                 *cmd,
@@ -542,13 +550,13 @@ class GeminiCLINode(AgentNode):
                 cwd=cwd or None,
             )
             stdout_bytes, stderr_bytes = await asyncio.wait_for(
-                proc.communicate(), timeout=self._timeout
+                proc.communicate(), timeout=effective_timeout
             )
         except asyncio.TimeoutError:
             proc.kill()
             await proc.wait()
             raise _GeminiCapacityError(
-                f"model={model} 超时 ({self._timeout}s)"
+                f"model={model} 超时 ({effective_timeout}s, prompt_len={len(full_prompt)})"
             )
         except FileNotFoundError:
             raise  # 保持原类型，让调用者区分"CLI 未安装"与"模型错误"
