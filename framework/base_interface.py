@@ -58,6 +58,7 @@ class BaseInterface:
             init_state.update(extra_state)
 
         self._last_stream_chunk_count = 0
+        self._on_stream_reset()
         if self._streaming:
             set_stream_callback(self._on_stream_chunk)
         try:
@@ -68,12 +69,17 @@ class BaseInterface:
 
         return self._extract_response(result_state)
 
-    def _on_stream_chunk(self, text: str) -> None:
+    def _on_stream_chunk(self, text: str, is_thinking: bool = False) -> None:
         """
         每个流式 token 到来时调用（同步）。
+        is_thinking=True 表示模型内部推理文本（thinking block）。
         CLI 子类覆盖此方法打印到 stdout；
         Discord 因需异步操作，重写整个 invoke_agent() 而非此方法。
         """
+        pass
+
+    def _on_stream_reset(self) -> None:
+        """每次 invoke_agent() 开始前调用，供子类重置流式状态（如 _in_thinking 标志）。"""
         pass
 
     @staticmethod

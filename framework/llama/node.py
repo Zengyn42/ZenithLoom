@@ -79,7 +79,6 @@ class OllamaNode(AgentNode):
 
         stream_cb = get_stream_callback()
         full_text = ""
-        thinking_started = False  # track transition for separator
 
         try:
             async with httpx.AsyncClient(timeout=self._timeout) as client:
@@ -110,22 +109,13 @@ class OllamaNode(AgentNode):
                         thinking = msg_obj.get("thinking", "")
                         token = msg_obj.get("content", "")
 
-                        if thinking:
-                            if not thinking_started:
-                                thinking_started = True
-                                if stream_cb is not None:
-                                    stream_cb("[thinking]\n")
-                            if stream_cb is not None:
-                                stream_cb(thinking)
+                        if thinking and stream_cb is not None:
+                            stream_cb(thinking, True)
 
                         if token:
-                            if thinking_started:
-                                thinking_started = False
-                                if stream_cb is not None:
-                                    stream_cb("\n\n")
                             full_text += token
                             if stream_cb is not None:
-                                stream_cb(token)
+                                stream_cb(token, False)
 
                         if chunk.get("done"):
                             break

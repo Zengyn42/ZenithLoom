@@ -83,9 +83,33 @@ async def _run_cli_async(loader):
 class _CliInterface(BaseInterface):
     """CLI 专用接口，继承 BaseInterface 公共命令，保留流式输出和 CLI 专属命令。"""
 
-    def _on_stream_chunk(self, text: str) -> None:
+    # ANSI: gray (90) + italic (3); reset (0)
+    _THINK_OPEN  = "\x1b[90m\x1b[3m"
+    _THINK_CLOSE = "\x1b[0m"
+
+    def __init__(self, loader):
+        super().__init__(loader)
+        self._in_thinking: bool = False
+
+    def _on_stream_reset(self) -> None:
+        if self._in_thinking:
+            print(f"\n{self._THINK_OPEN}[/thinking]{self._THINK_CLOSE}\n", end="", flush=True)
+        self._in_thinking = False
+
+    def _on_stream_chunk(self, text: str, is_thinking: bool = False) -> None:
         self._last_stream_chunk_count += 1
-        print(text, end="", flush=True)
+        if is_thinking:
+            if not self._in_thinking:
+                self._in_thinking = True
+                print(f"{self._THINK_OPEN}[thinking]\n", end="", flush=True)
+            if text:
+                print(text, end="", flush=True)
+        else:
+            if self._in_thinking:
+                self._in_thinking = False
+                print(f"\n{self._THINK_OPEN}[/thinking]{self._THINK_CLOSE}\n\n", end="", flush=True)
+            if text:
+                print(text, end="", flush=True)
 
     async def run(self):
         controller = self._controller
