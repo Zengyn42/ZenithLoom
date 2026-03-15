@@ -27,5 +27,9 @@
   "persona_files": ["SOUL.md"],
   "discord_token": "MTQ4MjY0MDIxMDc5MjY3NzQzNg.Gd-hVW.4Cc3BXqoHQ8zs8Trl0hYtGngbpRRzjO-ABQ3_c",
   "discord_allowed_users": ["286003878997262337"],
-  "heartbeat": {"probes": ["ollama"]}
+  "heartbeat": {
+    "tasks": [
+      {"type": "probe", "name": "ollama"}
+    ]
+  }
 }
