@@ -7,7 +7,7 @@
       {
         "id": "llama_main",
         "type": "OLLAMA",
-        "model": "llama3.2:3b",
+        "model": "qwen3.5:9b",
         "endpoint": "http://localhost:11434",
         "first_turn_suffix": "Asa:",
         "user_msg_prefix": "",
