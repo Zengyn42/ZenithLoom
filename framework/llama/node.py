@@ -114,7 +114,7 @@ class OllamaNode(AgentNode):
                             if not thinking_started:
                                 thinking_started = True
                                 if stream_cb is not None:
-                                    stream_cb("[思考]\n")
+                                    stream_cb("[thinking]\n")
                             if stream_cb is not None:
                                 stream_cb(thinking)
 
