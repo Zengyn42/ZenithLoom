@@ -40,7 +40,8 @@ class OllamaNode(AgentNode):
         self._endpoint = node_config.get("endpoint", "http://localhost:11434")
         self._timeout = node_config.get("timeout", 120)
         self._system_prompt = node_config.get("system_prompt", "")
-        logger.info(f"[ollama] model={self._model} endpoint={self._endpoint}")
+        self._options = node_config.get("options", {})
+        logger.info(f"[ollama] model={self._model} endpoint={self._endpoint} options={self._options}")
 
     async def call_llm(
         self,
@@ -73,9 +74,12 @@ class OllamaNode(AgentNode):
             "stream": True,
             "keep_alive": -1,
         }
+        if self._options:
+            payload["options"] = self._options
 
         stream_cb = get_stream_callback()
         full_text = ""
+        thinking_started = False  # track transition for separator
 
         try:
             async with httpx.AsyncClient(timeout=self._timeout) as client:
@@ -101,11 +105,28 @@ class OllamaNode(AgentNode):
                             chunk = json.loads(line)
                         except json.JSONDecodeError:
                             continue
-                        token = chunk.get("message", {}).get("content", "")
+
+                        msg_obj = chunk.get("message", {})
+                        thinking = msg_obj.get("thinking", "")
+                        token = msg_obj.get("content", "")
+
+                        if thinking:
+                            if not thinking_started:
+                                thinking_started = True
+                                if stream_cb is not None:
+                                    stream_cb("[思考]\n")
+                            if stream_cb is not None:
+                                stream_cb(thinking)
+
                         if token:
+                            if thinking_started:
+                                thinking_started = False
+                                if stream_cb is not None:
+                                    stream_cb("\n\n")
                             full_text += token
                             if stream_cb is not None:
                                 stream_cb(token)
+
                         if chunk.get("done"):
                             break
 
