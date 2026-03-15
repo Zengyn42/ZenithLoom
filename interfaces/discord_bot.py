@@ -420,13 +420,13 @@ async def on_ready():
         if best:
             logger.info(f"[Discord] 恢复了 {len(best)} 个频道的活跃 session")
 
-    hb_cfg = _loader and _loader.json.get("heartbeat")
-    if hb_cfg:
-        from framework.heartbeat import heartbeat_loop, run_heartbeat_once
-        hb_cfg = hb_cfg if isinstance(hb_cfg, dict) else {}
-        logger.info(f"[Discord] heartbeat 已启动（agent={agent_name} tasks={hb_cfg.get('tasks', [])}）")
-        await run_heartbeat_once(hb_cfg)
-        asyncio.create_task(heartbeat_loop(hb_cfg))
+    if _loader:
+        hb_graph, hb_cfg = await _loader.build_heartbeat_graph()
+        if hb_graph is not None:
+            from framework.heartbeat import heartbeat_loop, run_heartbeat_once
+            logger.info(f"[Discord] heartbeat 已启动（agent={agent_name}）")
+            await run_heartbeat_once(hb_graph, hb_cfg)
+            asyncio.create_task(heartbeat_loop(hb_graph, hb_cfg))
 
 
 @bot.event

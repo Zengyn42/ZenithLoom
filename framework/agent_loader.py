@@ -182,6 +182,28 @@ class AgentLoader:
         self._controller = None
         logger.info(f"[agent_loader] engine invalidated for {self.name!r}")
 
+    async def build_heartbeat_graph(self) -> tuple:
+        """
+        构建心跳调度图（无 checkpointer，每次 invocation 独立）。
+
+        返回 (compiled_graph, hb_cfg)；若 heartbeat 未配置或无 graph 定义则返回 (None, {})。
+        """
+        hb_cfg = self._json.get("heartbeat")
+        if not hb_cfg or not isinstance(hb_cfg, dict):
+            return None, {}
+        graph_spec = hb_cfg.get("graph")
+        if not graph_spec or "nodes" not in graph_spec or "edges" not in graph_spec:
+            return None, hb_cfg
+
+        config = self.load_config()
+        logger.info(f"[agent_loader] building heartbeat graph for {self.name!r}")
+        # system_prompt="" → 跳过 persona 注入和 _check_single_main 验证
+        # checkpointer=None → 心跳图本身无需持久化（各 AGENT_RUN 节点自有 DB）
+        graph = await _build_declarative(
+            graph_spec, config, system_prompt="", checkpointer=None
+        )
+        return graph, hb_cfg
+
 
 # ---------------------------------------------------------------------------
 # 通用工具：条件边限速器（module-level，供测试直接导入）
