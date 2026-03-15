@@ -41,6 +41,11 @@ def set_stream_callback(fn) -> None:
     """Set (or clear) the streaming callback for the current async context."""
     _stream_cb.set(fn)
 
+
+def get_stream_callback():
+    """Return the current streaming callback, or None if not set."""
+    return _stream_cb.get()
+
 from framework.config import AgentConfig
 from framework.debug import is_debug
 from framework.nodes.agent_node import AgentNode

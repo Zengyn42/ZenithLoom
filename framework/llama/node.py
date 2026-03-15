@@ -14,6 +14,7 @@ agent.json 配置：
   node_config["timeout"]:  120                         # 超时秒数（默认）
 """
 
+import json
 import logging
 
 import httpx
@@ -49,12 +50,15 @@ class OllamaNode(AgentNode):
         cwd: str | None = None,
     ) -> tuple[str, str]:
         """
-        调用 Ollama /api/chat。返回 (text, session_id)。
+        调用 Ollama /api/chat（流式）。返回 (text, session_id)。
 
         session_id 语义：Ollama 无持久 session，返回传入值不变。
         tools/cwd：Phase 1 忽略，Ollama tool call 支持推迟到 Phase 2。
         keep_alive=-1：模型常驻 RAM，防止 5 分钟后自动卸载。
+        流式输出：每个文本 chunk 通过 stream_callback 推送到调用方。
         """
+        from framework.claude.node import get_stream_callback
+
         if is_debug():
             logger.debug(f"[ollama] model={self._model} prompt_len={len(prompt)}")
 
@@ -66,16 +70,45 @@ class OllamaNode(AgentNode):
         payload = {
             "model": self._model,
             "messages": messages,
-            "stream": False,
+            "stream": True,
             "keep_alive": -1,
         }
 
+        stream_cb = get_stream_callback()
+        full_text = ""
+
         try:
             async with httpx.AsyncClient(timeout=self._timeout) as client:
-                response = await client.post(
+                async with client.stream(
+                    "POST",
                     f"{self._endpoint}/api/chat",
                     json=payload,
-                )
+                ) as response:
+                    if response.status_code != 200:
+                        body = await response.aread()
+                        try:
+                            error = json.loads(body).get("error", f"HTTP {response.status_code}")
+                        except Exception:
+                            error = f"HTTP {response.status_code}"
+                        msg = f"[Ollama 错误] {error}"
+                        logger.error(msg)
+                        return msg, session_id
+
+                    async for line in response.aiter_lines():
+                        if not line:
+                            continue
+                        try:
+                            chunk = json.loads(line)
+                        except json.JSONDecodeError:
+                            continue
+                        token = chunk.get("message", {}).get("content", "")
+                        if token:
+                            full_text += token
+                            if stream_cb is not None:
+                                stream_cb(token)
+                        if chunk.get("done"):
+                            break
+
         except httpx.ConnectError as e:
             msg = (
                 f"[Ollama 连接失败] 无法连接到 {self._endpoint}，"
@@ -88,16 +121,7 @@ class OllamaNode(AgentNode):
             logger.error(msg)
             return msg, session_id
 
-        if response.status_code != 200:
-            body = response.json() if response.content else {}
-            error = body.get("error", f"HTTP {response.status_code}")
-            msg = f"[Ollama 错误] {error}"
-            logger.error(msg)
-            return msg, session_id
-
-        data = response.json()
-        text = data["message"]["content"]
-        return text, session_id
+        return full_text, session_id
 
     def get_recent_history(self, session_id: str, limit: int = 10) -> list:
         """Ollama 无持久 session，返回空列表。"""
