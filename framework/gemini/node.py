@@ -528,9 +528,12 @@ class GeminiCLINode(AgentNode):
         其他错误     → raise RuntimeError
         成功         → return (reply, session_id)
         """
+        # 用 stdin 传 prompt 而不是 -p 参数。
+        # 原因：-p 的值经 yargs 解析时，若 prompt 以 "--" 开头（如 Claude 的 markdown ---
+        # 分隔线），yargs 会把它误当 end-of-flags marker → "Not enough arguments following: p"。
+        # stdin 完全绕过参数解析，是 Gemini CLI 官方支持的输入方式。
         cmd = [
             "gemini",
-            "-p", full_prompt,
             "-m", model,
             "-o", "json",
             "--yolo",
@@ -545,12 +548,13 @@ class GeminiCLINode(AgentNode):
         try:
             proc = await asyncio.create_subprocess_exec(
                 *cmd,
+                stdin=asyncio.subprocess.PIPE,
                 stdout=asyncio.subprocess.PIPE,
                 stderr=asyncio.subprocess.PIPE,
                 cwd=cwd or None,
             )
             stdout_bytes, stderr_bytes = await asyncio.wait_for(
-                proc.communicate(), timeout=effective_timeout
+                proc.communicate(input=full_prompt.encode()), timeout=effective_timeout
             )
         except asyncio.TimeoutError:
             proc.kill()
