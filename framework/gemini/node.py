@@ -339,8 +339,9 @@ class GeminiCodeAssistNode(_GeminiSessionMixin, AgentNode):
         session_id: str = "",
         tools: list[str] | None = None,
         cwd: str | None = None,
+        history: list | None = None,
     ) -> tuple[str, str]:
-        """单轮 Gemini 对话，返回 (reply, session_id)。"""
+        """单轮 Gemini 对话，返回 (reply, session_id)。history 由 session 管理，忽略。"""
         workspace = cwd or ""
         record, client = self._load_or_create(session_id, workspace)
         sid = record.sessionId
@@ -596,8 +597,9 @@ class GeminiCLINode(AgentNode):
         session_id: str = "",
         tools: list[str] | None = None,
         cwd: str | None = None,
+        history: list | None = None,
     ) -> tuple[str, str]:
-        """调用 Gemini CLI subprocess，返回 (reply, session_id)。支持模型降级。"""
+        """调用 Gemini CLI subprocess，返回 (reply, session_id)。history 由 session 管理，忽略。"""
         # 首次调用（无 session）时嵌入 system prompt
         if not session_id and self._system_prompt:
             full_prompt = (
