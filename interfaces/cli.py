@@ -120,9 +120,9 @@ class _CliInterface(BaseInterface):
         hb_cfg = loader.json.get("heartbeat")
         if hb_cfg:
             from framework.heartbeat import heartbeat_loop, run_heartbeat_once
-            probes = (hb_cfg if isinstance(hb_cfg, dict) else {}).get("probes", [])
-            await run_heartbeat_once(probes)
-            asyncio.create_task(heartbeat_loop(probes))
+            hb_cfg = hb_cfg if isinstance(hb_cfg, dict) else {}
+            await run_heartbeat_once(hb_cfg)
+            asyncio.create_task(heartbeat_loop(hb_cfg))
 
         thread_id = controller.active_thread_id
         name = session_mgr.find_name_by_thread_id(thread_id) or "默认"

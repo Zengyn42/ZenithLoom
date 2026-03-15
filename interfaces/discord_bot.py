@@ -423,10 +423,10 @@ async def on_ready():
     hb_cfg = _loader and _loader.json.get("heartbeat")
     if hb_cfg:
         from framework.heartbeat import heartbeat_loop, run_heartbeat_once
-        probes = (hb_cfg if isinstance(hb_cfg, dict) else {}).get("probes", [])
-        logger.info(f"[Discord] heartbeat 已启动（agent={agent_name} probes={probes}）")
-        await run_heartbeat_once(probes)
-        asyncio.create_task(heartbeat_loop(probes))
+        hb_cfg = hb_cfg if isinstance(hb_cfg, dict) else {}
+        logger.info(f"[Discord] heartbeat 已启动（agent={agent_name} tasks={hb_cfg.get('tasks', [])}）")
+        await run_heartbeat_once(hb_cfg)
+        asyncio.create_task(heartbeat_loop(hb_cfg))
 
 
 @bot.event
