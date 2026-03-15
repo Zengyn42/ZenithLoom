@@ -158,16 +158,10 @@ class ClaudeSDKNode(AgentNode):
                         btype = ev.get("content_block", {}).get("type")
                         if btype == "thinking":
                             _in_thinking = True
-                            if cb:
-                                cb("\x1b[2m")  # dim: thinking
                         elif btype == "text" and _in_thinking:
                             _in_thinking = False
-                            if cb:
-                                cb("\x1b[0m\n")  # reset dim
                     elif etype == "content_block_stop" and _in_thinking:
                         _in_thinking = False
-                        if cb:
-                            cb("\x1b[0m\n")  # reset dim after thinking block
                     elif etype == "content_block_delta":
                         delta = ev.get("delta", {})
                         dtype = delta.get("type")
@@ -175,10 +169,11 @@ class ClaudeSDKNode(AgentNode):
                             text = delta.get("text", "")
                             _text_chunks.append(text)  # always accumulate
                             if cb:
-                                cb(text)
+                                cb(text, False)
                         elif dtype == "thinking_delta":
-                            if cb:
-                                cb(delta.get("thinking", ""))
+                            thinking_text = delta.get("thinking", "")
+                            if cb and thinking_text:
+                                cb(thinking_text, True)
                 elif isinstance(msg, ResultMessage):
                     _new_sid = msg.session_id or sid
                     _is_error = msg.is_error

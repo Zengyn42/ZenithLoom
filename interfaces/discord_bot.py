@@ -251,20 +251,11 @@ async def _invoke_agent_streaming(user_input: str, message) -> None:
 
         # ── 事件队列：区分思考 / 文字 token ────────────────────────────────
         event_queue: asyncio.Queue = asyncio.Queue()
-        _in_thinking = [False]
 
-        def _discord_cb(text: str) -> None:
-            if "\x1b[2m" in text:
-                _in_thinking[0] = True
-                return
-            if "\x1b[0m" in text:
-                _in_thinking[0] = False
-                return
-            if "\x1b" in text:
-                return
+        def _discord_cb(text: str, is_thinking: bool = False) -> None:
             if not text:
                 return
-            event_queue.put_nowait(("thinking" if _in_thinking[0] else "text", text))
+            event_queue.put_nowait(("thinking" if is_thinking else "text", text))
 
         # ── 编辑器任务 ──────────────────────────────────────────────────────
         thinking_msg = [None]
@@ -296,12 +287,14 @@ async def _invoke_agent_streaming(user_input: str, message) -> None:
 
                 now = loop.time()
 
-                # 思考消息（斜体，独立持久，流式更新，不做最终二次编辑）
+                # 思考消息（斜体，独立持久，流式更新；sentinel 时加 [/thinking] 结尾）
                 if thinking_buf and (sentinel or now - thinking_last >= THINKING_THROTTLE):
                     thinking_last = now
                     preview = "".join(thinking_buf)
-                    # 截头保尾，不超 1900 字符
-                    display = f"*💭 {preview[-1890:]}*" if len(preview) > 1890 else f"*💭 {preview}*"
+                    close = "\n*[/thinking]*" if sentinel else ""
+                    max_body = 1880 - len(close)
+                    body = f"…{preview[-max_body:]}" if len(preview) > max_body else preview
+                    display = f"*[thinking]*\n{body}{close}"
                     if thinking_msg[0] is None:
                         thinking_msg[0] = await message.channel.send(display)
                     else:
