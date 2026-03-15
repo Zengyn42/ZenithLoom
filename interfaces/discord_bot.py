@@ -425,7 +425,7 @@ async def on_ready():
         if hb_graph is not None:
             from framework.heartbeat import heartbeat_loop, run_heartbeat_once
             logger.info(f"[Discord] heartbeat 已启动（agent={agent_name}）")
-            await run_heartbeat_once(hb_graph, hb_cfg)
+            asyncio.create_task(run_heartbeat_once(hb_graph, hb_cfg))
             asyncio.create_task(heartbeat_loop(hb_graph, hb_cfg))
 
 
