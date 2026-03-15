@@ -1,8 +1,26 @@
 """
 框架级心跳后台任务
 
-在 main.py 中用 asyncio.create_task(heartbeat_loop()) 启动。
-与任何 agent 完全解耦：只检测 Claude CLI 和 Gemini CLI 是否存活。
+探针由 agent.json 的 heartbeat.probes 列表声明，例如：
+
+  "heartbeat": {
+    "probes": ["claude", "gemini"]   # Hani
+  }
+
+  "heartbeat": {
+    "probes": ["ollama"]             # Asa
+  }
+
+可用探针：
+  "claude"  — 调用 Claude CLI，检测 auth 和 session 存活
+  "gemini"  — 调用 Gemini CLI，同上
+  "ollama"  — GET /api/tags，检测 Ollama 服务是否在线（无 LLM 推理）
+
+接口层调用方式：
+  hb_cfg = loader.json.get("heartbeat") or {}
+  probes = hb_cfg.get("probes", [])
+  await run_heartbeat_once(probes)
+  asyncio.create_task(heartbeat_loop(probes))
 """
 
 import asyncio
@@ -17,36 +35,44 @@ logger = logging.getLogger(__name__)
 _HEARTBEAT_INTERVAL = 23 * 3600  # 23小时
 
 
-async def heartbeat_loop() -> None:
+async def heartbeat_loop(probes: list[str]) -> None:
     """后台无限循环心跳。"""
     while True:
         await asyncio.sleep(_HEARTBEAT_INTERVAL)
-        await _run_heartbeat()
+        await _run_heartbeat(probes)
 
 
-async def run_heartbeat_once() -> bool:
+async def run_heartbeat_once(probes: list[str]) -> bool:
     """启动时立即跑一次。"""
-    return await _run_heartbeat()
+    return await _run_heartbeat(probes)
 
 
-async def _run_heartbeat() -> bool:
-    logger.info("[heartbeat] 开始检测...")
+async def _run_heartbeat(probes: list[str]) -> bool:
+    if not probes:
+        return True
+
+    logger.info(f"[heartbeat] 开始检测 probes={probes}...")
     loop = asyncio.get_event_loop()
-    claude_ok, gemini_ok, ollama_ok = await asyncio.gather(
-        loop.run_in_executor(None, _probe_claude),
-        loop.run_in_executor(None, _probe_gemini),
-        _probe_ollama(),
-    )
-    statuses = (
-        f"Claude={'OK' if claude_ok else 'DEAD'}, "
-        f"Gemini={'OK' if gemini_ok else 'DEAD'}, "
-        f"Ollama={'OK' if ollama_ok else 'DEAD'}"
-    )
-    if claude_ok and gemini_ok:
+
+    tasks = []
+    for name in probes:
+        if name == "claude":
+            tasks.append(("claude", loop.run_in_executor(None, _probe_claude)))
+        elif name == "gemini":
+            tasks.append(("gemini", loop.run_in_executor(None, _probe_gemini)))
+        elif name == "ollama":
+            tasks.append(("ollama", _probe_ollama()))
+
+    results = await asyncio.gather(*(t for _, t in tasks))
+    name_results = list(zip([n for n, _ in tasks], results))
+
+    statuses = ", ".join(f"{n.capitalize()}={'OK' if ok else 'DEAD'}" for n, ok in name_results)
+    all_ok = all(ok for _, ok in name_results)
+    if all_ok:
         logger.info(f"[heartbeat] {statuses}")
     else:
         logger.warning(f"[heartbeat] {statuses}")
-    return claude_ok and gemini_ok
+    return all_ok
 
 
 def _probe_claude() -> bool:
