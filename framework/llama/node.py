@@ -63,9 +63,15 @@ class OllamaNode(AgentNode):
         if is_debug():
             logger.debug(f"[ollama] model={self._model} prompt_len={len(prompt)}")
 
+        # /no_think soft switch: injected when options["think"] == False
+        # Ollama's API-level "think" option is unreliable; the prompt switch is guaranteed.
+        system = self._system_prompt
+        if self._options.get("think") is False and not system.lstrip().startswith("/no_think"):
+            system = "/no_think\n" + system if system else "/no_think"
+
         messages = []
-        if self._system_prompt:
-            messages.append({"role": "system", "content": self._system_prompt})
+        if system:
+            messages.append({"role": "system", "content": system})
         messages.append({"role": "user", "content": prompt})
 
         payload = {
