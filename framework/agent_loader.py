@@ -282,7 +282,7 @@ async def _build_declarative(
 
     import aiosqlite
     from langgraph.checkpoint.sqlite.aio import AsyncSqliteSaver
-    from langgraph.graph import END, StateGraph
+    from langgraph.graph import END, START, StateGraph
 
     from framework.registry import get_condition, get_node_factory
     from framework.state import BaseAgentState, DebateState
@@ -338,9 +338,9 @@ async def _build_declarative(
         max_retry = edge.get("max_retry")
 
         if not edge_type:
-            # 无条件边
+            # 无条件边（__start__ 用 add_edge(START,...) 支持多入口 fan-out）
             if src == "__start__":
-                builder.set_entry_point(dst_node)
+                builder.add_edge(START, dst_node)
             else:
                 builder.add_edge(src, dst_node)
 

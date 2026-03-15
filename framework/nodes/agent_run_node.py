@@ -30,7 +30,7 @@ class AgentRunNode:
     """
 
     def __init__(self, node_config: dict):
-        self._agent_dir = Path(node_config["agent_dir"])
+        self._agent_dir = Path(node_config["agent_dir"]).resolve()
         self._prompt = node_config["prompt"]
         self._engine = None  # lazily built
 
