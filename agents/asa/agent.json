@@ -13,7 +13,7 @@
         "user_msg_prefix": "",
         "tombstone_enabled": false,
         "tool_rules": [],
-        "options": {"num_gpu": 0, "think": "medium"}
+        "options": {"num_gpu": 0, "think": "high"}
       }
     ],
     "edges": [
