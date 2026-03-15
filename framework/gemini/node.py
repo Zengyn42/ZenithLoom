@@ -435,14 +435,13 @@ class _GeminiCapacityError(RuntimeError):
     pass
 
 
-# 模型降级链：优先 Pro，再 Flash；每类内从新到旧
+# 模型降级链：优先 Pro，再 Flash；仅包含 CLI 实际可用的模型
+# gemini-1.5-pro / gemini-1.5-flash 在 CLI 返回 ModelNotFoundError，已移除
 _MODEL_FALLBACK_CHAIN: list[str] = [
     "gemini-3-pro-preview",
     "gemini-2.5-pro",
-    "gemini-1.5-pro",
     "gemini-3-flash-preview",
     "gemini-2.5-flash",
-    "gemini-1.5-flash",
 ]
 
 # stderr 中出现这些关键词则判定为容量/配额错误
@@ -477,8 +476,8 @@ class GeminiCLINode(AgentNode):
       - session_id 从 JSON 输出的 "session_id" 字段获取
     """
 
-    # 默认超时：60 秒（容量错误通常几秒内返回，挂死的请求不值得等更久）
-    _DEFAULT_TIMEOUT = 60
+    # 默认超时：120 秒（pro 模型处理长 prompt 需要 60-90s，留足余量）
+    _DEFAULT_TIMEOUT = 120
 
     def __init__(self, config: AgentConfig, node_config: dict):
         super().__init__(config, node_config)
