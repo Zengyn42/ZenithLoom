@@ -27,6 +27,7 @@ class BaseInterface:
         self._controller = None
         self._session_mgr = None
         self._streaming: bool = True  # toggleable via !stream
+        self._last_stream_chunk_count: int = 0  # chunks emitted in last invoke
 
     async def setup(self) -> None:
         """初始化 controller 和 session_mgr（所有子类应在 run() 开头调用）。"""
@@ -56,6 +57,7 @@ class BaseInterface:
         if extra_state:
             init_state.update(extra_state)
 
+        self._last_stream_chunk_count = 0
         if self._streaming:
             set_stream_callback(self._on_stream_chunk)
         try:

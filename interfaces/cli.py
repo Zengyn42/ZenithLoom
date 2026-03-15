@@ -84,6 +84,7 @@ class _CliInterface(BaseInterface):
     """CLI 专用接口，继承 BaseInterface 公共命令，保留流式输出和 CLI 专属命令。"""
 
     def _on_stream_chunk(self, text: str) -> None:
+        self._last_stream_chunk_count += 1
         print(text, end="", flush=True)
 
     async def run(self):
@@ -161,7 +162,7 @@ class _CliInterface(BaseInterface):
             print(f"\n\x1b[90m[{agent_name}]\x1b[0m ", end="", flush=True)
             try:
                 response = await self.invoke_agent(user_input)
-                if not self._streaming:
+                if not self._streaming or self._last_stream_chunk_count == 0:
                     print(response, end="", flush=True)
             except Exception as e:
                 print(f"\n[错误] {e}", file=sys.stderr)
