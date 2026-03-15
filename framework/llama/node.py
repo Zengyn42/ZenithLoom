@@ -74,14 +74,18 @@ class OllamaNode(AgentNode):
             messages.append({"role": "system", "content": system})
         messages.append({"role": "user", "content": prompt})
 
+        # "think" is a top-level Ollama /api/chat param, NOT inside "options"
+        opts = {k: v for k, v in self._options.items() if k != "think"}
         payload = {
             "model": self._model,
             "messages": messages,
             "stream": True,
             "keep_alive": -1,
         }
-        if self._options:
-            payload["options"] = self._options
+        if opts:
+            payload["options"] = opts
+        if "think" in self._options:
+            payload["think"] = self._options["think"]
 
         stream_cb = get_stream_callback()
         full_text = ""
