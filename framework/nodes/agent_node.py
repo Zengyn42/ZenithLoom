@@ -102,10 +102,14 @@ class AgentNode:
         session_id: str = "",
         tools: list[str] | None = None,
         cwd: str | None = None,
+        history: list | None = None,
     ) -> tuple[str, str]:
         """
         调用具体 LLM，返回 (text, new_session_id)。
         session_id 空 → 新建 session；非空 → resume 已有 session。
+        history: LangGraph state["messages"] 完整历史（HumanMessage/AIMessage 列表）。
+          - Claude/Gemini: 忽略（server-side session 已含历史）
+          - OllamaNode: 用于重建多轮对话（Ollama 无 server-side session）
         子类必须实现。
         """
 
@@ -166,6 +170,7 @@ class AgentNode:
                 session_id=session_id,
                 tools=tools,
                 cwd=project_root,
+                history=list(msgs),
             )
 
         if is_debug():

@@ -10,6 +10,8 @@ import logging
 import os
 import subprocess
 
+import httpx
+
 logger = logging.getLogger(__name__)
 
 _HEARTBEAT_INTERVAL = 23 * 3600  # 23小时
@@ -30,17 +32,20 @@ async def run_heartbeat_once() -> bool:
 async def _run_heartbeat() -> bool:
     logger.info("[heartbeat] 开始检测...")
     loop = asyncio.get_event_loop()
-    claude_ok, gemini_ok = await asyncio.gather(
+    claude_ok, gemini_ok, ollama_ok = await asyncio.gather(
         loop.run_in_executor(None, _probe_claude),
         loop.run_in_executor(None, _probe_gemini),
+        _probe_ollama(),
+    )
+    statuses = (
+        f"Claude={'OK' if claude_ok else 'DEAD'}, "
+        f"Gemini={'OK' if gemini_ok else 'DEAD'}, "
+        f"Ollama={'OK' if ollama_ok else 'DEAD'}"
     )
     if claude_ok and gemini_ok:
-        logger.info("[heartbeat] 均存活")
+        logger.info(f"[heartbeat] {statuses}")
     else:
-        logger.warning(
-            f"[heartbeat] Claude={'OK' if claude_ok else 'DEAD'}, "
-            f"Gemini={'OK' if gemini_ok else 'DEAD'}"
-        )
+        logger.warning(f"[heartbeat] {statuses}")
     return claude_ok and gemini_ok
 
 
@@ -72,5 +77,15 @@ def _probe_gemini() -> bool:
             stdin=subprocess.DEVNULL,
         )
         return "ok" in r.stdout.lower()
+    except Exception:
+        return False
+
+
+async def _probe_ollama(endpoint: str = "http://localhost:11434") -> bool:
+    """Ping Ollama /api/tags — fast, no LLM inference needed."""
+    try:
+        async with httpx.AsyncClient(timeout=5) as client:
+            r = await client.get(f"{endpoint}/api/tags")
+            return r.status_code == 200
     except Exception:
         return False

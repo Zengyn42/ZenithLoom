@@ -49,23 +49,35 @@ class OllamaNode(AgentNode):
         session_id: str = "",
         tools: list[str] | None = None,
         cwd: str | None = None,
+        history: list | None = None,
     ) -> tuple[str, str]:
         """
         调用 Ollama /api/chat（流式）。返回 (text, session_id)。
 
         session_id 语义：Ollama 无持久 session，返回传入值不变。
-        tools/cwd：Phase 1 忽略，Ollama tool call 支持推迟到 Phase 2。
+        history: 完整 LangGraph 消息历史，用于重建多轮对话上下文。
+          历史中最后一条 HumanMessage 即当前 prompt，跳过以免重复。
+        tools/cwd：忽略（Ollama 工具调用留待后续实现）。
         keep_alive=-1：模型常驻 RAM，防止 5 分钟后自动卸载。
-        流式输出：每个文本 chunk 通过 stream_callback 推送到调用方。
         """
         from framework.claude.node import get_stream_callback
 
         if is_debug():
-            logger.debug(f"[ollama] model={self._model} prompt_len={len(prompt)}")
+            logger.debug(f"[ollama] model={self._model} prompt_len={len(prompt)} history_len={len(history) if history else 0}")
 
         messages = []
         if self._system_prompt:
             messages.append({"role": "system", "content": self._system_prompt})
+
+        # 多轮对话历史（跳过最后一条，即当前 prompt 的 HumanMessage）
+        if history and len(history) > 1:
+            for msg in history[:-1]:
+                msg_type = getattr(msg, "type", "")
+                role = "user" if msg_type == "human" else "assistant"
+                content = msg.content if isinstance(msg.content, str) else ""
+                if content.strip():
+                    messages.append({"role": role, "content": content})
+
         messages.append({"role": "user", "content": prompt})
 
         # "think" is a top-level Ollama /api/chat param, NOT inside "options"

@@ -77,8 +77,9 @@ class ClaudeSDKNode(AgentNode):
         session_id: str = "",
         tools: list[str] | None = None,
         cwd: str | None = None,
+        history: list | None = None,
     ) -> tuple[str, str]:
-        """调用 Claude SDK，返回 (text, new_session_id)。"""
+        """调用 Claude SDK，返回 (text, new_session_id)。history 由 SDK session 管理，忽略。"""
         model = self.node_config.get("model") or self.node_config.get("claude_model") or "default"
         sid_short = session_id[:8] if session_id else "new"
         logger.info(f"[claude] model={model} sid={sid_short}")
