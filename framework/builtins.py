@@ -16,6 +16,8 @@ import 时自动执行注册（无副作用，幂等）。
   VRAM_FLUSH       — VramFlushNode，GPU 显存清洗
   SUBGRAPH_MAPPER  — SubgraphMapperNode，子图状态字段映射
   EXTERNAL_TOOL    — ExternalToolNode，通用外部 CLI 调用（gws / obsidian / cli-anything-* 等）
+  PROBE            — ProbeNode，服务存活探针（heartbeat 图专用，claude/gemini/ollama）
+  AGENT_RUN        — AgentRunNode，调度主图节点（heartbeat 图专用，持独立 AgentLoader）
 
 条件谓词（ConditionFn：state → bool）：
   always           — 总是 True
@@ -114,6 +116,18 @@ def _(config, node_config):
 def _(config, node_config):
     from framework.nodes.external_tool_node import ExternalToolNode
     return ExternalToolNode(config, node_config)
+
+
+@register_node("PROBE")
+def _(config, node_config):
+    from framework.nodes.probe_node import ProbeNode
+    return ProbeNode(node_config)
+
+
+@register_node("AGENT_RUN")
+def _(config, node_config):
+    from framework.nodes.agent_run_node import AgentRunNode
+    return AgentRunNode(node_config)
 
 
 # ---------------------------------------------------------------------------

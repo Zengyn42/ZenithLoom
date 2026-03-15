@@ -28,8 +28,16 @@
   "discord_token": "MTQ4MjY0MDIxMDc5MjY3NzQzNg.Gd-hVW.4Cc3BXqoHQ8zs8Trl0hYtGngbpRRzjO-ABQ3_c",
   "discord_allowed_users": ["286003878997262337"],
   "heartbeat": {
-    "tasks": [
-      {"type": "probe", "name": "ollama"}
-    ]
+    "interval_hours": 23,
+    "prompt": "Heartbeat check.",
+    "graph": {
+      "nodes": [
+        {"id": "probe_ollama", "type": "PROBE", "name": "ollama"}
+      ],
+      "edges": [
+        {"from": "__start__",    "to": "probe_ollama"},
+        {"from": "probe_ollama", "to": "__end__"}
+      ]
+    }
   }
 }
