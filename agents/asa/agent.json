@@ -25,6 +25,6 @@
   "db_path": "asa.db",
   "sessions_file": "sessions.json",
   "persona_files": ["SOUL.md"],
-  "discord_token": "MTQ4MDA1MjMyNTU1NjAyNzUzMw.GtJeZJ.Yj8IWNtnpIRzZQsSNJci2MkZNFyXcKIW4zJ3JA",
+  "discord_token": "MTQ4MjY0MDIxMDc5MjY3NzQzNg.Gd-hVW.4Cc3BXqoHQ8zs8Trl0hYtGngbpRRzjO-ABQ3_c",
   "discord_allowed_users": ["286003878997262337"]
 }
