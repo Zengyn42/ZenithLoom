@@ -38,13 +38,16 @@ _session_mgr = None
 # 流式输出开关（!stream 切换）
 _discord_streaming: bool = True
 
-# 每个频道的并发锁（防止多条消息同时被处理）
-_channel_locks: dict = {}
+# Per-channel：消息队列（入队即返回，消费者顺序处理，不丢弃消息）
+_channel_queues: dict[int, asyncio.Queue] = {}
+
+# Per-channel：消费者协程 task（每个频道一个，队列空闲 60s 后自动退出）
+_channel_consumers: dict[int, asyncio.Task] = {}
 
 # Per-channel：活跃 session 名称（channel_id → session name in sessions.json）
 _channel_active_session: dict[int, str] = {}
 
-# Per-channel：正在运行的 agent task（用于 !stop）
+# Per-channel：正在运行的 agent task（用于 !stop 取消当前请求）
 _channel_tasks: dict[int, asyncio.Task] = {}
 
 
@@ -95,8 +98,11 @@ async def _cleanup_channel(channel_id: int) -> int:
     prefix = _channel_prefix(channel_id)
     deleted = _session_mgr.delete_by_prefix(prefix)
     _channel_active_session.pop(channel_id, None)
-    _channel_locks.pop(channel_id, None)
     _channel_tasks.pop(channel_id, None)
+    consumer = _channel_consumers.pop(channel_id, None)
+    if consumer and not consumer.done():
+        consumer.cancel()
+    _channel_queues.pop(channel_id, None)
     return deleted
 
 
@@ -214,7 +220,7 @@ async def _invoke_agent_streaming(user_input: str, message) -> None:
     """
     流式模式：
     - 立即发送 typing 指示器，每 8s 续命（Discord 有效期 ~10s）
-    - 每个频道加锁，避免并发打断
+    - 由调用方（_channel_consumer）保证串行，此函数不加锁
     - 思考块 → 独立斜体消息，实时更新，保留在频道（不追加最终编辑）
     - 文字 token → 独立草稿，从头追加（不截尾），完成后删除
     - 最终回复以全新消息发出（无 "(edited)"）
@@ -223,157 +229,211 @@ async def _invoke_agent_streaming(user_input: str, message) -> None:
     from framework.base_interface import BaseInterface
 
     channel_id = message.channel.id
-    if channel_id not in _channel_locks:
-        _channel_locks[channel_id] = asyncio.Lock()
+    engine = _controller._graph
+    config = _get_channel_config(channel_id)
+    workspace = _get_channel_workspace(channel_id)
+    agent_name = _loader.name if _loader else "Agent"
 
-    lock = _channel_locks[channel_id]
-    if lock.locked():
-        await message.channel.send("⏳ 正在处理上一条消息，请稍候…")
-        return
+    history_limit = (_loader.json.get("channel_history_limit", 0) if _loader else 0)
+    if history_limit:
+        await _refresh_history_file(message.channel, history_limit, exclude_msg_id=message.id)
 
-    async with lock:
-        engine = _controller._graph
-        config = _get_channel_config(channel_id)
-        workspace = _get_channel_workspace(channel_id)
-        agent_name = _loader.name if _loader else "Agent"
+    init_state: dict = {"messages": [HumanMessage(content=user_input)]}
+    if workspace:
+        init_state["project_root"] = workspace
 
-        history_limit = (_loader.json.get("channel_history_limit", 0) if _loader else 0)
-        if history_limit:
-            await _refresh_history_file(message.channel, history_limit, exclude_msg_id=message.id)
+    # ── Typing 指示器：context manager 自动续命，兼容 DM/群组频道 ────────
+    typing_ctx = message.channel.typing()
+    await typing_ctx.__aenter__()
 
-        init_state: dict = {"messages": [HumanMessage(content=user_input)]}
-        if workspace:
-            init_state["project_root"] = workspace
+    # ── 事件队列：区分思考 / 文字 token ────────────────────────────────
+    event_queue: asyncio.Queue = asyncio.Queue()
 
-        # ── Typing 指示器：context manager 自动续命，兼容 DM/群组频道 ────────
-        typing_ctx = message.channel.typing()
-        await typing_ctx.__aenter__()
+    def _discord_cb(text: str, is_thinking: bool = False) -> None:
+        if not text:
+            return
+        event_queue.put_nowait(("thinking" if is_thinking else "text", text))
 
-        # ── 事件队列：区分思考 / 文字 token ────────────────────────────────
-        event_queue: asyncio.Queue = asyncio.Queue()
+    # ── 编辑器任务 ──────────────────────────────────────────────────────
+    thinking_msg = [None]
+    thinking_buf: list[str] = []
+    text_draft = [None]
+    text_buf: list[str] = []
 
-        def _discord_cb(text: str, is_thinking: bool = False) -> None:
-            if not text:
-                return
-            event_queue.put_nowait(("thinking" if is_thinking else "text", text))
+    async def _editor():
+        loop = asyncio.get_event_loop()
+        thinking_last = 0.0
+        text_last = 0.0
+        THINKING_THROTTLE = 1.5
+        TEXT_THROTTLE = 0.5
 
-        # ── 编辑器任务 ──────────────────────────────────────────────────────
-        thinking_msg = [None]
-        thinking_buf: list[str] = []
-        text_draft = [None]
-        text_buf: list[str] = []
-
-        async def _editor():
-            loop = asyncio.get_event_loop()
-            thinking_last = 0.0
-            text_last = 0.0
-            THINKING_THROTTLE = 1.5
-            TEXT_THROTTLE = 0.5
-
+        while True:
+            sentinel = False
             while True:
-                sentinel = False
-                while True:
+                try:
+                    kind, chunk = event_queue.get_nowait()
+                except asyncio.QueueEmpty:
+                    break
+                if kind is None:
+                    sentinel = True
+                    break
+                if kind == "thinking":
+                    thinking_buf.append(chunk)
+                else:
+                    text_buf.append(chunk)
+
+            now = loop.time()
+
+            # 思考消息（💭 emoji + blockquote，流式更新；sentinel 时加 [/thinking] 结尾）
+            if thinking_buf and (sentinel or now - thinking_last >= THINKING_THROTTLE):
+                thinking_last = now
+                preview = "".join(thinking_buf)
+                max_body = 1860
+                body_text = f"…{preview[-max_body:]}" if len(preview) > max_body else preview
+                quoted = "\n".join(f"> {line}" if line else ">" for line in body_text.splitlines())
+                display = f"*💭*\n{quoted}"
+                if thinking_msg[0] is None:
+                    thinking_msg[0] = await message.channel.send(display)
+                else:
                     try:
-                        kind, chunk = event_queue.get_nowait()
-                    except asyncio.QueueEmpty:
-                        break
-                    if kind is None:
-                        sentinel = True
-                        break
-                    if kind == "thinking":
-                        thinking_buf.append(chunk)
-                    else:
-                        text_buf.append(chunk)
-
-                now = loop.time()
-
-                # 思考消息（💭 emoji + blockquote，流式更新；sentinel 时加 [/thinking] 结尾）
-                if thinking_buf and (sentinel or now - thinking_last >= THINKING_THROTTLE):
-                    thinking_last = now
-                    preview = "".join(thinking_buf)
-                    max_body = 1860
-                    body_text = f"…{preview[-max_body:]}" if len(preview) > max_body else preview
-                    quoted = "\n".join(f"> {line}" if line else ">" for line in body_text.splitlines())
-                    display = f"*💭*\n{quoted}"
-                    if thinking_msg[0] is None:
-                        thinking_msg[0] = await message.channel.send(display)
-                    else:
-                        try:
-                            await thinking_msg[0].edit(content=display)
-                        except Exception:
-                            pass
-
-                # 文字草稿（从头追加，不截尾；完成后删除）
-                if text_buf and (sentinel or now - text_last >= TEXT_THROTTLE):
-                    text_last = now
-                    preview = "".join(text_buf)
-                    cursor = "" if sentinel else " ▌"
-                    # 从头显示，只在超长时截掉开头（保持末尾可见）
-                    if len(preview) + len(cursor) > 1900:
-                        display = "…" + preview[-(1897 - len(cursor)):] + cursor
-                    else:
-                        display = preview + cursor
-                    if text_draft[0] is None:
-                        text_draft[0] = await message.channel.send("▌")
-                    try:
-                        await text_draft[0].edit(content=display)
+                        await thinking_msg[0].edit(content=display)
                     except Exception:
                         pass
 
-                if sentinel:
-                    break
-                await asyncio.sleep(0.1)
-
-        editor_task = asyncio.create_task(_editor())
-        set_stream_callback(_discord_cb)
-        try:
-            result_state = await engine.ainvoke(init_state, config=config)
-        except asyncio.CancelledError:
-            set_stream_callback(None)
-            event_queue.put_nowait((None, None))
-            await editor_task
-            await typing_ctx.__aexit__(None, None, None)
-            if text_draft[0]:
+            # 文字草稿（从头追加，不截尾；完成后删除）
+            if text_buf and (sentinel or now - text_last >= TEXT_THROTTLE):
+                text_last = now
+                preview = "".join(text_buf)
+                cursor = "" if sentinel else " ▌"
+                # 从头显示，只在超长时截掉开头（保持末尾可见）
+                if len(preview) + len(cursor) > 1900:
+                    display = "…" + preview[-(1897 - len(cursor)):] + cursor
+                else:
+                    display = preview + cursor
+                if text_draft[0] is None:
+                    text_draft[0] = await message.channel.send("▌")
                 try:
-                    await text_draft[0].delete()
+                    await text_draft[0].edit(content=display)
                 except Exception:
                     pass
-            raise
-        finally:
-            set_stream_callback(None)
-            event_queue.put_nowait((None, None))
-            await editor_task
-            await typing_ctx.__aexit__(None, None, None)
 
-        final_text = BaseInterface._extract_response(result_state)
+            if sentinel:
+                break
+            await asyncio.sleep(0.1)
 
-        # 删除文字草稿（(edited) 随草稿消失）
+    editor_task = asyncio.create_task(_editor())
+    set_stream_callback(_discord_cb)
+    try:
+        result_state = await engine.ainvoke(init_state, config=config)
+    except asyncio.CancelledError:
+        set_stream_callback(None)
+        event_queue.put_nowait((None, None))
+        await editor_task
+        await typing_ctx.__aexit__(None, None, None)
         if text_draft[0]:
             try:
                 await text_draft[0].delete()
             except Exception:
                 pass
+        raise
+    finally:
+        set_stream_callback(None)
+        event_queue.put_nowait((None, None))
+        await editor_task
+        await typing_ctx.__aexit__(None, None, None)
 
-        # 思考消息保留原样（不追加最终编辑，避免 "(edited)" 出现在最后）
+    final_text = BaseInterface._extract_response(result_state)
 
-        if not final_text:
-            await message.channel.send(f"（{agent_name} 没有输出，请重试）")
+    # 删除文字草稿（(edited) 随草稿消失）
+    if text_draft[0]:
+        try:
+            await text_draft[0].delete()
+        except Exception:
+            pass
+
+    # 思考消息保留原样（不追加最终编辑，避免 "(edited)" 出现在最后）
+
+    if not final_text:
+        await message.channel.send(f"（{agent_name} 没有输出，请重试）")
+        return
+
+    clean_text, file_paths = _extract_attachments(final_text)
+    chunks = split_fence_aware(clean_text) if clean_text else []
+
+    for chunk in chunks:
+        await message.channel.send(chunk)
+
+    for path in file_paths:
+        if not os.path.isfile(path):
+            await message.channel.send(f"⚠️ 文件不存在：`{path}`")
+            continue
+        try:
+            await message.channel.send(file=discord.File(path))
+        except discord.HTTPException as e:
+            await message.channel.send(f"⚠️ 文件发送失败：{e}")
+
+
+# ==========================================
+# Per-channel 消息消费者
+# ==========================================
+async def _channel_consumer(channel_id: int) -> None:
+    """
+    每个频道一个消费者协程：从队列中顺序取出消息并处理。
+    队列空闲 60s 后自动退出，下次有消息时重新创建。
+    !stop 取消当前 agent task → CancelledError 传到此处 → 清空剩余队列并退出。
+    """
+    queue = _channel_queues[channel_id]
+    agent_name = _loader.name if _loader else "Agent"
+    while True:
+        try:
+            user_input, message = await asyncio.wait_for(queue.get(), timeout=60.0)
+        except asyncio.TimeoutError:
+            _channel_consumers.pop(channel_id, None)
             return
 
-        clean_text, file_paths = _extract_attachments(final_text)
-        chunks = split_fence_aware(clean_text) if clean_text else []
+        if _discord_streaming:
+            task = asyncio.create_task(_invoke_agent_streaming(user_input, message))
+        else:
+            async def _non_stream(ui=user_input, msg=message):
+                async with msg.channel.typing():
+                    return await _invoke_agent_async(ui, message=msg)
+            task = asyncio.create_task(_non_stream())
 
-        for chunk in chunks:
-            await message.channel.send(chunk)
-
-        for path in file_paths:
-            if not os.path.isfile(path):
-                await message.channel.send(f"⚠️ 文件不存在：`{path}`")
-                continue
-            try:
-                await message.channel.send(file=discord.File(path))
-            except discord.HTTPException as e:
-                await message.channel.send(f"⚠️ 文件发送失败：{e}")
+        _channel_tasks[channel_id] = task
+        try:
+            result = await task
+            # 非流式模式发送结果
+            if not _discord_streaming and result:
+                clean_text, file_paths = _extract_attachments(result)
+                if clean_text:
+                    for chunk in split_fence_aware(clean_text):
+                        await message.channel.send(chunk)
+                for path in file_paths:
+                    if not os.path.isfile(path):
+                        await message.channel.send(f"⚠️ 文件不存在：`{path}`")
+                        continue
+                    try:
+                        await message.channel.send(file=discord.File(path))
+                    except discord.HTTPException as e:
+                        await message.channel.send(f"⚠️ 文件发送失败：{e}")
+            elif not _discord_streaming and not result:
+                await message.channel.send(f"（{agent_name} 没有输出，请重试）")
+        except asyncio.CancelledError:
+            # !stop 触发：清空队列中剩余消息
+            drained = 0
+            while not queue.empty():
+                queue.get_nowait()
+                drained += 1
+            if drained:
+                await message.channel.send(f"已停止，清除了 {drained} 条待处理消息。")
+            _channel_consumers.pop(channel_id, None)
+            return
+        except Exception as e:
+            logger.error(f"[agent] 出错: {e}", exc_info=is_debug())
+            await message.channel.send(f"{agent_name} 出错了: {e}")
+        finally:
+            _channel_tasks.pop(channel_id, None)
+        queue.task_done()
 
 
 # ==========================================
@@ -478,64 +538,15 @@ async def on_message(message: discord.Message):
     if not user_input:
         return
 
-    agent_name = _loader.name if _loader else "Agent"
-    full_text = None
+    # ── 消息入队，消费者串行处理（不丢弃消息）──────────────────────────
+    if channel_id not in _channel_queues:
+        _channel_queues[channel_id] = asyncio.Queue()
+    await _channel_queues[channel_id].put((user_input, message))
 
-    if _discord_streaming:
-        # 流式模式：wrapped in tracked task for !stop
-        task = asyncio.create_task(_invoke_agent_streaming(user_input, message))
-        _channel_tasks[channel_id] = task
-        try:
-            await task
-        except asyncio.CancelledError:
-            logger.info(f"[discord] task cancelled for channel {channel_id}")
-        except Exception as e:
-            logger.error(f"[agent] 流式调用出错: {e}", exc_info=is_debug())
-            await message.channel.send(f"{agent_name} 出错了: {e}")
-        finally:
-            _channel_tasks.pop(channel_id, None)
-        return
-    else:
-        # 非流式模式：wrapped in tracked task for !stop
-        async with message.channel.typing():
-            async def _run_async():
-                return await _invoke_agent_async(user_input, message=message)
-            task = asyncio.create_task(_run_async())
-            _channel_tasks[channel_id] = task
-            try:
-                full_text = await task
-            except asyncio.CancelledError:
-                logger.info(f"[discord] task cancelled for channel {channel_id}")
-                return
-            except Exception as e:
-                logger.error(f"[agent] 调用出错: {e}", exc_info=is_debug())
-                await message.channel.send(f"{agent_name} 出错了: {e}")
-                return
-            finally:
-                _channel_tasks.pop(channel_id, None)
-
-    if not full_text:
-        await message.channel.send(f"（{agent_name} 没有输出，请重试）")
-        return
-
-    # 提取文件附件标记，分块发送
-    clean_text, file_paths = _extract_attachments(full_text)
-
-    if clean_text:
-        for chunk in split_fence_aware(clean_text):
-            await message.channel.send(chunk)
-
-    for path in file_paths:
-        if not os.path.isfile(path):
-            await message.channel.send(f"⚠️ 文件不存在，无法发送：`{path}`")
-            logger.warning(f"[discord] SEND_FILE 文件不存在: {path}")
-            continue
-        try:
-            await message.channel.send(file=discord.File(path))
-            logger.info(f"[discord] 已发送文件: {path}")
-        except discord.HTTPException as e:
-            await message.channel.send(f"⚠️ 文件发送失败：{e}")
-            logger.error(f"[discord] 文件发送失败 {path}: {e}")
+    # 启动消费者（如果尚未运行或已退出）
+    consumer = _channel_consumers.get(channel_id)
+    if consumer is None or consumer.done():
+        _channel_consumers[channel_id] = asyncio.create_task(_channel_consumer(channel_id))
 
 
 # ==========================================
@@ -653,12 +664,27 @@ async def list_sessions_cmd(ctx):
 async def stop_task(ctx):
     if not await _check_auth(ctx):
         return
-    task = _channel_tasks.get(ctx.channel.id)
-    if task is None or task.done():
-        await ctx.send("没有正在运行的任务。")
+    channel_id = ctx.channel.id
+    task = _channel_tasks.get(channel_id)
+    if task and not task.done():
+        # 取消当前 agent task；consumer 会捕获 CancelledError 并清空队列
+        task.cancel()
+        await ctx.send("已停止。")
         return
-    task.cancel()
-    await ctx.send("已停止。")
+    # 无正在运行的 task，但 consumer 可能在等待队列
+    consumer = _channel_consumers.get(channel_id)
+    queue = _channel_queues.get(channel_id)
+    pending = queue.qsize() if queue else 0
+    if consumer and not consumer.done():
+        consumer.cancel()
+        _channel_consumers.pop(channel_id, None)
+        if queue:
+            while not queue.empty():
+                queue.get_nowait()
+        msg = f"已停止。" + (f" 清除了 {pending} 条待处理消息。" if pending else "")
+        await ctx.send(msg)
+        return
+    await ctx.send("没有正在运行的任务。")
 
 
 @bot.command(name="channels")
