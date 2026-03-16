@@ -33,6 +33,7 @@ class BaseAgentState(TypedDict):
     knowledge_vault: str    # 知识库根路径（Obsidian vault 或任意 .md 目录）；agent 用 Read/Glob/Grep 按需读取
     project_docs: str       # 当前子项目 /docs/ 路径（技术文档，随 repo 走）
     debate_conclusion: str  # 辩论子图最终结论（最后发言节点的输出，由 AgentRefNode 写入）
+    apex_conclusion: str    # ApexCoder 子图执行结论（由 AgentRefNode 写入，claude_main 读取）
 
 
 class DebateState(TypedDict):

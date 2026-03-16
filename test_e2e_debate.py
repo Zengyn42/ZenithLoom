@@ -38,7 +38,7 @@ async def test_state_fields():
     import typing
     from framework.state import BaseAgentState
     hints = typing.get_type_hints(BaseAgentState)
-    for f in ("knowledge_vault", "project_docs", "debate_conclusion"):
+    for f in ("knowledge_vault", "project_docs", "debate_conclusion", "apex_conclusion"):
         assert f in hints, f"BaseAgentState 缺少字段: {f}"
     logger.info("✅ BaseAgentState fields OK")
 
@@ -85,6 +85,7 @@ async def test_hani_graph_with_debate():
         "claude_main", "validate",
         "git_snapshot", "git_rollback",
         "debate_brainstorm", "debate_design",
+        "apex_coder",
     }
     missing = required - node_ids
     assert not missing, f"hani 图缺少节点: {missing}"

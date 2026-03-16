@@ -331,7 +331,9 @@ class GeminiCodeAssistNode(_GeminiSessionMixin, AgentNode):
         AgentNode.__init__(self, config, node_config)
         self._init_session_state(node_config)
         # node_config 中的 system_prompt 优先；否则使用框架默认
-        self._system_prompt: str = node_config.get("system_prompt") or _GEMINI_SYSTEM
+        base_prompt: str = node_config.get("system_prompt") or _GEMINI_SYSTEM
+        skill_content = self._load_skill_content()
+        self._system_prompt = f"{base_prompt}\n\n{skill_content}" if skill_content else base_prompt
 
     async def call_llm(
         self,
@@ -491,7 +493,9 @@ class GeminiCLINode(AgentNode):
             or node_config.get("gemini_model")
             or "gemini-2.5-pro"
         )
-        self._system_prompt: str = node_config.get("system_prompt") or _GEMINI_SYSTEM
+        base_prompt: str = node_config.get("system_prompt") or _GEMINI_SYSTEM
+        skill_content = self._load_skill_content()
+        self._system_prompt = f"{base_prompt}\n\n{skill_content}" if skill_content else base_prompt
         self._timeout: int = node_config.get("timeout") or self._DEFAULT_TIMEOUT
         logger.info(f"[gemini-cli] node={self._node_id} model={self._model} timeout={self._timeout}s")
 

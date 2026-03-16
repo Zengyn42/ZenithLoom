@@ -29,6 +29,7 @@ import logging
 import os
 import re
 from abc import abstractmethod
+from pathlib import Path
 
 from langchain_core.messages import AIMessage
 
@@ -94,6 +95,29 @@ class AgentNode:
             )
             for rule in node_config.get("tool_rules", [])
         ]
+
+        # add_dirs：声明额外项目目录，扫描其中的 .claude/skills/ 供子类使用
+        # Claude 节点：原生传给 ClaudeAgentOptions(add_dirs=...)
+        # Gemini / Llama 节点：_load_skill_content() 结果注入 system_prompt
+        self._add_dirs: list[Path] = [
+            Path(d) for d in node_config.get("add_dirs", [])
+        ]
+
+    def _load_skill_content(self) -> str:
+        """
+        扫描 add_dirs 中的 .claude/skills/*/SKILL.md，拼接内容。
+
+        供非 Claude 节点（Gemini、Llama）在 __init__ 中调用，
+        将 skill 内容追加到 system_prompt 末尾。
+        Claude 节点通过 ClaudeAgentOptions(add_dirs=...) 原生加载，无需调用此方法。
+        """
+        parts = []
+        for d in self._add_dirs:
+            skills_dir = d / ".claude" / "skills"
+            if skills_dir.exists():
+                for skill_md in sorted(skills_dir.rglob("SKILL.md")):
+                    parts.append(skill_md.read_text(encoding="utf-8").strip())
+        return "\n\n---\n\n".join(parts)
 
     @abstractmethod
     async def call_llm(
