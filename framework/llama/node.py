@@ -39,7 +39,9 @@ class OllamaNode(AgentNode):
         self._model = node_config.get("model", "llama3")
         self._endpoint = node_config.get("endpoint", "http://localhost:11434")
         self._timeout = node_config.get("timeout", 120)
-        self._system_prompt = node_config.get("system_prompt", "")
+        base_prompt: str = node_config.get("system_prompt", "")
+        skill_content = self._load_skill_content()
+        self._system_prompt = f"{base_prompt}\n\n{skill_content}" if skill_content else base_prompt
         self._options = node_config.get("options", {})
         logger.info(f"[ollama] model={self._model} endpoint={self._endpoint} options={self._options}")
 

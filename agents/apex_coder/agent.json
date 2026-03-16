@@ -1,0 +1,31 @@
+{
+  "name": "apex_coder",
+  "routing_hint": "当编程问题极其复杂、需要全力以赴穷举所有方案时使用。适用：多次失败仍未解决的 bug、完整架构重构、跨多文件系统变更、需要深度 debug 的环境/配置问题。",
+  "llm": "claude",
+  "persona_files": ["SOUL.md"],
+  "graph": {
+    "nodes": [
+      {
+        "id": "apex_main",
+        "type": "CLAUDE_CLI",
+        "model": null,
+        "session_key": "apex",
+        "tools": [
+          "Read", "Write", "Edit", "Bash", "Glob", "Grep",
+          "WebFetch", "WebSearch", "NotebookEdit", "Agent"
+        ],
+        "permission_mode": "bypassPermissions",
+        "setting_sources": null,
+        "settings_override": {"enabledPlugins": []},
+        "add_dirs": ["agents/apex_coder"]
+      }
+    ],
+    "edges": [
+      {"id": "e_start_2_apex", "from": "__start__", "to": "apex_main"},
+      {"id": "e_apex_2_end",   "from": "apex_main", "to": "__end__"}
+    ]
+  },
+  "max_retries": 0,
+  "db_path": "apex_coder.db",
+  "sessions_file": "sessions.json"
+}

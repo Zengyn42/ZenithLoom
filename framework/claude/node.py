@@ -131,6 +131,7 @@ class ClaudeSDKNode(AgentNode):
                 settings=settings_val,
                 include_partial_messages=True,
                 thinking=_thinking_cfg,
+                add_dirs=self._add_dirs,
             )
 
         async def _run_once(sid: str, msg_text: str) -> tuple[str, str, bool]:
