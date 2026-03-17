@@ -6,9 +6,12 @@
 """
 
 import asyncio
+import base64
+import io
 import logging
 import os
 import tempfile
+import urllib.request
 from datetime import datetime, timezone
 
 import discord
@@ -17,6 +20,7 @@ from dotenv import load_dotenv
 from langchain_core.messages import HumanMessage
 
 from framework.base_interface import BaseInterface
+from framework.command_registry import Connector
 from framework.debug import is_debug
 from framework.token_tracker import get_token_stats, reset_token_stats
 
@@ -37,6 +41,38 @@ _session_mgr = None
 
 # 流式输出开关（!stream 切换）
 _discord_streaming: bool = True
+
+# ==========================================
+# Mermaid → PNG（via mermaid.ink，无额外依赖）
+# ==========================================
+
+async def _fetch_mermaid_png(mermaid_text: str) -> bytes | None:
+    """
+    调用 mermaid.ink 将 Mermaid 文本渲染成 PNG bytes。
+    URL 格式与 LangGraph 官方实现保持一致：
+      base64.b64encode + ?type=png&bgColor=white
+    mermaid.ink 会拒绝 Python 默认 User-Agent，需显式设置。
+    """
+    try:
+        import urllib.parse
+        encoded  = base64.b64encode(mermaid_text.encode("utf-8")).decode("ascii")
+        bg_color = urllib.parse.quote("white", safe="")
+        url      = f"https://mermaid.ink/img/{encoded}?type=png&bgColor={bg_color}"
+        req = urllib.request.Request(
+            url,
+            headers={"User-Agent": "Mozilla/5.0 (compatible; BootstrapBuilder/1.0)"},
+        )
+
+        def _blocking_fetch() -> bytes:
+            with urllib.request.urlopen(req, timeout=15) as resp:
+                return resp.read()
+
+        loop = asyncio.get_event_loop()
+        return await loop.run_in_executor(None, _blocking_fetch)
+    except Exception as e:
+        logger.warning(f"[discord] mermaid.ink PNG 获取失败: {e}")
+        return None
+
 
 # Per-channel：消息队列（入队即返回，消费者顺序处理，不丢弃消息）
 _channel_queues: dict[int, asyncio.Queue] = {}
@@ -437,6 +473,44 @@ async def _channel_consumer(channel_id: int) -> None:
 
 
 # ==========================================
+# DiscordInterface — BaseInterface 的 Discord 子类
+# ==========================================
+
+class _DiscordInterface(BaseInterface):
+    """
+    Discord connector 的 BaseInterface 实现。
+
+    - _connector = Connector.DISCORD：!help 自动过滤 Discord 命令
+    - channel_id：per-channel session 解析，覆写 _resolve_thread_id /
+      _resolve_session_name，确保所有通用命令操作正确的频道 session
+    """
+
+    _connector = Connector.DISCORD
+
+    def __init__(self, loader, channel_id: int | None = None) -> None:
+        super().__init__(loader)
+        self._controller  = _controller
+        self._session_mgr = _session_mgr
+        self._channel_id  = channel_id
+
+    def _resolve_thread_id(self) -> str:
+        if self._channel_id is not None and _session_mgr is not None:
+            name = _ensure_channel_session(self._channel_id)
+            env  = _session_mgr.get_envelope(name)
+            if env:
+                return env.thread_id
+        return super()._resolve_thread_id()
+
+    def _resolve_session_name(self) -> str | None:
+        if self._channel_id is not None:
+            return _channel_active_session.get(
+                self._channel_id,
+                _channel_default_session(self._channel_id),
+            )
+        return super()._resolve_session_name()
+
+
+# ==========================================
 # Discord Bot
 # ==========================================
 intents = discord.Intents.default()
@@ -507,7 +581,39 @@ async def on_message(message: discord.Message):
     if not _is_authorized(message.author):
         return
     if message.content.startswith("!"):
-        await bot.process_commands(message)
+        ctx = await bot.get_context(message)
+        if ctx.command is not None:
+            await bot.invoke(ctx)
+        else:
+            # 未被 @bot.command 命中 → BaseInterface 通用命令（含 channel_id）
+            parts = message.content.split(maxsplit=1)
+            cmd = parts[0].lower()
+            arg = parts[1].strip() if len(parts) > 1 else ""
+            if _controller is not None:
+                iface = _DiscordInterface(_loader, channel_id=message.channel.id)
+                reply = await iface.handle_command(cmd, arg)
+                if reply is not None:
+                    if cmd == "!topology":
+                        # Mermaid 文本 + PNG 图片
+                        for chunk in BaseInterface.split_fence_aware(
+                            f"```mermaid\n{reply}\n```", DISCORD_MAX_CHARS
+                        ):
+                            await message.channel.send(chunk)
+                        png = await _fetch_mermaid_png(reply)
+                        if png:
+                            await message.channel.send(
+                                file=discord.File(io.BytesIO(png), filename="graph.png")
+                            )
+                        else:
+                            await message.channel.send("⚠️ PNG 生成失败，请粘贴上方 Mermaid 文本到 https://mermaid.live 查看")
+                    elif "\n" in reply:
+                        # 多行回复用代码块包裹
+                        for chunk in BaseInterface.split_fence_aware(
+                            f"```\n{reply}\n```", DISCORD_MAX_CHARS
+                        ):
+                            await message.channel.send(chunk)
+                    else:
+                        await message.channel.send(reply)
         return
 
     user_input = message.content.strip()
@@ -559,40 +665,6 @@ async def _check_auth(ctx) -> bool:
 # ==========================================
 # 命令
 # ==========================================
-@bot.command(name="help")
-async def show_help(ctx):
-    if not await _check_auth(ctx):
-        return
-    await ctx.send(
-        "**Agent 命令手册**\n"
-        "```\n"
-        "── 频道 Session ─────────────────────────────────\n"
-        "!new <名称>        在当前频道创建新 session\n"
-        "!switch <名称>     切换当前频道的 session\n"
-        "!session           显示当前频道的 session 信息\n"
-        "!sessions          列出当前频道的所有 sessions\n"
-        "!stop              停止当前频道正在运行的任务\n"
-        "!channels          列出所有频道的 session 数据\n"
-        "\n"
-        "── 记忆管理 ─────────────────────────────────────\n"
-        "!memory            查看当前 session 的 checkpoint 统计\n"
-        "!compact [N]       压缩当前 session，保留最近 N 条\n"
-        "!reset confirm     清空当前 session 全部记忆\n"
-        "!clear             重置当前 session（无需确认）\n"
-        "\n"
-        "── 工具 ─────────────────────────────────────────\n"
-        "!tokens            查看 token 消耗统计\n"
-        "!tokens reset      重置 token 计数\n"
-        "!setproject <路径>  设置当前频道的工作目录\n"
-        "!project           查看当前频道的项目目录\n"
-        "!stream            切换流式输出 ON/OFF\n"
-        "!debug             查看 debug 模式状态\n"
-        "!whoami            显示你的 Discord ID\n"
-        "!help              显示此帮助信息\n"
-        "```"
-    )
-
-
 @bot.command(name="new")
 async def new_session_cmd(ctx, *, name: str = ""):
     if not await _check_auth(ctx):
@@ -721,14 +793,6 @@ async def list_channels_cmd(ctx):
     await ctx.send(f"**所有频道 Sessions**\n```\n" + "\n".join(lines) + "\n```")
 
 
-@bot.command(name="debug")
-async def toggle_debug(ctx):
-    if not await _check_auth(ctx):
-        return
-    status = "ON" if is_debug() else "OFF（设置 DEBUG=1 启动以开启）"
-    await ctx.send(f"Debug mode: {status}")
-
-
 @bot.command(name="stream")
 async def toggle_stream(ctx):
     if not await _check_auth(ctx):
@@ -745,61 +809,6 @@ async def whoami(ctx):
     await ctx.send(f"你的 Discord ID: `{ctx.author.id}` ({authorized})")
 
 
-@bot.command(name="memory")
-async def show_memory(ctx):
-    if not await _check_auth(ctx):
-        return
-    channel_id = ctx.channel.id
-    name = _ensure_channel_session(channel_id)
-    env = _session_mgr.get_envelope(name)
-    stats = _session_mgr.session_stats(env.thread_id)
-    display = name.replace(_channel_prefix(channel_id), "").lstrip("-") or "default"
-    await ctx.send(
-        f"**Session 状态**（`{display}`）\n"
-        f"- thread: `{stats['thread_id']}`\n"
-        f"- checkpoints: `{stats['message_count']}` 条\n"
-        f"- DB 大小: `{stats['db_size_kb']} KB`"
-    )
-
-
-@bot.command(name="compact")
-async def compact_session(ctx, keep: int = 20):
-    if not await _check_auth(ctx):
-        return
-    channel_id = ctx.channel.id
-    name = _ensure_channel_session(channel_id)
-    env = _session_mgr.get_envelope(name)
-    deleted = _session_mgr.compact(env.thread_id, keep_last=keep)
-    await ctx.send(f"Compact 完成：删除了 `{deleted}` 条旧记录，保留最近 `{keep}` 条。")
-
-
-@bot.command(name="reset")
-async def reset_session(ctx, confirm: str = ""):
-    if not await _check_auth(ctx):
-        return
-    agent_name = _loader.name if _loader else "Agent"
-    if confirm != "confirm":
-        await ctx.send(
-            f"此操作将**清空当前频道 session 的全部记忆**，无法恢复。\n"
-            "确认请输入：`!reset confirm`"
-        )
-        return
-    channel_id = ctx.channel.id
-    name = _ensure_channel_session(channel_id)
-    env = _session_mgr.get_envelope(name)
-    deleted = _session_mgr.reset(env.thread_id)
-    await ctx.send(f"Session 已重置，清空了 `{deleted}` 条记录。{agent_name} 从零开始。")
-
-
-@bot.command(name="tokens")
-async def show_tokens(ctx, reset: str = ""):
-    if not await _check_auth(ctx):
-        return
-    iface = _DiscordInterface(_loader)
-    reply = await iface.handle_command("!tokens", reset)
-    await ctx.send(f"**Token 统计（本次启动后）**\n```\n{reply}\n```")
-
-
 @bot.command(name="clear")
 async def clear_session(ctx):
     if not await _check_auth(ctx):
@@ -812,64 +821,6 @@ async def clear_session(ctx):
     new_env = _session_mgr.create_session(name, workspace=workspace)
     _channel_active_session[channel_id] = name
     await ctx.send(f"Session 已重置。(new thread: `{new_env.thread_id[:8]}`)")
-
-
-@bot.command(name="resources")
-async def show_resources(ctx):
-    if not await _check_auth(ctx):
-        return
-    iface = _DiscordInterface(_loader)
-    reply = await iface.handle_command("!resources", "")
-    await ctx.send(f"**资源锁状态**\n```\n{reply}\n```")
-
-
-@bot.command(name="setproject")
-async def set_project(ctx, *, path: str = ""):
-    if not await _check_auth(ctx):
-        return
-    channel_id = ctx.channel.id
-    name = _ensure_channel_session(channel_id)
-    env = _session_mgr.get_envelope(name)
-    if not path:
-        current = (env.workspace if env else "") or "（未设置）"
-        await ctx.send(f"当前项目目录：`{current}`")
-        return
-    path = os.path.expanduser(path.strip())
-    if not os.path.isdir(path):
-        await ctx.send(f"路径不存在：`{path}`")
-        return
-    env.workspace = path
-    env.updated_at = datetime.now(timezone.utc).isoformat()
-    _session_mgr._save()
-    await ctx.send(f"项目目录已设置为：`{path}`\nGit 时间机器已就位。")
-
-
-@bot.command(name="project")
-async def show_project(ctx):
-    if not await _check_auth(ctx):
-        return
-    channel_id = ctx.channel.id
-    name = _ensure_channel_session(channel_id)
-    env = _session_mgr.get_envelope(name)
-    current = (env.workspace if env else "") or "（未设置，全局模式）"
-    await ctx.send(f"当前项目目录：`{current}`")
-
-
-# ==========================================
-# DiscordInterface — wraps BaseInterface for command delegation
-# ==========================================
-class _DiscordInterface(BaseInterface):
-    """
-    Thin wrapper so discord command handlers can delegate to BaseInterface.handle_command()
-    without managing controller lifecycle themselves.  The module-level _controller /
-    _session_mgr are already initialised by run_discord(); we just reference them.
-    """
-
-    def __init__(self, loader) -> None:
-        super().__init__(loader)
-        # Reuse the already-initialised globals
-        self._controller = _controller
-        self._session_mgr = _session_mgr
 
 
 # ==========================================

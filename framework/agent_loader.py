@@ -88,12 +88,14 @@ class AgentLoader:
         return self._config
 
     def load_system_prompt(self) -> str:
-        """按 persona_files 顺序拼接 system prompt。"""
+        """按 persona_files 顺序拼接 system prompt，每段标注来源。"""
         parts = []
         for fname in self._json.get("persona_files", []):
             p = self._dir / fname
             if p.exists():
-                parts.append(p.read_text(encoding="utf-8").strip())
+                content = p.read_text(encoding="utf-8").strip()
+                header = f"<!-- [source: {self._dir.name}/{fname}] -->"
+                parts.append(f"{header}\n{content}")
         return "\n\n---\n\n".join(parts)
 
     @property
@@ -182,6 +184,18 @@ class AgentLoader:
         self._controller = None
         logger.info(f"[agent_loader] engine invalidated for {self.name!r}")
 
+    def build_topology_mermaid(self) -> str:
+        """
+        从 agent.json 构建 Mermaid 拓扑图，正确展开 AGENT_REF 子图。
+
+        弥补 LangGraph get_graph(xray=True) 无法展开 AgentRefNode 的缺陷：
+        AgentRefNode 是普通 callable，xray 只展开 native CompiledStateGraph 节点。
+        """
+        graph_spec = self._json.get("graph", {})
+        lines = ["flowchart LR"]
+        _mermaid_render(graph_spec, lines, "  ", "")
+        return "\n".join(lines)
+
     async def build_heartbeat_graph(self) -> tuple:
         """
         构建心跳调度图（无 checkpointer，每次 invocation 独立）。
@@ -245,7 +259,7 @@ def _collect_routing_hints(graph_spec: dict) -> str:
             sub_json = json.loads(agent_json_path.read_text(encoding="utf-8"))
             hint = sub_json.get("routing_hint", "")
             if hint:
-                hints.append(f'  - "{node_id}": {hint}')
+                hints.append(f'  - "{node_id}": {hint} <!-- [auto-injected from {agent_dir}/agent.json:routing_hint] -->')
         except Exception:
             continue
 
@@ -254,6 +268,7 @@ def _collect_routing_hints(graph_spec: dict) -> str:
 
     lines = [
         "",
+        "<!-- [auto-generated section: routing hints collected from AGENT_REF nodes] -->",
         "[可调用子图]",
         "遇到以下情况时，可将任务委托给对应子图。",
         "路由方式：在回复的第一行且仅第一行输出以下 JSON（不加任何前缀或解释）：",
@@ -462,3 +477,113 @@ def _check_single_main(graph_spec: dict) -> None:
             f"Graph must have exactly 1 main agent node (id containing 'main'), "
             f"found {len(main_ids)}: {main_ids}"
         )
+
+
+# ---------------------------------------------------------------------------
+# 自定义 Mermaid 拓扑渲染（供 build_topology_mermaid 使用）
+# ---------------------------------------------------------------------------
+
+# 节点类型 → Mermaid 括号形状 (open, close)
+_MERMAID_SHAPES: dict[str, tuple[str, str]] = {
+    "VALIDATE":      ("{{", "}}"),     # 六边形：决策/校验
+    "GIT_SNAPSHOT":  ("(", ")"),       # 圆角：存储操作
+    "GIT_ROLLBACK":  ("(", ")"),       # 圆角：存储操作
+    "EXTERNAL_TOOL": ('(["', '"])'),   # 子程序框：外部工具
+}
+
+
+def _mermaid_id(prefix: str, raw: str) -> str:
+    """
+    给节点原始 ID 加前缀，用于避免子图内 ID 冲突。
+    __start__ / __end__ 在加前缀时去掉双下划线，变成 {prefix}start / {prefix}end。
+    """
+    if raw in ("__start__", "__end__"):
+        stripped = raw.strip("_")          # "__start__" → "start"
+        return (prefix + stripped) if prefix else raw
+    return (prefix + raw) if prefix else raw
+
+
+def _mermaid_render(spec: dict, lines: list, indent: str, prefix: str) -> None:
+    """
+    递归将 graph_spec 的节点和边渲染为 Mermaid flowchart 行。
+
+    prefix  — 子图内节点 ID 前缀（消除全局冲突）。顶层传空字符串。
+    indent  — 当前缩进字符串。
+    """
+    edges = spec.get("edges", [])
+    all_refs = {e.get("from") for e in edges} | {e.get("to") for e in edges}
+
+    # ── 节点 ─────────────────────────────────────────────────────────────
+    for node_def in spec.get("nodes", []):
+        raw   = node_def["id"]
+        ntype = node_def.get("type", "")
+        full  = _mermaid_id(prefix, raw)
+
+        if ntype == "AGENT_REF":
+            _mermaid_agent_ref(node_def, lines, indent, full, raw)
+            continue
+
+        if ntype == "SUBGRAPH":
+            lines.append(f'{indent}subgraph {full}["{raw}"]')
+            lines.append(f'{indent}  direction LR')
+            _mermaid_render(node_def.get("graph", {}), lines, indent + "  ", full + "_")
+            lines.append(f'{indent}end')
+            continue
+
+        open_, close_ = _MERMAID_SHAPES.get(ntype, ('["', '"]'))
+        label = f"{raw}\\n{ntype}" if ntype else raw
+        lines.append(f'{indent}{full}{open_}{label}{close_}')
+
+    # ── __start__ / __end__ ───────────────────────────────────────────────
+    if "__start__" in all_refs:
+        sid = _mermaid_id(prefix, "__start__")
+        lbl = "start" if not prefix else " "
+        lines.append(f'{indent}{sid}(({lbl}))')
+    if "__end__" in all_refs:
+        eid = _mermaid_id(prefix, "__end__")
+        lbl = "end" if not prefix else " "
+        lines.append(f'{indent}{eid}(({lbl}))')
+
+    # ── 边 ────────────────────────────────────────────────────────────────
+    for edge in edges:
+        src   = _mermaid_id(prefix, edge["from"])
+        dst   = _mermaid_id(prefix, edge["to"])
+        etype = edge.get("type", "")
+        arrow = f" -->|{etype}| " if etype else " --> "
+        lines.append(f"{indent}{src}{arrow}{dst}")
+
+
+def _mermaid_agent_ref(
+    node_def: dict, lines: list, indent: str, full_id: str, raw: str
+) -> None:
+    """
+    将 AGENT_REF 节点展开为 Mermaid subgraph，递归加载外部 agent.json。
+    agent_dir 路径相对于进程 CWD（与 AgentRefNode 运行时行为一致）。
+    """
+    agent_dir_str = node_def.get("agent_dir", "")
+    if not agent_dir_str:
+        lines.append(f'{indent}subgraph {full_id}["{raw} ⚠ no agent_dir"]')
+        lines.append(f'{indent}  {full_id}_err["⚠ agent_dir missing"]')
+        lines.append(f'{indent}end')
+        return
+
+    sub_json_path = Path(agent_dir_str) / "agent.json"
+    if not sub_json_path.exists():
+        lines.append(f'{indent}subgraph {full_id}["{raw}\\n⚠ not found"]')
+        lines.append(f'{indent}  {full_id}_err["⚠ {agent_dir_str}"]')
+        lines.append(f'{indent}end')
+        return
+
+    try:
+        sub_json   = json.loads(sub_json_path.read_text(encoding="utf-8"))
+        agent_name = sub_json.get("name", Path(agent_dir_str).name)
+        sub_spec   = sub_json.get("graph", {})
+        sub_prefix = full_id + "_"
+        lines.append(f'{indent}subgraph {full_id}["{raw}\\n({agent_name})"]')
+        lines.append(f'{indent}  direction LR')
+        _mermaid_render(sub_spec, lines, indent + "  ", sub_prefix)
+        lines.append(f'{indent}end')
+    except Exception as exc:
+        lines.append(f'{indent}subgraph {full_id}["{raw} ⚠ load error"]')
+        lines.append(f'{indent}  {full_id}_err["⚠ {str(exc)[:60]}"]')
+        lines.append(f'{indent}end')
