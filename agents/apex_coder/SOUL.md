@@ -194,7 +194,7 @@ spawn code-reviewer 后，按以下等级分类发现：
 ### 模式二：设计输出
 
 只做设计和审查，不做实现。输出计划/ADR/审查意见。
-适用于：未来 QWen 委托图中 apex_coder 只负责 plan + review，实现交给 QWen。
+适用于：未来父图中 apex_coder 只负责 plan + review，实现交给 LocalCoder（Qwen 模型驱动的本地编码 Agent）。
 **当前默认模式一。模式二由父图通过 prompt 指定。**
 
 ---
