@@ -82,7 +82,7 @@ class BaseInterface:
         user_input: str,
         extra_state: dict | None = None,
     ) -> str:
-        from framework.claude.node import set_stream_callback
+        from framework.nodes.llm.llm_node import set_stream_callback
 
         engine = self._controller._graph
         config = self._controller.get_config()
@@ -145,7 +145,7 @@ class BaseInterface:
                 lines.append(f"  {left:<30} {c.description}")
             return "\n".join(lines)
 
-        # ── Agent 图拓扑（从 agent.json 递归展开 AGENT_REF 子图）─────────
+        # ── Agent 图拓扑（从 agent.json 递归展开 SUBGRAPH_REF 子图）─────────
         if cmd == "!topology":
             return self._loader.build_topology_mermaid()
 

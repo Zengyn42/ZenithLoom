@@ -1,0 +1,60 @@
+{
+  "llm": "llama",
+  "channel_history_limit": 20,
+  "graph": {
+    "nodes": [
+      {
+        "id": "llama_main",
+        "type": "OLLAMA",
+        "model": "qwen3.5:9b",
+        "endpoint": "http://localhost:11434",
+        "first_turn_suffix": "Asa:",
+        "user_msg_prefix": "",
+        "tombstone_enabled": false,
+        "tool_rules": [],
+        "options": {
+          "num_gpu": 0,
+          "think": "high"
+        }
+      }
+    ],
+    "edges": [
+      {
+        "from": "__start__",
+        "to": "llama_main"
+      },
+      {
+        "from": "llama_main",
+        "to": "__end__"
+      }
+    ]
+  },
+  "max_retries": 2,
+  "persona_files": [
+    "ROLE.md",
+    "PROTOCOL.md"
+  ],
+  "heartbeat": {
+    "interval_hours": 23,
+    "prompt": "Heartbeat check.",
+    "graph": {
+      "nodes": [
+        {
+          "id": "probe_ollama",
+          "type": "PROBE",
+          "name": "ollama"
+        }
+      ],
+      "edges": [
+        {
+          "from": "__start__",
+          "to": "probe_ollama"
+        },
+        {
+          "from": "probe_ollama",
+          "to": "__end__"
+        }
+      ]
+    }
+  }
+}

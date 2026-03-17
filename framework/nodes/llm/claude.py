@@ -1,5 +1,5 @@
 """
-框架级 Claude SDK 节点 — framework/claude/node.py
+框架级 Claude SDK 节点 — framework/nodes/llm/claude.py
 
 ClaudeSDKNode 继承 AgentNode，实现 call_llm() 接口：
   call_llm(prompt, session_id, tools, cwd) -> (text, new_session_id)
@@ -17,7 +17,6 @@ sdk_query() 通过 wait_for_result_and_end_input() 关闭 stdin，
 ClaudeSDKNode 只负责 Claude SDK 调用。
 """
 
-import contextvars
 import json
 import logging
 
@@ -31,24 +30,10 @@ from claude_agent_sdk import (
 from claude_agent_sdk.types import StreamEvent
 from claude_agent_sdk._errors import ProcessError
 
-# ── Streaming callback ────────────────────────────────────────────────────────
-# ContextVar: set before invoking the graph, inherited by all awaited coroutines.
-# Callback signature: (text: str) -> None
-_stream_cb: contextvars.ContextVar = contextvars.ContextVar("claude_stream_cb", default=None)
-
-
-def set_stream_callback(fn) -> None:
-    """Set (or clear) the streaming callback for the current async context."""
-    _stream_cb.set(fn)
-
-
-def get_stream_callback():
-    """Return the current streaming callback, or None if not set."""
-    return _stream_cb.get()
-
 from framework.config import AgentConfig
 from framework.debug import is_debug
-from framework.nodes.agent_node import AgentNode
+from framework.nodes.llm.llm_node import LlmNode as AgentNode
+from framework.nodes.llm.llm_node import set_stream_callback, get_stream_callback, _stream_cb
 from framework.token_tracker import update_token_stats
 
 logger = logging.getLogger(__name__)

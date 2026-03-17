@@ -1,5 +1,5 @@
 """
-框架级 Ollama LLM 节点 — framework/llama/node.py
+框架级 Ollama LLM 节点 — framework/nodes/llm/ollama.py
 
 OllamaNode 继承 AgentNode，实现 call_llm() 接口：
   call_llm(prompt, session_id, tools, cwd) → (text, session_id)
@@ -21,7 +21,7 @@ import httpx
 
 from framework.config import AgentConfig
 from framework.debug import is_debug
-from framework.nodes.agent_node import AgentNode
+from framework.nodes.llm.llm_node import LlmNode as AgentNode
 
 logger = logging.getLogger(__name__)
 
@@ -62,7 +62,7 @@ class OllamaNode(AgentNode):
         tools/cwd：忽略（Ollama 工具调用留待后续实现）。
         keep_alive=-1：模型常驻 RAM，防止 5 分钟后自动卸载。
         """
-        from framework.claude.node import get_stream_callback
+        from framework.nodes.llm.llm_node import get_stream_callback
 
         if is_debug():
             logger.debug(f"[ollama] model={self._model} prompt_len={len(prompt)} history_len={len(history) if history else 0}")

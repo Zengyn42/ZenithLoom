@@ -23,7 +23,7 @@ GeminiAPI:
     from framework.agent_loader import AgentLoader
     from pathlib import Path
 
-    cfg = AgentLoader(Path("agents/hani")).load_config()
+    cfg = AgentLoader(Path("blueprints/role_agents/technical_architect")).load_config()
     claude = ClaudeAPI(cfg)
     gemini = GeminiAPI(cfg, claude_api=claude)
 
@@ -42,8 +42,8 @@ GeminiAPI:
 import logging
 
 from framework.config import AgentConfig
-from framework.claude.node import ClaudeSDKNode
-from framework.gemini.node import (
+from framework.nodes.llm.claude import ClaudeSDKNode
+from framework.nodes.llm.gemini import (
     GeminiQuotaError,
     _CodeAssistClient,
     _GEMINI_SYSTEM,

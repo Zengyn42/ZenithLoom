@@ -9,8 +9,8 @@ DSL（nodes + edges），支持 PROBE、AGENT_RUN 等节点类型，并行执行
     "prompt": "Heartbeat triggered.",
     "graph": {
       "nodes": [
-        {"id": "probe_ollama", "type": "PROBE",     "name": "ollama"},
-        {"id": "run_reporter", "type": "AGENT_RUN", "agent_dir": "agents/reporter",
+        {"id": "probe_ollama", "type": "PROBE",      "name": "ollama"},
+        {"id": "run_reporter", "type": "HEARTBEAT",  "agent_dir": "blueprints/functional_graphs/reporter",
          "prompt": "Generate daily report."}
       ],
       "edges": [

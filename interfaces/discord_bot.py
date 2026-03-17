@@ -261,7 +261,7 @@ async def _invoke_agent_streaming(user_input: str, message) -> None:
     - 文字 token → 独立草稿，从头追加（不截尾），完成后删除
     - 最终回复以全新消息发出（无 "(edited)"）
     """
-    from framework.claude.node import set_stream_callback
+    from framework.nodes.llm.llm_node import set_stream_callback
     from framework.base_interface import BaseInterface
 
     channel_id = message.channel.id

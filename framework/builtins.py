@@ -15,9 +15,12 @@ import 时自动执行注册（无副作用，幂等）。
   VALIDATE         — ValidateNode，输出质量验证
   VRAM_FLUSH       — VramFlushNode，GPU 显存清洗
   SUBGRAPH_MAPPER  — SubgraphMapperNode，子图状态字段映射
+  SUBGRAPH_REF     — SubgraphRefNode，外部子图节点（向后兼容别名 AGENT_REF）
+  AGENT_REF        — SubgraphRefNode，同 SUBGRAPH_REF（向后兼容别名）
   EXTERNAL_TOOL    — ExternalToolNode，通用外部 CLI 调用（gws / obsidian / cli-anything-* 等）
   PROBE            — ProbeNode，服务存活探针（heartbeat 图专用，claude/gemini/ollama）
-  AGENT_RUN        — AgentRunNode，调度主图节点（heartbeat 图专用，持独立 AgentLoader）
+  HEARTBEAT        — HeartbeatNode，调度主图节点（heartbeat 图专用，持独立 AgentLoader）
+  AGENT_RUN        — HeartbeatNode，同 HEARTBEAT（向后兼容别名）
 
 条件谓词（ConditionFn：state → bool）：
   always           — 总是 True
@@ -42,38 +45,38 @@ logger = logging.getLogger(__name__)
 
 @register_node("CLAUDE_CLI")
 def _(config, node_config):
-    from framework.claude.node import ClaudeSDKNode
+    from framework.nodes.llm.claude import ClaudeSDKNode
     return ClaudeSDKNode(config, node_config, system_prompt=node_config.get("system_prompt", ""))
 
 
 @register_node("CLAUDE_SDK")
 def _(config, node_config):
-    from framework.claude.node import ClaudeSDKNode
+    from framework.nodes.llm.claude import ClaudeSDKNode
     return ClaudeSDKNode(config, node_config, system_prompt=node_config.get("system_prompt", ""))
 
 
 @register_node("GEMINI_CLI")
 def _(config, node_config):
-    from framework.gemini.node import GeminiCLINode
+    from framework.nodes.llm.gemini import GeminiCLINode
     return GeminiCLINode(config, node_config)
 
 
 @register_node("GEMINI_API")
 def _(config, node_config):
-    from framework.gemini.node import GeminiCodeAssistNode
+    from framework.nodes.llm.gemini import GeminiCodeAssistNode
     return GeminiCodeAssistNode(config, node_config)
 
 
 @register_node("OLLAMA")
 def _(config, node_config):
-    from framework.llama.node import LlamaNode
-    return LlamaNode(config, node_config)
+    from framework.nodes.llm.ollama import OllamaNode
+    return OllamaNode(config, node_config)
 
 
 @register_node("LOCAL_VLLM")
 def _(config, node_config):
-    from framework.llama.node import LlamaNode
-    return LlamaNode(config, node_config)
+    from framework.nodes.llm.ollama import OllamaNode
+    return OllamaNode(config, node_config)
 
 
 @register_node("GIT_SNAPSHOT")
@@ -102,14 +105,20 @@ def _(config, node_config):
 
 @register_node("SUBGRAPH_MAPPER")
 def _(config, node_config):
-    from framework.nodes.subgraph_mapper import SubgraphMapperNode
+    from framework.nodes.subgraph.subgraph_mapper import SubgraphMapperNode
     return SubgraphMapperNode(node_config)
+
+
+@register_node("SUBGRAPH_REF")
+def _(config, node_config):
+    from framework.nodes.subgraph.subgraph_ref_node import SubgraphRefNode
+    return SubgraphRefNode(config, node_config)
 
 
 @register_node("AGENT_REF")
 def _(config, node_config):
-    from framework.nodes.agent_ref_node import AgentRefNode
-    return AgentRefNode(config, node_config)
+    from framework.nodes.subgraph.subgraph_ref_node import SubgraphRefNode
+    return SubgraphRefNode(config, node_config)
 
 
 @register_node("EXTERNAL_TOOL")
@@ -120,14 +129,20 @@ def _(config, node_config):
 
 @register_node("PROBE")
 def _(config, node_config):
-    from framework.nodes.probe_node import ProbeNode
+    from framework.nodes.heartbeat.probe_node import ProbeNode
     return ProbeNode(node_config)
+
+
+@register_node("HEARTBEAT")
+def _(config, node_config):
+    from framework.nodes.heartbeat.heartbeat_node import HeartbeatNode
+    return HeartbeatNode(node_config)
 
 
 @register_node("AGENT_RUN")
 def _(config, node_config):
-    from framework.nodes.agent_run_node import AgentRunNode
-    return AgentRunNode(node_config)
+    from framework.nodes.heartbeat.heartbeat_node import HeartbeatNode
+    return HeartbeatNode(node_config)
 
 
 # ---------------------------------------------------------------------------

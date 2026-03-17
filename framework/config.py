@@ -33,7 +33,7 @@ class AgentConfig:
     )
     permission_mode: str = "bypassPermissions"
     max_retries: int = 2                  # git rollback 最大重试次数
-    db_path: str = "./agent.db"
+    db_path: str = "agent.db"
     sessions_file: str = "./sessions.json"
     setting_sources: list[str] | None = None  # None = SDK默认; ["user"] 继承已安装skill
     settings_override: dict | None = None     # 传给 --settings 的 JSON 对象
@@ -90,7 +90,7 @@ class AgentConfig:
             tools=tools,
             permission_mode=_get_str("permission_mode", "bypassPermissions"),
             max_retries=_get_int("max_retries", 2),
-            db_path=_get_str("db_path", "./agent.db"),
+            db_path=_get_str("db_path", "agent.db"),
             sessions_file=_get_str("sessions_file", "./sessions.json"),
             setting_sources=setting_sources,
             settings_override=settings_override,
@@ -103,3 +103,57 @@ class AgentConfig:
                 "google.workspace.chat.message.v1.created",
             ),
         )
+
+    @classmethod
+    def from_blueprint_and_instance(
+        cls,
+        blueprint_path: Path,
+        instance_path: "Path | None",
+        env_prefix: str = "",
+    ) -> "AgentConfig":
+        """
+        从 blueprint agent.json 加载基础配置，然后用 instance entity.json 覆盖
+        实例专属字段（name、discord_token、discord_allowed_users）。
+
+        db_path 规则：
+          - 若 agent.json 中显式设置了 db_path，直接使用该值。
+          - 否则，若 entity.json 提供了 name，则 db_path = f"{name}.db"。
+          - 否则，退回到默认值 "agent.db"。
+        """
+        # 读取 blueprint（复用 from_json 逻辑）
+        cfg = cls.from_json(blueprint_path, env_prefix=env_prefix)
+
+        # 判断 agent.json 是否显式设置了 db_path（与默认值不同则视为显式设置）
+        blueprint_data = json.loads(Path(blueprint_path).read_text(encoding="utf-8"))
+        db_path_explicit = "db_path" in blueprint_data
+
+        if instance_path is not None and Path(instance_path).is_file():
+            try:
+                inst = json.loads(Path(instance_path).read_text(encoding="utf-8"))
+            except Exception:
+                inst = {}
+
+            # 合并 name
+            name = inst.get("name", "")
+            if name:
+                cfg.name = name
+                # 若 agent.json 未显式设置 db_path，用实例名推导
+                if not db_path_explicit:
+                    cfg.db_path = f"{name}.db"
+
+            # 合并 discord_token — 支持嵌套 {discord: {token:}} 和旧式扁平字段
+            discord_cfg = inst.get("discord", {})
+            inst_token = discord_cfg.get("token", "") or inst.get("discord_token", "")
+            if inst_token and not cfg.discord_token:
+                cfg.discord_token = inst_token
+
+            # 合并 discord_allowed_users — 同上支持嵌套 discord.allowed_users
+            if not cfg.discord_allowed_users:
+                raw_users = (
+                    discord_cfg.get("allowed_users", [])
+                    or inst.get("discord_allowed_users", [])
+                )
+                if isinstance(raw_users, list):
+                    cfg.discord_allowed_users = [str(u) for u in raw_users]
+
+        return cfg

@@ -1,5 +1,5 @@
 """
-框架级 Gemini 节点 — framework/gemini/node.py
+框架级 Gemini 节点 — framework/nodes/llm/gemini.py
 
 两种实现：
   GeminiCodeAssistNode(AgentNode) — Code Assist HTTP API（GEMINI_API 节点类型）
@@ -31,10 +31,10 @@ from langchain_core.messages import AIMessage
 
 from framework.config import AgentConfig
 from framework.debug import is_debug
-from framework.nodes.agent_node import AgentNode
+from framework.nodes.llm.llm_node import LlmNode as AgentNode
 from framework.resource_lock import acquire_resource
-import framework.gemini.gemini_session as gem_sess
-from framework.gemini.gemini_session import ConversationRecord
+import framework.nodes.llm.gemini_session as gem_sess
+from framework.nodes.llm.gemini_session import ConversationRecord
 
 logger = logging.getLogger(__name__)
 

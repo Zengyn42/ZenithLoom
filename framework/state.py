@@ -34,6 +34,7 @@ class BaseAgentState(TypedDict):
     project_docs: str       # 当前子项目 /docs/ 路径（技术文档，随 repo 走）
     debate_conclusion: str  # 辩论子图最终结论（最后发言节点的输出，由 AgentRefNode 写入）
     apex_conclusion: str    # ApexCoder 子图执行结论（由 AgentRefNode 写入，claude_main 读取）
+    subgraph_call_counts: dict  # {"debate_brainstorm": 2, ...} — 按子图 ID 计数，用于 max_retry 限速
 
 
 class DebateState(TypedDict):

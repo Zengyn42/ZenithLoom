@@ -17,13 +17,15 @@ from pathlib import Path
 def test_agent_loader_hani():
     print("--- AgentLoader: Hani ---")
     from framework.agent_loader import AgentLoader
-    loader = AgentLoader(Path("agents/hani"))
-    assert loader.name == "hani"
+    from pathlib import Path as _Path
+    data_dir = _Path.home() / "Foundation" / "EdenGateway" / "agents" / "hani"
+    loader = AgentLoader(Path("blueprints/role_agents/technical_architect"), data_dir=data_dir)
+    assert loader.name == "hani", f"Expected 'hani', got '{loader.name}'"
     assert loader.json["llm"] == "claude"
 
     cfg = loader.load_config()
-    assert "agents/hani" in cfg.db_path, f"db_path 应在 agents/hani 内: {cfg.db_path}"
-    assert "agents/hani" in cfg.sessions_file
+    assert cfg.db_path.endswith("hani.db"), f"db_path 应指向 EdenGateway: {cfg.db_path}"
+    assert cfg.sessions_file.endswith("sessions.json")
 
     prompt = loader.load_system_prompt()
     assert len(prompt) > 100, "system_prompt 为空"
@@ -35,20 +37,22 @@ def test_agent_loader_hani():
 def test_agent_loader_asa():
     print("--- AgentLoader: Asa ---")
     from framework.agent_loader import AgentLoader
-    loader = AgentLoader(Path("agents/asa"))
-    assert loader.name == "asa"
+    from pathlib import Path as _Path
+    data_dir = _Path.home() / "Foundation" / "EdenGateway" / "agents" / "asa"
+    loader = AgentLoader(Path("blueprints/role_agents/administrative_officer"), data_dir=data_dir)
+    assert loader.name == "asa", f"Expected 'asa', got '{loader.name}'"
     assert loader.json["llm"] == "llama"
     cfg = loader.load_config()
-    assert "agents/asa" in cfg.db_path
-    print(f"   llm: {loader.json['llm']} model: {loader.json['llama_model']}")
+    assert cfg.db_path.endswith("asa.db"), f"db_path should end with asa.db: {cfg.db_path}"
+    print(f"   llm: {loader.json['llm']}")
     print("✅ AgentLoader Asa OK\n")
 
 
 def test_claude_node_interface():
     print("--- ClaudeNode 接口 ---")
-    from framework.claude.node import ClaudeNode
+    from framework.nodes.llm.claude import ClaudeNode
     from framework.config import AgentConfig
-    node = ClaudeNode(AgentConfig(), "test system prompt")
+    node = ClaudeNode(AgentConfig(), {}, "test system prompt")
     assert hasattr(node, "call_claude"), "缺少 call_claude"
     assert hasattr(node, "call_llm"), "缺少 call_llm 标准接口"
     assert ClaudeNode.call_llm is ClaudeNode.call_claude, "call_llm 应是 call_claude 的别名"
@@ -57,16 +61,16 @@ def test_claude_node_interface():
 
 def test_llama_node_interface():
     print("--- LlamaNode 接口 ---")
-    from framework.llama.node import LlamaNode
+    from framework.nodes.llm.ollama import LlamaNode
     from framework.config import AgentConfig
-    node = LlamaNode(AgentConfig(), "test")
+    node = LlamaNode(AgentConfig(), {})
     assert hasattr(node, "call_llm"), "缺少 call_llm"
     print("✅ LlamaNode 接口 OK\n")
 
 
 def test_agent_node():
     print("--- AgentNode (通用节点) ---")
-    from framework.nodes.agent_node import AgentNode, AgentClaudeNode
+    from framework.nodes.llm.llm_node import LlmNode as AgentNode, AgentClaudeNode
     assert AgentClaudeNode is AgentNode, "AgentClaudeNode 向后兼容别名失效"
     print("✅ AgentNode + AgentClaudeNode 别名 OK\n")
 
@@ -74,16 +78,14 @@ def test_agent_node():
 def test_tool_rules():
     print("--- tool_rules 关键词匹配 ---")
     from framework.agent_loader import AgentLoader
-    from framework.nodes.agent_node import AgentNode
-    from framework.config import AgentConfig
-    from framework.claude.node import ClaudeNode
-    from framework.gemini.node import GeminiNode
+    from framework.nodes.llm.claude import ClaudeNode
 
-    loader = AgentLoader(Path("agents/hani"))
+    loader = AgentLoader(Path("blueprints/role_agents/technical_architect"))
     cfg = loader.load_config()
-    claude = ClaudeNode(cfg, "")
-    gemini = GeminiNode(cfg, claude)
-    node = AgentNode(claude, gemini, node_config=loader.json)
+    node_cfg = next(
+        n for n in loader.json.get("graph", {}).get("nodes", []) if n.get("id") == "claude_main"
+    )
+    node = ClaudeNode(cfg, node_cfg)
 
     # 中文搜索关键词应触发 WebSearch/WebFetch
     tools = node._select_tools("帮我搜索一下最新的论文")
@@ -100,29 +102,30 @@ def test_hani_loader():
     print("--- AgentLoader for hani ---")
     from pathlib import Path
     from framework.agent_loader import AgentLoader
-    loader = AgentLoader(Path("agents/hani"))
+    loader = AgentLoader(Path("blueprints/role_agents/technical_architect"))
     assert callable(loader.get_engine)
     assert callable(loader.invalidate_engine)
     assert callable(loader.get_controller)
     print("✅ AgentLoader(hani) OK\n")
 
 
-def test_main_arg_parsing():
-    print("--- main.py --agent 解析 ---")
+def test_awaken_arg_parsing():
+    print("--- awaken.py --entity 解析 ---")
     import sys, importlib.util
-    # 模拟 sys.argv
+    from pathlib import Path as _Path
+    entity_path = str(_Path.home() / "Foundation" / "EdenGateway" / "agents" / "hani")
     orig = sys.argv[:]
-    sys.argv = ["main.py", "--agent", "hani", "cli"]
-    spec = importlib.util.spec_from_file_location("main", "main.py")
-    main_mod = importlib.util.module_from_spec(spec)
-    spec.loader.exec_module(main_mod)
-    agent_name, mode, debug = main_mod._parse_args()
+    sys.argv = ["awaken.py", "--entity", entity_path, "--connector", "cli"]
+    spec = importlib.util.spec_from_file_location("awaken", "awaken.py")
+    awk_mod = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(awk_mod)
+    entity_p, connector, debug = awk_mod._parse_args()
     sys.argv = orig
-    assert agent_name == "hani", f"agent_name={agent_name}"
-    assert mode == "cli", f"mode={mode}"
+    assert entity_p == entity_path, f"entity_path={entity_p}"
+    assert connector == "cli", f"connector={connector}"
     assert debug is False
-    print(f"   parsed: agent={agent_name} mode={mode} debug={debug}")
-    print("✅ main.py 参数解析 OK\n")
+    print(f"   parsed: entity={entity_p} connector={connector} debug={debug}")
+    print("✅ awaken.py 参数解析 OK\n")
 
 
 if __name__ == "__main__":
@@ -132,6 +135,6 @@ if __name__ == "__main__":
     test_llama_node_interface()
     test_agent_node()
     test_tool_rules()
-    test_hani_graph_exports()
-    test_main_arg_parsing()
+    test_hani_loader()
+    test_awaken_arg_parsing()
     print("🎉 全部通过")
