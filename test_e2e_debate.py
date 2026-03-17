@@ -44,11 +44,11 @@ async def test_state_fields():
 
 
 async def test_agent_ref_registered():
-    """AGENT_REF 节点类型已在 registry 注册。"""
+    """SUBGRAPH_REF 节点类型已在 registry 注册。"""
     import framework.builtins
     from framework.registry import get_node_factory
-    get_node_factory("AGENT_REF")
-    logger.info("✅ AGENT_REF registered OK")
+    get_node_factory("SUBGRAPH_REF")
+    logger.info("✅ SUBGRAPH_REF registered OK")
 
 
 async def test_debate_graphs_compile():
@@ -56,11 +56,11 @@ async def test_debate_graphs_compile():
     from framework.agent_loader import AgentLoader
 
     expected = {
-        "agents/debate_gemini_first": {
+        "blueprints/functional_graphs/debate_gemini_first": {
             "gemini_propose", "claude_critique_1", "gemini_revise",
             "claude_critique_2", "gemini_conclusion",
         },
-        "agents/debate_claude_first": {
+        "blueprints/functional_graphs/debate_claude_first": {
             "claude_propose", "gemini_critique_1", "claude_revise",
             "gemini_critique_2", "claude_conclusion",
         },
@@ -78,7 +78,7 @@ async def test_hani_graph_with_debate():
     """Hani 主图含 debate_brainstorm / debate_design AGENT_REF 节点。"""
     from framework.agent_loader import AgentLoader
 
-    g = await AgentLoader(Path("agents/hani")).build_graph()
+    g = await AgentLoader(Path("blueprints/role_agents/technical_architect")).build_graph()
     node_ids = set(g.nodes)
 
     required = {
@@ -111,12 +111,12 @@ def _make_mock_graph(final_state: dict, node_id: str = "gemini_conclusion"):
 async def test_agent_ref_state_mapping():
     """AgentRefNode state_in/state_out 映射逻辑（不发起真实 LLM 调用）。"""
     from langchain_core.messages import AIMessage
-    from framework.nodes.agent_ref_node import AgentRefNode
+    from framework.nodes.subgraph.subgraph_ref_node import SubgraphRefNode as AgentRefNode
     from framework.config import AgentConfig
 
     cfg = AgentConfig(tools=[])
     node_config = {
-        "agent_dir": "agents/debate_gemini_first",
+        "agent_dir": "blueprints/functional_graphs/debate_gemini_first",
         "state_in":  {"task": "routing_context", "knowledge_vault": "knowledge_vault"},
         "state_out": {"debate_conclusion": "last_message"},
     }
@@ -151,7 +151,7 @@ async def test_agent_ref_state_mapping():
     assert "messages" in result, "结果应含 messages（AIMessage 注入）"
     assert "[辩论结论]" in result["messages"][0].content, "AIMessage 应含 [辩论结论] 前缀"
 
-    logger.info(f"✅ AgentRefNode mapping OK: conclusion={fake_reply[:40]!r}")
+    logger.info(f"✅ SubgraphRefNode mapping OK: conclusion={fake_reply[:40]!r}")
 
 
 async def test_debate_state_schema():
@@ -174,7 +174,7 @@ async def test_debate_state_schema():
 
 async def test_gemini_node_system_prompt():
     """GeminiNode 从 node_config['system_prompt'] 读取自定义 system prompt。"""
-    from framework.gemini.node import GeminiNode, _GEMINI_SYSTEM
+    from framework.nodes.llm.gemini import GeminiNode, _GEMINI_SYSTEM
     from framework.config import AgentConfig
 
     cfg = AgentConfig(tools=[])
@@ -196,7 +196,7 @@ async def test_no_checkpointer_build():
     from framework.agent_loader import AgentLoader
     from langchain_core.messages import HumanMessage
 
-    loader = AgentLoader(Path("agents/debate_gemini_first"))
+    loader = AgentLoader(Path("blueprints/functional_graphs/debate_gemini_first"))
     graph = await loader.build_graph(checkpointer=None)
 
     # 没有 checkpointer 的图可以不传 thread_id 直接调用（通过 mock 快速验证）
@@ -208,14 +208,14 @@ async def test_no_checkpointer_build():
 
 
 async def test_session_cleanup():
-    """AgentRefNode 调用后清理子图产生的孤儿 session。"""
+    """SubgraphRefNode 调用后清理子图产生的孤儿 session。"""
     from langchain_core.messages import AIMessage
-    from framework.nodes.agent_ref_node import AgentRefNode
+    from framework.nodes.subgraph.subgraph_ref_node import SubgraphRefNode as AgentRefNode
     from framework.config import AgentConfig
 
     cfg = AgentConfig(tools=[])
     node_config = {
-        "agent_dir": "agents/debate_gemini_first",
+        "agent_dir": "blueprints/functional_graphs/debate_gemini_first",
         "state_in":  {"task": "routing_context", "knowledge_vault": "knowledge_vault"},
         "state_out": {"debate_conclusion": "last_message"},
     }
@@ -257,19 +257,19 @@ async def test_session_cleanup():
     assert "claude_critique_1" in new_keys, "claude_critique_1 应是新增 key"
     assert "claude_main" not in new_keys, "claude_main 是父图 key，不应被清理"
 
-    logger.info("✅ AgentRefNode session cleanup OK")
+    logger.info("✅ SubgraphRefNode session cleanup OK")
 
 
 async def test_gemini_lru_eviction():
     """GeminiNode LRU 淘汰旧 session 缓存。"""
-    from framework.gemini.node import GeminiNode, _GeminiSessionMixin
+    from framework.nodes.llm.gemini import GeminiNode, _GeminiSessionMixin
     from framework.config import AgentConfig
 
     cfg = AgentConfig(tools=[])
     node = GeminiNode(cfg, {"id": "test_lru", "model": "gemini-2.5-flash"})
 
     # 手动注入两个 session 到缓存
-    from framework.gemini.gemini_session import ConversationRecord
+    from framework.nodes.llm.gemini_session import ConversationRecord
     record1 = ConversationRecord(
         sessionId="aaa-111", projectHash="test", startTime="", lastUpdated="", messages=[]
     )
@@ -295,7 +295,7 @@ async def test_gemini_delete_session():
     import tempfile
     import json
     from unittest.mock import patch
-    import framework.gemini.gemini_session as gem_sess
+    import framework.nodes.llm.gemini_session as gem_sess
 
     # 创建临时 session 文件
     with tempfile.TemporaryDirectory() as tmpdir:
@@ -336,14 +336,14 @@ async def run():
     logger.info("=" * 50)
     print("\n✅ 全部测试通过")
     print("   state 新字段: knowledge_vault / project_docs / debate_conclusion")
-    print("   AGENT_REF 已注册")
+    print("   SUBGRAPH_REF 已注册")
     print("   debate_gemini_first / debate_claude_first 图编译成功")
     print("   hani 图含 debate_brainstorm / debate_design")
-    print("   AgentRefNode state 映射逻辑正确")
+    print("   SubgraphRefNode state 映射逻辑正确")
     print("   DebateState 使用 add_messages（消息累积）")
     print("   GeminiNode system_prompt 从 node_config 读取")
     print("   build_graph(checkpointer=None) 无需 thread_id")
-    print("   AgentRefNode 孤儿 session 清理正确")
+    print("   SubgraphRefNode 孤儿 session 清理正确")
     print("   GeminiNode LRU 缓存淘汰正确")
     print("   gemini_session.delete_session 磁盘删除正确")
 

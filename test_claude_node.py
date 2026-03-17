@@ -28,7 +28,7 @@ def _make_config():
 
 
 def _make_node(system_prompt: str = ""):
-    from framework.claude.node import ClaudeNode
+    from framework.nodes.llm.claude import ClaudeNode
     cfg = _make_config()
     node_config = {
         "id": "claude_main",

@@ -34,10 +34,10 @@ logging.getLogger("urllib3").setLevel(logging.WARNING)
 
 logger = logging.getLogger("test_e2e_apex_coder")
 
-AGENT_DIR = Path("agents/apex_coder")
-CLAUDE_AGENTS_DIR = Path("agents/apex_coder/.claude/agents")
-PUA_SKILL_PATH = Path("agents/apex_coder/.claude/skills/pua-debugging/SKILL.md")
-SKILLS_DIR = Path("agents/apex_coder/.claude/skills")
+AGENT_DIR = Path("blueprints/functional_graphs/apex_coder")
+CLAUDE_AGENTS_DIR = Path("blueprints/functional_graphs/apex_coder/.claude/agents")
+PUA_SKILL_PATH = Path("blueprints/functional_graphs/apex_coder/.claude/skills/pua-debugging/SKILL.md")
+SKILLS_DIR = Path("blueprints/functional_graphs/apex_coder/.claude/skills")
 
 
 async def test_agent_json_structure():
@@ -234,7 +234,7 @@ async def test_add_dirs_config():
     raw = json.loads((AGENT_DIR / "agent.json").read_text(encoding="utf-8"))
     node = raw["graph"]["nodes"][0]
     assert "add_dirs" in node, "节点缺少 add_dirs 字段"
-    assert "agents/apex_coder" in node["add_dirs"], f"add_dirs 应含 agents/apex_coder，实际: {node['add_dirs']}"
+    assert any("apex_coder" in d for d in node["add_dirs"]), f"add_dirs 应含 apex_coder 路径，实际: {node['add_dirs']}"
     logger.info("✅ add_dirs config OK")
 
 

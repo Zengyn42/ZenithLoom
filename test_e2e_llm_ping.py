@@ -46,7 +46,7 @@ def _make_config(extra: dict | None = None):
 
 async def test_claude_ping():
     """单 ClaudeNode: 发送 ping，验证返回非空文本。"""
-    from framework.claude.node import ClaudeNode
+    from framework.nodes.llm.claude import ClaudeNode
 
     config = _make_config()
     node = ClaudeNode(
@@ -65,7 +65,7 @@ async def test_claude_ping():
 
 async def test_gemini_ping():
     """单 GeminiNode: 发送 ping，验证返回非空文本。"""
-    from framework.gemini.node import GeminiNode
+    from framework.nodes.llm.gemini import GeminiNode
 
     config = _make_config()
     node = GeminiNode(

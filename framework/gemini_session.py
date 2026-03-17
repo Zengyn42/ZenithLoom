@@ -1,9 +1,9 @@
 """
 Gemini CLI 兼容 Session 存储 — 向后兼容导出
 
-实现已移至 framework/gemini/gemini_session.py
+实现已移至 framework/nodes/llm/gemini_session.py
 """
-from framework.gemini.gemini_session import (  # noqa: F401
+from framework.nodes.llm.gemini_session import (  # noqa: F401
     ConversationRecord,
     MessageRecord,
     TokensSummary,

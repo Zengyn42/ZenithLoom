@@ -1,11 +1,12 @@
 """
 框架级 Agent 加载器 — framework/agent_loader.py
 
-AgentLoader(agent_dir) 从 agent 目录的 agent.json 加载所有配置，
+AgentLoader(agent_dir, data_dir) 从 blueprint 目录的 agent.json 加载所有配置，
+从 data_dir 的 entity.json 加载实例专属配置，
 提供完整的图构建和控制器管理能力。
 
 任何新 Agent 只需：
-  1. 创建 agents/<name>/ 目录
+  1. 创建 blueprints/role_agents/<name>/ 目录
   2. 编写 agent.json（含 llm、persona_files、tool_rules 等）
   3. 放置 persona .md 文件
   4. 可选：编写 graph.py（完全自定义图）
@@ -45,14 +46,15 @@ class AgentLoader:
     从 agent 目录加载配置，构建 LangGraph 状态机，管理控制器单例。
 
     用法：
-        loader = AgentLoader(Path("agents/hani"))
+        loader = AgentLoader(Path("blueprints/role_agents/technical_architect"))
         controller = await loader.get_controller()
         response = await controller.run("用户输入")
     """
 
-    def __init__(self, agent_dir: Path):
+    def __init__(self, agent_dir: Path, data_dir: Path | None = None):
         self._dir = Path(agent_dir).resolve()
-        self._env_prefix = self._dir.name.upper()  # "hani" → "HANI"
+        self._data_dir = Path(data_dir).resolve() if data_dir else self._dir
+        self._env_prefix = self._resolve_env_prefix()
         self._json: dict = json.loads(
             (self._dir / "agent.json").read_text(encoding="utf-8")
         )
@@ -63,8 +65,21 @@ class AgentLoader:
 
         if is_debug():
             logger.debug(
-                f"[agent_loader] dir={self._dir} prefix={self._env_prefix}"
+                f"[agent_loader] dir={self._dir} data_dir={self._data_dir} prefix={self._env_prefix}"
             )
+
+    def _resolve_env_prefix(self) -> str:
+        """Derive env prefix from entity.json["name"] if available, else dir name."""
+        entity_path = self._data_dir / "entity.json"
+        if entity_path.exists():
+            try:
+                inst = json.loads(entity_path.read_text(encoding="utf-8"))
+                name = inst.get("name", "")
+                if name:
+                    return name.upper()
+            except Exception:
+                pass
+        return self._dir.name.upper()
 
     @property
     def json(self) -> dict:
@@ -72,30 +87,71 @@ class AgentLoader:
 
     @property
     def name(self) -> str:
+        # If config already loaded, use entity name (most specific)
+        if self._config is not None and self._config.name:
+            return self._config.name
+        # Try entity.json directly (instance-specific name)
+        entity_path = self._data_dir / "entity.json"
+        if entity_path.exists():
+            try:
+                import json as _json_mod
+                inst = _json_mod.loads(entity_path.read_text(encoding="utf-8"))
+                n = inst.get("name", "")
+                if n:
+                    return n
+            except Exception:
+                pass
         return self._json.get("name", self._dir.name)
 
     def load_config(self) -> AgentConfig:
-        """加载 AgentConfig，相对路径解析到 agent_dir（不是项目根）。"""
+        """加载 AgentConfig，相对路径解析到 data_dir（不是项目根）。"""
         if self._config is None:
-            cfg = AgentConfig.from_json(
-                self._dir / "agent.json", env_prefix=self._env_prefix
+            blueprint_path = self._dir / "agent.json"
+            entity_path = self._data_dir / "entity.json"
+            cfg = AgentConfig.from_blueprint_and_instance(
+                blueprint_path,
+                entity_path if entity_path.exists() else None,
+                env_prefix=self._env_prefix,
             )
+            # db_path 和 sessions_file 相对路径解析到 data_dir
             if not Path(cfg.db_path).is_absolute():
-                cfg.db_path = str(self._dir / cfg.db_path)
+                cfg.db_path = str(self._data_dir / cfg.db_path)
             if not Path(cfg.sessions_file).is_absolute():
-                cfg.sessions_file = str(self._dir / cfg.sessions_file)
+                cfg.sessions_file = str(self._data_dir / cfg.sessions_file)
             self._config = cfg
         return self._config
 
     def load_system_prompt(self) -> str:
-        """按 persona_files 顺序拼接 system prompt，每段标注来源。"""
+        """按 persona_files 顺序拼接 system prompt，每段标注来源。
+
+        查找顺序：data_dir（entity 目录）优先，其次 blueprint dir。
+        entity 目录中额外存在的 SOUL.md / IDENTITY.md 自动追加到末尾。
+        """
         parts = []
+        seen: set[str] = set()
+
         for fname in self._json.get("persona_files", []):
-            p = self._dir / fname
-            if p.exists():
-                content = p.read_text(encoding="utf-8").strip()
-                header = f"<!-- [source: {self._dir.name}/{fname}] -->"
-                parts.append(f"{header}\n{content}")
+            # data_dir 优先（entity 可覆盖 blueprint 文件）
+            for search_dir, label in [
+                (self._data_dir, self._data_dir.name),
+                (self._dir, self._dir.name),
+            ]:
+                p = search_dir / fname
+                if p.exists():
+                    content = p.read_text(encoding="utf-8").strip()
+                    header = f"<!-- [source: {label}/{fname}] -->"
+                    parts.append(f"{header}\n{content}")
+                    seen.add(fname)
+                    break
+
+        # entity 目录中额外的 .md 文件（SOUL.md、IDENTITY.md 等）自动追加
+        if self._data_dir != self._dir:
+            for p in sorted(self._data_dir.glob("*.md")):
+                if p.name not in seen:
+                    content = p.read_text(encoding="utf-8").strip()
+                    header = f"<!-- [source: {self._data_dir.name}/{p.name}] -->"
+                    parts.append(f"{header}\n{content}")
+
         return "\n\n---\n\n".join(parts)
 
     @property
@@ -141,7 +197,7 @@ class AgentLoader:
             )
 
         # Priority 3: GraphSpec 默认图
-        from framework.claude.node import ClaudeSDKNode
+        from framework.nodes.llm.claude import ClaudeSDKNode
         from framework.graph import build_agent_graph, GraphSpec
 
         # 向后兼容旧 "vram_flush" 字段
@@ -186,7 +242,7 @@ class AgentLoader:
 
     def build_topology_mermaid(self) -> str:
         """
-        从 agent.json 构建 Mermaid 拓扑图，正确展开 AGENT_REF 子图。
+        从 agent.json 构建 Mermaid 拓扑图，正确展开 SUBGRAPH_REF / AGENT_REF 子图。
 
         弥补 LangGraph get_graph(xray=True) 无法展开 AgentRefNode 的缺陷：
         AgentRefNode 是普通 callable，xray 只展开 native CompiledStateGraph 节点。
@@ -241,12 +297,12 @@ def _maybe_limit(fn, max_retry):
 
 def _collect_routing_hints(graph_spec: dict) -> str:
     """
-    遍历 graph_spec 中所有 AGENT_REF 节点，读取其 agent.json 的 routing_hint 字段，
+    遍历 graph_spec 中所有 SUBGRAPH_REF / AGENT_REF 节点，读取其 agent.json 的 routing_hint 字段，
     构建路由说明字符串，用于注入主节点 system_prompt。
     """
     hints: list[str] = []
     for node_def in graph_spec.get("nodes", []):
-        if node_def.get("type") != "AGENT_REF":
+        if node_def.get("type") not in ("SUBGRAPH_REF", "AGENT_REF"):
             continue
         node_id = node_def.get("id", "")
         agent_dir = node_def.get("agent_dir", "")
@@ -350,7 +406,7 @@ async def _build_declarative(
         dst = edge["to"]
         edge_type = edge.get("type")
         dst_node = END if dst == "__end__" else dst
-        max_retry = edge.get("max_retry")
+        max_retry = edge.get("max_retry")  # 仅供非 routing_to 的条件边向后兼容
 
         if not edge_type:
             # 无条件边（__start__ 用 add_edge(START,...) 支持多入口 fan-out）
@@ -360,13 +416,13 @@ async def _build_declarative(
                 builder.add_edge(src, dst_node)
 
         elif edge_type == "routing_to":
-            # 参数化路由边：自动生成条件，检查 state["routing_target"] == dst
+            # 参数化路由边：仅匹配 routing_target，限速由 SubgraphRefNode 自行处理并回报
             target = dst_node  # 闭包捕获
 
             def _make_routing_fn(t):
                 return lambda state: state.get("routing_target") == t
 
-            fn = _maybe_limit(_make_routing_fn(target), max_retry)
+            fn = _make_routing_fn(target)
             cond_key = edge.get("id") or f"routing_to_{dst}"
             conditional_edges[src].append((cond_key, fn, dst_node))
 
@@ -519,7 +575,7 @@ def _mermaid_render(spec: dict, lines: list, indent: str, prefix: str) -> None:
         ntype = node_def.get("type", "")
         full  = _mermaid_id(prefix, raw)
 
-        if ntype == "AGENT_REF":
+        if ntype in ("SUBGRAPH_REF", "AGENT_REF"):
             _mermaid_agent_ref(node_def, lines, indent, full, raw)
             continue
 
@@ -557,7 +613,7 @@ def _mermaid_agent_ref(
     node_def: dict, lines: list, indent: str, full_id: str, raw: str
 ) -> None:
     """
-    将 AGENT_REF 节点展开为 Mermaid subgraph，递归加载外部 agent.json。
+    将 SUBGRAPH_REF / AGENT_REF 节点展开为 Mermaid subgraph，递归加载外部 agent.json。
     agent_dir 路径相对于进程 CWD（与 AgentRefNode 运行时行为一致）。
     """
     agent_dir_str = node_def.get("agent_dir", "")
