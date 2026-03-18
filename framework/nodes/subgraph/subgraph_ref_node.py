@@ -43,8 +43,8 @@ class SubgraphRefNode:
         if not agent_dir.exists():
             raise ValueError(f"SubgraphRefNode: agent_dir not found: {agent_dir}")
 
-        from framework.agent_loader import AgentLoader
-        self._loader = AgentLoader(agent_dir)
+        from framework.agent_loader import EntityLoader
+        self._loader = EntityLoader(agent_dir)
         self._node_id: str = node_config.get("id", agent_dir.name)
         self._state_in: dict[str, str] = node_config.get("state_in", {})
         self._state_out: dict[str, str] = node_config.get("state_out", {})

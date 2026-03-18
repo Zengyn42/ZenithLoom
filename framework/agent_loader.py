@@ -1,7 +1,7 @@
 """
-框架级 Agent 加载器 — framework/agent_loader.py
+框架级实体加载器 — framework/agent_loader.py
 
-AgentLoader(agent_dir, data_dir) 从 blueprint 目录的 agent.json 加载所有配置，
+EntityLoader(blueprint_dir, data_dir) 从 blueprint 目录的 agent.json 加载角色定义，
 从 data_dir 的 entity.json 加载实例专属配置，
 提供完整的图构建和控制器管理能力。
 
@@ -41,12 +41,13 @@ logger = logging.getLogger(__name__)
 _DEFAULT = object()
 
 
-class AgentLoader:
+class EntityLoader:
     """
-    从 agent 目录加载配置，构建 LangGraph 状态机，管理控制器单例。
+    从 blueprint + entity 目录加载配置，构建 LangGraph 状态机，管理控制器单例。
 
     用法：
-        loader = AgentLoader(Path("blueprints/role_agents/technical_architect"))
+        loader = EntityLoader(Path("blueprints/role_agents/technical_architect"),
+                              data_dir=Path("~/Foundation/EdenGateway/agents/hani"))
         controller = await loader.get_controller()
         response = await controller.run("用户输入")
     """
@@ -273,6 +274,10 @@ class AgentLoader:
             graph_spec, config, system_prompt="", checkpointer=None
         )
         return graph, hb_cfg
+
+
+# 向后兼容别名
+AgentLoader = EntityLoader
 
 
 # ---------------------------------------------------------------------------
