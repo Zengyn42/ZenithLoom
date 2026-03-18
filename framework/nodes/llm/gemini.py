@@ -30,7 +30,7 @@ from pathlib import Path
 from langchain_core.messages import AIMessage
 
 from framework.config import AgentConfig
-from framework.debug import is_debug
+from framework.debug import is_debug, log_node_thinking
 from framework.nodes.llm.llm_node import LlmNode as AgentNode
 from framework.resource_lock import acquire_resource
 import framework.nodes.llm.gemini_session as gem_sess
@@ -416,6 +416,8 @@ class GeminiCodeAssistNode(_GeminiSessionMixin, AgentNode):
 
         ns[self._session_key] = new_session_id or session_id
         logger.info(f"[{self._node_id}] done, consult_count→{state.get('consult_count', 0) + 1}")
+        if is_debug():
+            log_node_thinking(node_id=self._node_id, output_text=reply)
         return {
             "messages": [AIMessage(content=reply)],
             "routing_target": "",     # 清除路由信号，让 validate 正常路由
@@ -763,6 +765,8 @@ class GeminiCLINode(AgentNode):
 
         ns[self._session_key] = new_session_id or session_id
         logger.info(f"[{self._node_id}] done, consult_count→{state.get('consult_count', 0) + 1}")
+        if is_debug():
+            log_node_thinking(node_id=self._node_id, output_text=reply)
         return {
             "messages": [AIMessage(content=reply)],
             "routing_target": "",

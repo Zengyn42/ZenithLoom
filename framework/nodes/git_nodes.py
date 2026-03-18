@@ -8,6 +8,7 @@ import datetime
 import logging
 import os
 
+from framework.debug import is_debug
 from framework.nodes.git_ops import ensure_repo, rollback, snapshot
 
 logger = logging.getLogger(__name__)
@@ -21,11 +22,15 @@ class GitSnapshotNode:
     def __call__(self, state: dict) -> dict:
         root = state.get("project_root") or ""
         if not root or not os.path.isdir(root):
+            if is_debug():
+                logger.debug("[git_snapshot] 无 project_root，跳过")
             return {}
         ensure_repo(root)
         h = snapshot(root, "Auto-snapshot before agent task")
         if h:
             logger.info(f"[git_snapshot] {h[:8]} @ {root}")
+        elif is_debug():
+            logger.debug(f"[git_snapshot] 无变更可快照 @ {root}")
         return {"last_stable_commit": h or ""}
 
 
@@ -36,6 +41,12 @@ class GitRollbackNode:
         root = state.get("project_root") or ""
         commit = state.get("last_stable_commit", "")
         reason = state.get("rollback_reason", "")
+
+        if is_debug():
+            logger.debug(
+                f"[git_rollback] root={root!r} commit={commit[:8] if commit else 'none'!r} "
+                f"reason={reason[:80]!r}"
+            )
 
         if root and commit:
             # 回滚前写耻辱柱

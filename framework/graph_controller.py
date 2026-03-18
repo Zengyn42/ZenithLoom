@@ -26,7 +26,7 @@ import logging
 from langchain_core.messages import HumanMessage
 
 from framework.config import AgentConfig
-from framework.debug import is_debug
+from framework.debug import is_debug, push_graph_scope, pop_graph_scope
 from framework.rollback_log import RollbackLog
 from framework.session_mgr import SessionManager
 
@@ -44,10 +44,11 @@ class GraphController:
         await controller.switch_session("session-a")
     """
 
-    def __init__(self, graph, session_mgr: SessionManager, config: AgentConfig):
+    def __init__(self, graph, session_mgr: SessionManager, config: AgentConfig, entity_name: str = ""):
         self._graph = graph
         self._session_mgr = session_mgr
         self._config = config
+        self._entity_name = entity_name or config.name or "graph"
         self._rollback_log = RollbackLog(config.db_path)
         self._active_thread_id: str = self._init_session()
 
@@ -89,10 +90,14 @@ class GraphController:
         env = self._session_mgr.get_envelope(name) if name else None
         workspace = env.workspace if env else ""
 
-        result = await self._graph.ainvoke(
-            {"messages": [HumanMessage(content=user_input)], "workspace": workspace},
-            config=self.get_config(),
-        )
+        push_graph_scope(self._entity_name)
+        try:
+            result = await self._graph.ainvoke(
+                {"messages": [HumanMessage(content=user_input)], "workspace": workspace},
+                config=self.get_config(),
+            )
+        finally:
+            pop_graph_scope()
 
         # 将最新 node_sessions 从 checkpoint 同步到 sessions.json（单向：checkpoint → sessions.json）
         # sessions.json 中的 node_sessions 是冗余副本，LangGraph 不会读取它；
@@ -262,10 +267,14 @@ class GraphController:
         if workspace:
             init_state["workspace"] = workspace
 
-        result = await self._graph.ainvoke(
-            init_state,
-            config={"configurable": {"thread_id": thread_id}},
-        )
+        push_graph_scope(self._entity_name)
+        try:
+            result = await self._graph.ainvoke(
+                init_state,
+                config={"configurable": {"thread_id": thread_id}},
+            )
+        finally:
+            pop_graph_scope()
 
         ns = result.get("node_sessions") or {}
         if ns:

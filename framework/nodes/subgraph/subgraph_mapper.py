@@ -27,6 +27,8 @@ messages 字段特殊处理：
 
 import logging
 
+from framework.debug import is_debug
+
 logger = logging.getLogger(__name__)
 
 # 使用 LangGraph add_messages reducer 的字段（不手动追加，让 reducer 接管）
@@ -55,6 +57,12 @@ class SubgraphMapperNode:
             )
 
     def __call__(self, state: dict) -> dict:
+        if is_debug():
+            logger.debug(
+                f"[subgraph_mapper] direction={self._direction} "
+                f"map={self._map} strategy={self._merge_strategy}"
+            )
+
         result: dict = {}
 
         for source_field, target_field in self._map.items():

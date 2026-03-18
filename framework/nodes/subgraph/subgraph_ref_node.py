@@ -26,6 +26,7 @@ from pathlib import Path
 
 from langchain_core.messages import AIMessage
 from framework.config import AgentConfig
+from framework.debug import is_debug, push_graph_scope, pop_graph_scope
 
 logger = logging.getLogger(__name__)
 
@@ -101,6 +102,11 @@ class SubgraphRefNode:
             sub_state[sub_key] = state.get(parent_key, "")
 
         logger.info(f"[subgraph_ref] invoking {self._loader.name!r} (call #{my_count + 1})")
+        if is_debug():
+            logger.debug(
+                f"[subgraph_ref/{self._node_id}] state_in={self._state_in} "
+                f"state_out={self._state_out} sub_state_keys={list(sub_state.keys())}"
+            )
 
         # 使用 astream(updates) 实时输出过程，显示每个节点的身份
         last_state: dict = {}
@@ -109,26 +115,31 @@ class SubgraphRefNode:
         print(f"  [{graph_name}] 子图开始", flush=True)
         print(f"{'─' * 60}", flush=True)
 
-        async for event in self._graph.astream(sub_state, stream_mode="updates"):
-            for node_id, update in event.items():
-                if node_id in ("__start__", "__end__"):
-                    continue
-                # 跟踪最新 state 用于最终结果映射
-                last_state.update(update)
-                msgs = update.get("messages", [])
-                for msg in msgs:
-                    content = getattr(msg, "content", "")
-                    if not content:
+        # 进入子图 scope（日志按层级目录存放）
+        push_graph_scope(self._node_id)
+        try:
+            async for event in self._graph.astream(sub_state, stream_mode="updates"):
+                for node_id, update in event.items():
+                    if node_id in ("__start__", "__end__"):
                         continue
-                    msg_type = getattr(msg, "type", "ai")
-                    if msg_type == "human":
-                        label = "议题"
-                    else:
-                        label = node_id
-                    print(f"\n  ┌─ [{label}]", flush=True)
-                    for line in content.split("\n"):
-                        print(f"  │ {line}", flush=True)
-                    print(f"  └─", flush=True)
+                    # 跟踪最新 state 用于最终结果映射
+                    last_state.update(update)
+                    msgs = update.get("messages", [])
+                    for msg in msgs:
+                        content = getattr(msg, "content", "")
+                        if not content:
+                            continue
+                        msg_type = getattr(msg, "type", "ai")
+                        if msg_type == "human":
+                            label = "议题"
+                        else:
+                            label = node_id
+                        print(f"\n  ┌─ [{label}]", flush=True)
+                        for line in content.split("\n"):
+                            print(f"  │ {line}", flush=True)
+                        print(f"  └─", flush=True)
+        finally:
+            pop_graph_scope()
 
         print(f"\n{'─' * 60}", flush=True)
         print(f"  [{graph_name}] 子图结束", flush=True)
@@ -173,6 +184,11 @@ class SubgraphRefNode:
             f"[subgraph_ref] {self._loader.name!r} done, "
             f"call_count={my_count + 1}, out_keys={list(out.keys())}"
         )
+        if is_debug():
+            for pk, src in self._state_out.items():
+                val = out.get(pk, "")
+                preview = str(val)[:100] if val else "(empty)"
+                logger.debug(f"[subgraph_ref/{self._node_id}] state_out: {pk}←{src} = {preview!r}")
         return out
 
     def _cleanup_orphan_sessions(
