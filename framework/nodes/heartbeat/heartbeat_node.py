@@ -1,7 +1,7 @@
 """
-AGENT_RUN 节点 — 将一个完整主图作为心跳任务定期调用。
+HEARTBEAT 节点 — 将一个完整主图作为心跳任务定期调用。
 
-每个 AGENT_RUN 节点持有独立的 AgentLoader，使用固定 thread_id "__heartbeat__"
+每个 HEARTBEAT 节点持有独立的 EntityLoader，使用固定 thread_id "__heartbeat__"
 让 LangGraph checkpointer 自动维持跨 invocation 的完整 state（含 node_sessions、
 messages 等），从而实现 LLM session 记忆连续性。
 
@@ -24,7 +24,7 @@ class HeartbeatNode:
     """
     调度主图节点。
 
-    持有独立 AgentLoader（有自己的 SQLite DB 和 sessions.json），
+    持有独立 EntityLoader（有自己的 SQLite DB 和 sessions.json），
     每次 __call__ 向目标主图发一条 HumanMessage，由 LangGraph checkpointer
     自动 restore/save 完整 state，维持跨 invocation 记忆。
     """
@@ -36,8 +36,8 @@ class HeartbeatNode:
 
     async def _get_engine(self):
         if self._engine is None:
-            from framework.agent_loader import AgentLoader
-            loader = AgentLoader(self._agent_dir)
+            from framework.agent_loader import EntityLoader
+            loader = EntityLoader(self._agent_dir)
             self._engine = await loader.get_engine()
         return self._engine
 

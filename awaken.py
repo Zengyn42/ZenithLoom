@@ -105,9 +105,9 @@ def main():
         from framework.debug import set_debug
         set_debug(True)
 
-    # ── AgentLoader ─────────────────────────────────────────────────────────
-    from framework.agent_loader import AgentLoader
-    loader = AgentLoader(blueprint_dir, data_dir=entity_dir)
+    # ── EntityLoader ────────────────────────────────────────────────────────
+    from framework.agent_loader import EntityLoader
+    loader = EntityLoader(blueprint_dir, data_dir=entity_dir)
 
     # ── 启动 connector ───────────────────────────────────────────────────────
     if connector == "discord":
