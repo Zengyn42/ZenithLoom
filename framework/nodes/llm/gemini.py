@@ -398,7 +398,7 @@ class GeminiCodeAssistNode(_GeminiSessionMixin, AgentNode):
 
         # ── Token 安全阀 ──
         try:
-            check_before_llm(prompt=prompt, history=list(msgs), node_id=self._node_id)
+            check_before_llm(prompt=prompt, history=list(msgs), node_id=self._node_id, limit=self._token_limit)
         except TokenLimitExceeded as exc:
             logger.error(str(exc))
             return {
@@ -759,7 +759,7 @@ class GeminiCLINode(AgentNode):
 
         # ── Token 安全阀 ──
         try:
-            check_before_llm(prompt=prompt, history=list(msgs), node_id=self._node_id)
+            check_before_llm(prompt=prompt, history=list(msgs), node_id=self._node_id, limit=self._token_limit)
         except TokenLimitExceeded as exc:
             logger.error(str(exc))
             return {
