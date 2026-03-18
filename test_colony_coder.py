@@ -151,3 +151,26 @@ async def test_ollama_tool_loop_text_response():
         })
 
     assert "messages" in result or "ollama_sessions" in result
+
+
+def test_executor_state_has_required_fields():
+    from blueprints.functional_graphs.colony_coder_executor.state import ColonyCoderExecutorState
+    import typing
+    hints = typing.get_type_hints(ColonyCoderExecutorState, include_extras=True)
+    for f in ("tasks", "ollama_sessions", "validation_output", "success", "abort_reason"):
+        assert f in hints, f"ColonyCoderExecutorState missing field: {f}"
+
+
+def test_merge_dict_reducer():
+    from blueprints.functional_graphs.colony_coder_executor.state import _merge_dict
+    a = {"k1": [1, 2], "k2": [3]}
+    b = {"k2": [4], "k3": [5]}
+    assert _merge_dict(a, b) == {"k1": [1, 2], "k2": [4], "k3": [5]}
+
+
+def test_colony_executor_schema_registered():
+    from framework.agent_loader import register_state_schema, _get_state_schemas
+    # Importing state.py should auto-register the schema
+    import blueprints.functional_graphs.colony_coder_executor.state  # noqa: F401
+    schemas = _get_state_schemas()
+    assert "colony_executor" in schemas
