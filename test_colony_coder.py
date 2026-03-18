@@ -174,3 +174,46 @@ def test_colony_executor_schema_registered():
     import blueprints.functional_graphs.colony_coder_executor.state  # noqa: F401
     schemas = _get_state_schemas()
     assert "colony_executor" in schemas
+
+
+def test_decomposition_validator_pass():
+    from blueprints.functional_graphs.colony_coder_planner.validators import decomposition_validator
+    result = decomposition_validator({
+        "tasks": [{"id": "t1", "description": "write hello.py", "dependencies": []}],
+        "execution_order": ["t1"],
+        "retry_count": 0,
+    })
+    assert result["routing_target"] == "__end__"
+
+
+def test_decomposition_validator_fail_retry():
+    from blueprints.functional_graphs.colony_coder_planner.validators import decomposition_validator
+    result = decomposition_validator({
+        "tasks": [],
+        "execution_order": [],
+        "retry_count": 1,
+    })
+    assert result["routing_target"] == "task_decompose"
+    assert result["retry_count"] == 2
+
+
+def test_decomposition_validator_abort_at_cap():
+    from blueprints.functional_graphs.colony_coder_planner.validators import decomposition_validator
+    result = decomposition_validator({
+        "tasks": [],
+        "execution_order": [],
+        "retry_count": 2,
+    })
+    assert result["routing_target"] == "__end__"
+    assert result["success"] is False
+
+
+@pytest.mark.asyncio
+async def test_planner_graph_compiles():
+    import blueprints.functional_graphs.colony_coder_executor.state  # noqa: F401
+    from framework.agent_loader import AgentLoader
+    from pathlib import Path
+    g = await AgentLoader(Path("blueprints/functional_graphs/colony_coder_planner")).build_graph()
+    node_ids = set(g.nodes) - {"__start__"}
+    required = {"plan", "design_debate", "claude_swarm", "task_decompose", "decomposition_validator"}
+    assert required <= node_ids, f"Missing nodes: {required - node_ids}"
