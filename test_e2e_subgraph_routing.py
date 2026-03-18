@@ -456,7 +456,11 @@ async def test_count_far_exceeds_max_retry():
 
 @pytest.mark.asyncio
 async def test_llm_node_resets_ancillary_fields_on_no_routing():
-    """LlmNode 无路由时同时重置 rollback_reason 和 retry_count。"""
+    """LlmNode 无路由时重置 rollback_reason 但不重置 retry_count。
+
+    retry_count 由 DETERMINISTIC validator 管理，LLM 节点不应干预，
+    否则会导致 validator 重试逻辑失效（如 colony_coder 死循环 bug）。
+    """
     node = _MockLlmNode.create("普通回复")
 
     state = _make_llm_state(
@@ -466,7 +470,7 @@ async def test_llm_node_resets_ancillary_fields_on_no_routing():
     result = await node(state)
 
     assert result.get("rollback_reason") == "", "无路由时 rollback_reason 应被清空"
-    assert result.get("retry_count") == 0, "无路由时 retry_count 应被重置为 0"
+    assert "retry_count" not in result, "LLM 节点不应在 result 中包含 retry_count（由 validator 管理）"
     assert result.get("consult_count") == 0, "无路由时 consult_count 应被重置为 0"
 
-    logger.info("PASS LlmNode 无路由时重置附属字段")
+    logger.info("PASS LlmNode 无路由时重置附属字段（retry_count 不受影响）")
