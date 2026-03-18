@@ -108,7 +108,7 @@ class OllamaNode(AgentNode):
 
         # ── Token 安全阀（每轮迭代前检查）──
         try:
-            check_before_llm(messages=messages, node_id=self._node_id)
+            check_before_llm(messages=messages, node_id=self._node_id, limit=self._token_limit)
         except TokenLimitExceeded as exc:
             logger.error(str(exc))
             from langchain_core.messages import AIMessage
@@ -123,7 +123,7 @@ class OllamaNode(AgentNode):
             # 每轮迭代前重新检查（工具调用会追加消息）
             if iteration > 0:
                 try:
-                    check_before_llm(messages=messages, node_id=self._node_id)
+                    check_before_llm(messages=messages, node_id=self._node_id, limit=self._token_limit)
                 except TokenLimitExceeded as exc:
                     logger.error(f"Tool loop iteration {iteration}: {exc}")
                     from langchain_core.messages import AIMessage
@@ -225,7 +225,7 @@ class OllamaNode(AgentNode):
         messages.append({"role": "user", "content": prompt})
 
         # ── Token 安全阀 ──
-        check_before_llm(messages=messages, node_id=self._node_id)
+        check_before_llm(messages=messages, node_id=self._node_id, limit=self._token_limit)
 
         # "think" is a top-level Ollama /api/chat param, NOT inside "options"
         opts = {k: v for k, v in self._options.items() if k != "think"}

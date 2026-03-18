@@ -38,7 +38,7 @@ from framework.config import AgentConfig
 from framework.debug import is_debug, log_node_thinking
 from framework.resource_lock import acquire_resource
 from framework.signal_parser import get_signal_parser
-from framework.token_guard import TokenLimitExceeded, check_before_llm
+from framework.token_guard import TokenLimitExceeded, check_before_llm, get_default_limit
 
 logger = logging.getLogger(__name__)
 
@@ -86,6 +86,14 @@ class LlmNode:
         self._node_id = node_config.get("id", "claude_main")
         # session_key：多个节点共享同一 session 时使用（如 debate 子图的 Claude 节点）
         self._session_key = node_config.get("session_key", self._node_id)
+
+        # Token 安全阀：node_config["token_limit"] > 按 type 默认值 > 环境变量
+        node_type = node_config.get("type", "")
+        configured_limit = node_config.get("token_limit")
+        self._token_limit: int = (
+            int(configured_limit) if configured_limit is not None
+            else get_default_limit(node_type)
+        )
 
         # 资源锁
         self._resource_lock = node_config.get("resource_lock")
@@ -221,7 +229,8 @@ class LlmNode:
         # ── Token 安全阀 ─────────────────────────────────────────────────
         try:
             check_before_llm(
-                prompt=prompt, history=list(msgs), node_id=self._node_id,
+                prompt=prompt, history=list(msgs),
+                node_id=self._node_id, limit=self._token_limit,
             )
         except TokenLimitExceeded as exc:
             if is_debug() and _original_cb is not None:

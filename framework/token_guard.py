@@ -4,8 +4,11 @@ Token 安全阀 — framework/token_guard.py
 在每次 LLM 调用前检查 session 的预估 token 大小。
 超过阈值时立即中止调用，返回错误信息，防止失控循环烧光 token。
 
-默认阈值：50,000 tokens（环境变量 BB_TOKEN_LIMIT 可覆盖）。
-估算规则：1 token ≈ 3.5 chars（英文偏多）/ 2 chars（中文偏多），取保守值 3。
+按节点类型分级：
+  CLAUDE_SDK / GEMINI_API / GEMINI_CLI → 50k tokens（云端 API，烧钱）
+  OLLAMA / LOCAL_VLLM                  → 1M tokens（本地推理，不烧钱）
+
+优先级：node_config["token_limit"] > 按类型默认值 > 环境变量 BB_TOKEN_LIMIT
 """
 
 import logging
@@ -13,8 +16,17 @@ import os
 
 logger = logging.getLogger(__name__)
 
-# 默认 50k tokens，环境变量可覆盖
-TOKEN_LIMIT: int = int(os.environ.get("BB_TOKEN_LIMIT", "50000"))
+# 环境变量兜底（未指定节点类型时的默认值）
+_ENV_LIMIT: int = int(os.environ.get("BB_TOKEN_LIMIT", "50000"))
+
+# 按节点类型的默认 token 上限
+LIMITS_BY_TYPE: dict[str, int] = {
+    "CLAUDE_SDK": 50_000,
+    "GEMINI_API": 50_000,
+    "GEMINI_CLI": 50_000,
+    "OLLAMA":     1_000_000,
+    "LOCAL_VLLM": 1_000_000,
+}
 
 # 保守估算：1 token ≈ 3 chars（混合中英文）
 CHARS_PER_TOKEN: float = 3.0
@@ -31,6 +43,11 @@ class TokenLimitExceeded(Exception):
             f"[Token 安全阀] {node_id}: 预估 {estimated_tokens:,} tokens "
             f"(阈值 {limit:,})，中止 LLM 调用。可能存在死循环。"
         )
+
+
+def get_default_limit(node_type: str = "") -> int:
+    """根据节点类型返回默认 token 上限。"""
+    return LIMITS_BY_TYPE.get(node_type, _ENV_LIMIT)
 
 
 def estimate_tokens(text: str) -> int:
@@ -74,12 +91,12 @@ def check_before_llm(
         messages: Ollama 格式的完整消息列表（与 prompt 二选一）
         history:  LangGraph state["messages"] 历史
         node_id:  节点 ID（用于日志）
-        limit:    自定义阈值（默认 TOKEN_LIMIT）
+        limit:    节点级阈值（由 LlmNode.__init__ 从 node_config 读取）
 
     Returns:
         预估 token 数
     """
-    effective_limit = limit or TOKEN_LIMIT
+    effective_limit = limit or _ENV_LIMIT
     total = 0
 
     if messages:
