@@ -76,3 +76,78 @@ def test_submit_validation_has_required_fields():
     props = TOOL_SCHEMAS["submit_validation"]["function"]["parameters"]["properties"]
     for f in ("status", "category", "severity", "rationale"):
         assert f in props, f"submit_validation missing field: {f}"
+
+
+from unittest.mock import AsyncMock, patch
+
+
+@pytest.mark.asyncio
+async def test_ollama_no_tools_uses_base_path():
+    """When no tools configured, __call__ is the base class path (no _call_with_tools)."""
+    from framework.nodes.llm.ollama import OllamaNode
+    node = OllamaNode(config={}, node_config={"id": "code_gen", "model": "qwen3.5:27b"})
+    assert node._tools == []
+
+
+@pytest.mark.asyncio
+async def test_ollama_tool_loop_terminates_on_submit_validation():
+    """Tool loop ends when submit_validation (_terminal=True) is returned."""
+    from framework.nodes.llm.ollama import OllamaNode
+
+    submit_call = {
+        "function": {
+            "name": "submit_validation",
+            "arguments": {
+                "status": "pass",
+                "category": "correctness",
+                "severity": "low",
+                "rationale": "looks good",
+            },
+        }
+    }
+    tool_call_response = {
+        "message": {
+            "role": "assistant",
+            "content": "",
+            "tool_calls": [submit_call],
+        }
+    }
+
+    node = OllamaNode(
+        config={},
+        node_config={"id": "soft_validate", "model": "qwen3.5:27b", "tools": ["submit_validation"]},
+    )
+    with patch.object(node, "_post_chat", new_callable=AsyncMock) as mock_post:
+        mock_post.return_value = tool_call_response
+        result = await node._call_with_tools({
+            "messages": [{"role": "user", "content": "validate this code"}],
+            "node_sessions": {},
+            "ollama_sessions": {},
+        })
+
+    assert result["validation_output"]["status"] == "pass"
+    assert "ollama_sessions" in result
+
+
+@pytest.mark.asyncio
+async def test_ollama_tool_loop_text_response():
+    """Tool loop ends on text response with no tool_calls."""
+    from framework.nodes.llm.ollama import OllamaNode
+
+    text_response = {
+        "message": {"role": "assistant", "content": "here is the code", "tool_calls": []}
+    }
+
+    node = OllamaNode(
+        config={},
+        node_config={"id": "code_gen", "model": "qwen3.5:27b", "tools": ["read_file", "write_file"]},
+    )
+    with patch.object(node, "_post_chat", new_callable=AsyncMock) as mock_post:
+        mock_post.return_value = text_response
+        result = await node._call_with_tools({
+            "messages": [{"role": "user", "content": "write hello.py"}],
+            "node_sessions": {},
+            "ollama_sessions": {},
+        })
+
+    assert "messages" in result or "ollama_sessions" in result
