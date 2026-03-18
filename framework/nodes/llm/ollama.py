@@ -43,7 +43,121 @@ class OllamaNode(AgentNode):
         skill_content = self._load_skill_content()
         self._system_prompt = f"{base_prompt}\n\n{skill_content}" if skill_content else base_prompt
         self._options = node_config.get("options", {})
+        self._tools: list = node_config.get("tools", [])
+        self._node_config = node_config  # used by _call_with_tools for session_key/id lookup
         logger.info(f"[ollama] model={self._model} endpoint={self._endpoint} options={self._options}")
+
+    async def __call__(self, state: dict) -> dict:
+        if self._tools:
+            return await self._call_with_tools(state)
+        return await super().__call__(state)
+
+    async def _post_chat(self, messages: list, tools: list | None = None) -> dict:
+        """Non-streaming POST to /api/chat. Returns parsed response dict."""
+        payload: dict = {
+            "model": self._model,
+            "messages": messages,
+            "stream": False,
+            "keep_alive": -1,
+        }
+        if tools:
+            payload["tools"] = tools
+
+        async with httpx.AsyncClient(timeout=self._timeout) as client:
+            resp = await client.post(f"{self._endpoint}/api/chat", json=payload)
+            resp.raise_for_status()
+            return resp.json()
+
+    async def _call_with_tools(self, state: dict) -> dict:
+        """Multi-turn Ollama tool-calling loop.
+
+        Session management:
+          - ollama_sessions: dict[uuid → messages list] (merged into state, not overwritten)
+          - node_sessions:   dict[session_key → uuid]   (maps logical key to session uuid)
+          - Max 200 messages per session (prune oldest non-system messages).
+        """
+        import uuid as _uuid
+        from framework.nodes.llm.tools import TOOL_REGISTRY, build_tool_schemas
+
+        tool_schemas = build_tool_schemas(self._tools)
+        session_key = self._node_config.get("session_key", self._node_config.get("id", ""))
+
+        # Load or init session messages
+        ollama_sessions: dict = dict(state.get("ollama_sessions") or {})
+        node_sessions: dict = dict(state.get("node_sessions") or {})
+        session_uuid = node_sessions.get(session_key)
+        messages: list = list(ollama_sessions.get(session_uuid, [])) if session_uuid else []
+
+        # System prompt
+        if self._system_prompt and not any(m.get("role") == "system" for m in messages):
+            messages.insert(0, {"role": "system", "content": self._system_prompt})
+
+        # Append current user message
+        lm = (state.get("messages") or [])
+        if lm:
+            last = lm[-1]
+            content = getattr(last, "content", None) or (last.get("content", "") if isinstance(last, dict) else "")
+            if content:
+                messages.append({"role": "user", "content": content})
+
+        MAX_MESSAGES = 200
+        MAX_ITERATIONS = 10
+        terminal_result = None
+        last_msg = {}
+
+        for _ in range(MAX_ITERATIONS):
+            response = await self._post_chat(messages, tools=tool_schemas)
+            last_msg = response.get("message", {})
+            messages.append(last_msg)
+
+            tool_calls = last_msg.get("tool_calls") or []
+            if not tool_calls:
+                break  # text response — loop ends
+
+            for tc in tool_calls:
+                fn_name = tc["function"]["name"]
+                fn_args = tc["function"].get("arguments", {})
+                if isinstance(fn_args, str):
+                    import json as _json
+                    fn_args = _json.loads(fn_args)
+
+                tool_fn = TOOL_REGISTRY.get(fn_name)
+                tool_result = await tool_fn(**fn_args) if tool_fn else {"error": f"unknown tool: {fn_name}"}
+
+                messages.append({"role": "tool", "content": str(tool_result)})
+
+                if tool_result.get("_terminal"):
+                    terminal_result = {k: v for k, v in tool_result.items() if k != "_terminal"}
+                    break
+
+            if terminal_result:
+                break
+
+        # Prune session to MAX_MESSAGES
+        if len(messages) > MAX_MESSAGES:
+            sys_msgs = [m for m in messages if m.get("role") == "system"]
+            non_sys  = [m for m in messages if m.get("role") != "system"]
+            messages = sys_msgs + non_sys[-(MAX_MESSAGES - len(sys_msgs)):]
+
+        # Persist session
+        if not session_uuid:
+            session_uuid = str(_uuid.uuid4())
+        node_sessions[session_key] = session_uuid
+        ollama_sessions[session_uuid] = messages
+
+        updates: dict = {
+            "node_sessions": node_sessions,
+            "ollama_sessions": ollama_sessions,
+        }
+        if terminal_result:
+            updates["validation_output"] = terminal_result
+        else:
+            text = last_msg.get("content", "")
+            if text:
+                from langchain_core.messages import AIMessage
+                updates["messages"] = [AIMessage(content=text)]
+
+        return updates
 
     async def call_llm(
         self,
