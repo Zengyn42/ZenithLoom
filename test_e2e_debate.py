@@ -149,7 +149,7 @@ async def test_agent_ref_state_mapping():
 
     # 验证辩论结论被注入为 AIMessage
     assert "messages" in result, "结果应含 messages（AIMessage 注入）"
-    assert "[辩论结论]" in result["messages"][0].content, "AIMessage 应含 [辩论结论] 前缀"
+    assert "[子图结论]" in result["messages"][0].content, "AIMessage 应含 [子图结论] 前缀"
 
     logger.info(f"✅ SubgraphRefNode mapping OK: conclusion={fake_reply[:40]!r}")
 
