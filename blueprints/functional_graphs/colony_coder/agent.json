@@ -1,0 +1,66 @@
+{
+  "name": "colony_coder",
+  "persona_files": [],
+  "graph": {
+    "state_schema": "colony_executor",
+    "nodes": [
+      {
+        "id": "plan",
+        "type": "AGENT_REF",
+        "agent_dir": "blueprints/functional_graphs/colony_coder_planner",
+        "state_in": {
+          "messages": "messages",
+          "node_sessions": "node_sessions"
+        },
+        "state_out": {
+          "tasks": "tasks",
+          "execution_order": "execution_order",
+          "refined_plan": "refined_plan",
+          "working_directory": "working_directory",
+          "messages": "messages"
+        }
+      },
+      {
+        "id": "execute",
+        "type": "AGENT_REF",
+        "agent_dir": "blueprints/functional_graphs/colony_coder_executor",
+        "state_in": {
+          "tasks": "tasks",
+          "execution_order": "execution_order",
+          "refined_plan": "refined_plan",
+          "working_directory": "working_directory",
+          "messages": "messages"
+        },
+        "state_out": {
+          "completed_tasks": "completed_tasks",
+          "final_files": "final_files",
+          "success": "success",
+          "abort_reason": "abort_reason",
+          "messages": "messages"
+        }
+      },
+      {
+        "id": "integrate",
+        "type": "AGENT_REF",
+        "agent_dir": "blueprints/functional_graphs/colony_coder_integrator",
+        "state_in": {
+          "completed_tasks": "completed_tasks",
+          "final_files": "final_files",
+          "working_directory": "working_directory",
+          "messages": "messages"
+        },
+        "state_out": {
+          "success": "success",
+          "abort_reason": "abort_reason",
+          "messages": "messages"
+        }
+      }
+    ],
+    "edges": [
+      {"from": "__start__", "to": "plan"},
+      {"from": "plan",      "to": "execute"},
+      {"from": "execute",   "to": "integrate"},
+      {"from": "integrate", "to": "__end__"}
+    ]
+  }
+}
