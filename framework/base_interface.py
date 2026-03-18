@@ -84,9 +84,13 @@ class BaseInterface:
     ) -> str:
         from framework.nodes.llm.llm_node import set_stream_callback
 
-        engine = self._controller._graph
-        config = self._controller.get_config()
+        thread_id = self._resolve_thread_id()
+        workspace = self._resolve_workspace()
+        config = {"configurable": {"thread_id": thread_id}}
+
         init_state: dict = {"messages": [HumanMessage(content=user_input)]}
+        if workspace:
+            init_state["workspace"] = workspace
         if extra_state:
             init_state.update(extra_state)
 
@@ -95,7 +99,7 @@ class BaseInterface:
         if self._streaming:
             set_stream_callback(self._on_stream_chunk)
         try:
-            result_state = await engine.ainvoke(init_state, config=config)
+            result_state = await self._controller.graph.ainvoke(init_state, config=config)
         finally:
             if self._streaming:
                 set_stream_callback(None)
