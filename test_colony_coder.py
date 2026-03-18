@@ -54,3 +54,25 @@ async def test_code_execution_nonzero_exit():
     )
     result = await node({"execution_command": "false", "working_directory": ""})
     assert result["execution_returncode"] != 0
+
+
+def test_tool_registry_has_all_tools():
+    from framework.nodes.llm.tools import TOOL_REGISTRY, TOOL_SCHEMAS
+    expected = {"read_file", "write_file", "bash_exec", "list_dir", "submit_validation"}
+    assert set(TOOL_REGISTRY.keys()) == expected
+    assert set(TOOL_SCHEMAS.keys()) == expected
+
+
+def test_build_tool_schemas_subset():
+    from framework.nodes.llm.tools import build_tool_schemas
+    schemas = build_tool_schemas(["read_file", "submit_validation"])
+    assert len(schemas) == 2
+    names = {s["function"]["name"] for s in schemas}
+    assert names == {"read_file", "submit_validation"}
+
+
+def test_submit_validation_has_required_fields():
+    from framework.nodes.llm.tools import TOOL_SCHEMAS
+    props = TOOL_SCHEMAS["submit_validation"]["function"]["parameters"]["properties"]
+    for f in ("status", "category", "severity", "rationale"):
+        assert f in props, f"submit_validation missing field: {f}"
