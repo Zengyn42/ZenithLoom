@@ -41,6 +41,17 @@ def _run_subprocess(cmd: list[str], timeout: float) -> subprocess.CompletedProce
     )
 
 
+def _run_code_exec(cmd: list[str], timeout: float, cwd: str | None) -> subprocess.CompletedProcess:
+    """Run cmd (arg-list, no shell) with timeout and optional cwd."""
+    return subprocess.run(
+        cmd,
+        capture_output=True,
+        text=True,
+        timeout=timeout,
+        cwd=cwd or None,
+    )
+
+
 class ExternalToolNode:
     """
     EXTERNAL_TOOL node: calls any external CLI as a subprocess (arg-list, no shell),
@@ -55,15 +66,37 @@ class ExternalToolNode:
         # node_config may be the full node def {"id":..., "type":..., "node_config":{...}}
         # or just the inner node_config dict directly — handle both
         inner = node_config.get("node_config", node_config)
+        self._backend: str = inner.get("backend", "cli")
         raw = inner.get("command")
-        if not raw:
+        if self._backend != "code_execution" and not raw:
             raise ValueError("ExternalToolNode: 'command' must be a non-empty list")
-        self._command: list[str] = shlex.split(raw) if isinstance(raw, str) else list(raw)
+        self._command: list[str] = shlex.split(raw) if isinstance(raw, str) else list(raw or [])
         self._timeout = float(inner.get("timeout", 30.0))
         self._inject_as: str = inner.get("inject_as", "message")
         self._description: str = inner.get("description", "")
 
+    async def _run_code_execution(self, state: dict) -> dict:
+        cmd_str: str = state.get("execution_command", "")
+        working_dir: str = state.get("working_directory") or ""
+        cmd = shlex.split(cmd_str)
+        cwd = working_dir if working_dir else None
+        try:
+            result = await asyncio.to_thread(_run_code_exec, cmd, self._timeout, cwd)
+        except subprocess.TimeoutExpired:
+            return {
+                "execution_stdout": "",
+                "execution_stderr": f"timeout after {self._timeout}s",
+                "execution_returncode": -1,
+            }
+        return {
+            "execution_stdout": result.stdout,
+            "execution_stderr": result.stderr,
+            "execution_returncode": result.returncode,
+        }
+
     async def __call__(self, state: dict) -> dict:
+        if self._backend == "code_execution":
+            return await self._run_code_execution(state)
         # 1. Resolve {field} templates from state (only \w+ keys; JSON braces are left untouched)
         cmd = [_substitute(s, state) for s in self._command]
 

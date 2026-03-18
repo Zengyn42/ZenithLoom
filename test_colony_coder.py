@@ -31,3 +31,26 @@ def test_deterministic_registered():
     from framework.registry import get_node_factory
     factory = get_node_factory("DETERMINISTIC")
     assert factory is not None
+
+
+@pytest.mark.asyncio
+async def test_code_execution_success():
+    from framework.nodes.external_tool_node import ExternalToolNode
+    node = ExternalToolNode(
+        config={},
+        node_config={"id": "execute", "backend": "code_execution", "timeout": 10},
+    )
+    result = await node({"execution_command": "echo hello", "working_directory": ""})
+    assert result["execution_stdout"].strip() == "hello"
+    assert result["execution_returncode"] == 0
+
+
+@pytest.mark.asyncio
+async def test_code_execution_nonzero_exit():
+    from framework.nodes.external_tool_node import ExternalToolNode
+    node = ExternalToolNode(
+        config={},
+        node_config={"id": "execute", "backend": "code_execution", "timeout": 10},
+    )
+    result = await node({"execution_command": "false", "working_directory": ""})
+    assert result["execution_returncode"] != 0
