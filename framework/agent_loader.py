@@ -194,7 +194,8 @@ class EntityLoader:
         if "nodes" in graph_dict and "edges" in graph_dict:
             logger.info(f"[agent_loader] building declarative graph for {self.name!r}")
             return await _build_declarative(
-                graph_dict, config, system_prompt, checkpointer
+                graph_dict, config, system_prompt, checkpointer,
+                blueprint_dir=str(self._dir),
             )
 
         # Priority 3: GraphSpec 默认图
@@ -275,7 +276,8 @@ class EntityLoader:
         # system_prompt="" → 跳过 persona 注入和 _check_single_main 验证
         # checkpointer=None → 心跳图本身无需持久化（各 AGENT_RUN 节点自有 DB）
         graph = await _build_declarative(
-            graph_spec, config, system_prompt="", checkpointer=None
+            graph_spec, config, system_prompt="", checkpointer=None,
+            blueprint_dir=str(self._dir),
         )
         return graph, hb_cfg
 
@@ -347,11 +349,28 @@ def _collect_routing_hints(graph_spec: dict) -> str:
     return "\n".join(lines)
 
 
+# Module-level state schema registry (add custom schemas before build_graph is called)
+_STATE_SCHEMAS: dict = {}  # populated after imports resolve; see _get_state_schemas()
+
+
+def _get_state_schemas() -> dict:
+    """Lazy-load default schemas + any registered custom schemas."""
+    from framework.state import BaseAgentState, DebateState
+    base = {"debate": DebateState, "base": BaseAgentState}
+    return {**base, **_STATE_SCHEMAS}
+
+
+def register_state_schema(name: str, cls):
+    """Register a custom TypedDict as a named state schema for declarative graphs."""
+    _STATE_SCHEMAS[name] = cls
+
+
 async def _build_declarative(
     graph_spec: dict,
     config: AgentConfig,
     system_prompt: str,
     checkpointer,
+    blueprint_dir: str = "",
 ) -> object:
     """
     从 agent.json["graph"]（含 nodes + edges）构建 LangGraph 状态机。
@@ -365,7 +384,7 @@ async def _build_declarative(
     from langgraph.graph import END, START, StateGraph
 
     from framework.registry import get_condition, get_node_factory
-    from framework.state import BaseAgentState, DebateState
+    from framework.state import BaseAgentState
 
     # ── Step 0: routing_hint 注入 system_prompt ──────────────────────────────
     if system_prompt:
@@ -381,8 +400,7 @@ async def _build_declarative(
         _check_single_main(graph_spec)
 
     # ── Step 2: 构建图节点 ────────────────────────────────────────────────
-    _STATE_SCHEMAS = {"debate": DebateState, "base": BaseAgentState}
-    state_schema = _STATE_SCHEMAS.get(graph_spec.get("state_schema", "base"), BaseAgentState)
+    state_schema = _get_state_schemas().get(graph_spec.get("state_schema", "base"), BaseAgentState)
     builder = StateGraph(state_schema)
 
     for node_def in graph_spec.get("nodes", []):
@@ -392,17 +410,21 @@ async def _build_declarative(
         if node_type == "SUBGRAPH":
             # 内联子图：递归构建（无 checkpointer，父图负责）
             inner = await _build_declarative(
-                node_def["graph"], config, system_prompt, None
+                node_def["graph"], config, system_prompt, None,
+                blueprint_dir=blueprint_dir,
             )
             builder.add_node(node_id, inner)
         else:
             factory = get_node_factory(node_type)
             # 仅主节点（ID 含 "main"）注入 system_prompt；其他节点忽略
-            effective_def = (
+            _base = (
                 {**node_def, "system_prompt": system_prompt}
                 if system_prompt and "main" in node_id
-                else node_def
+                else dict(node_def)
             )
+            if node_type == "DETERMINISTIC" and blueprint_dir:
+                _base["agent_dir"] = blueprint_dir
+            effective_def = _base
             node_instance = factory(config, effective_def)
             builder.add_node(node_id, node_instance)
 
