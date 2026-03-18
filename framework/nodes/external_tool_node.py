@@ -22,6 +22,7 @@ import subprocess
 from langchain_core.messages import AIMessage
 
 from framework.config import AgentConfig
+from framework.debug import is_debug
 
 logger = logging.getLogger(__name__)
 
@@ -96,11 +97,17 @@ class ExternalToolNode:
 
     async def __call__(self, state: dict) -> dict:
         if self._backend == "code_execution":
+            if is_debug():
+                cmd_str = state.get("execution_command", "")
+                logger.debug(f"[external_tool] code_execution: cmd={cmd_str!r}")
             return await self._run_code_execution(state)
         # 1. Resolve {field} templates from state (only \w+ keys; JSON braces are left untouched)
         cmd = [_substitute(s, state) for s in self._command]
 
-        logger.debug("[external_tool] run: %s", cmd)
+        if is_debug():
+            logger.debug(f"[external_tool] cmd={cmd} timeout={self._timeout}s inject_as={self._inject_as!r}")
+        else:
+            logger.debug("[external_tool] run: %s", cmd)
 
         # 2. Run subprocess in thread pool (arg-list, no shell)
         try:
@@ -126,6 +133,12 @@ class ExternalToolNode:
                 output = json.dumps(json.loads(output), ensure_ascii=False, indent=2)
             except (json.JSONDecodeError, ValueError):
                 pass  # keep as plain text
+
+        if is_debug():
+            logger.debug(
+                f"[external_tool] exit={result.returncode} "
+                f"output_len={len(output)} preview={output[:200]!r}"
+            )
 
         # 4. Inject into state
         if self._inject_as == "message":

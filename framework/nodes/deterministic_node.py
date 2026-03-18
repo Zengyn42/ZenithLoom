@@ -12,6 +12,8 @@ import importlib.util
 import logging
 from pathlib import Path
 
+from framework.debug import is_debug
+
 logger = logging.getLogger(__name__)
 
 
@@ -34,11 +36,21 @@ class DeterministicNode:
     """
 
     def __init__(self, config, node_config: dict):
-        node_id = node_config["id"]
+        self._node_id = node_config["id"]
         agent_dir = node_config["agent_dir"]
         module = _load_validators(agent_dir)
-        self._fn = getattr(module, node_id)
-        logger.debug(f"[deterministic] loaded {node_id!r} from {agent_dir}")
+        self._fn = getattr(module, self._node_id)
+        logger.debug(f"[deterministic] loaded {self._node_id!r} from {agent_dir}")
 
     async def __call__(self, state: dict) -> dict:
-        return self._fn(state)
+        if is_debug():
+            rt = state.get("routing_target", "")
+            logger.debug(f"[deterministic/{self._node_id}] routing_target={rt!r}")
+
+        result = self._fn(state)
+
+        if is_debug():
+            keys = sorted(k for k in result.keys() if result[k]) if isinstance(result, dict) else []
+            logger.debug(f"[deterministic/{self._node_id}] result_keys={keys}")
+
+        return result

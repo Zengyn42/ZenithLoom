@@ -10,6 +10,8 @@
 import logging
 import subprocess
 
+from framework.debug import is_debug
+
 logger = logging.getLogger(__name__)
 
 

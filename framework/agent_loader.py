@@ -32,7 +32,7 @@ from collections import defaultdict
 from pathlib import Path
 
 from framework.config import AgentConfig
-from framework.debug import is_debug
+from framework.debug import is_debug, log_graph_flow
 
 logger = logging.getLogger(__name__)
 
@@ -233,7 +233,7 @@ class EntityLoader:
         if self._controller is None:
             from framework.graph_controller import GraphController
             graph = await self._build_engine()
-            self._controller = GraphController(graph, self.session_mgr, self.load_config())
+            self._controller = GraphController(graph, self.session_mgr, self.load_config(), entity_name=self.name)
         return self._controller
 
     async def get_engine(self):
@@ -413,7 +413,7 @@ async def _build_declarative(
                 node_def["graph"], config, system_prompt, None,
                 blueprint_dir=blueprint_dir,
             )
-            builder.add_node(node_id, inner)
+            builder.add_node(node_id, _wrap_node_for_flow_log(node_id, inner))
         else:
             factory = get_node_factory(node_type)
             # 仅主节点（ID 含 "main"）注入 system_prompt；其他节点忽略
@@ -426,7 +426,7 @@ async def _build_declarative(
                 _base["agent_dir"] = blueprint_dir
             effective_def = _base
             node_instance = factory(config, effective_def)
-            builder.add_node(node_id, node_instance)
+            builder.add_node(node_id, _wrap_node_for_flow_log(node_id, node_instance))
 
     # ── Step 3: 添加边 ────────────────────────────────────────────────────
     # conditional_edges[src] = list of (cond_key, fn, dst_node)
@@ -467,7 +467,7 @@ async def _build_declarative(
         route_map: dict[str, str] = {ckey: dnode for ckey, _, dnode in cond_list}
         fns: dict[str, object] = {ckey: fn for ckey, fn, _ in cond_list}
 
-        def _make_router(fn_map, rmap):
+        def _make_router(fn_map, rmap, src_id):
             # Prefer no_routing key as fallback (maps to __end__); else first key
             _no_routing_key = next(
                 (k for k, v in rmap.items() if k == "no_routing"), next(iter(rmap))
@@ -475,13 +475,17 @@ async def _build_declarative(
             def _router(state):
                 for ckey, fn in fn_map.items():
                     if fn(state):
+                        dst = rmap.get(ckey, ckey)
+                        log_graph_flow("route", src_id, f"{ckey} → {dst}")
                         return ckey
+                dst = rmap.get(_no_routing_key, _no_routing_key)
+                log_graph_flow("route", src_id, f"fallback({_no_routing_key}) → {dst}")
                 return _no_routing_key
             return _router
 
         builder.add_conditional_edges(
             src,
-            _make_router(fns, route_map),
+            _make_router(fns, route_map, src),
             route_map,
         )
 
@@ -495,6 +499,73 @@ async def _build_declarative(
         await checkpointer.setup()
 
     return builder.compile(checkpointer=checkpointer or None)
+
+
+# ---------------------------------------------------------------------------
+# Debug: 节点流转日志包裹器
+# ---------------------------------------------------------------------------
+
+def _wrap_node_for_flow_log(node_id: str, node_fn):
+    """
+    包裹节点 callable，在 debug 模式下记录 enter/exit 事件。
+
+    非 debug 模式下仅增加一次 is_debug() 检查，开销可忽略。
+    支持 sync 和 async callable，以及 CompiledStateGraph（子图）。
+    """
+    import asyncio
+    import inspect
+
+    # CompiledStateGraph（子图）：有 ainvoke 但不是普通 callable
+    # LangGraph 会调用它的 ainvoke，不需要包裹
+    if hasattr(node_fn, "ainvoke") and not callable(getattr(node_fn, "__call__", None)):
+        return node_fn
+
+    if inspect.iscoroutinefunction(node_fn) or (
+        hasattr(node_fn, "__call__") and inspect.iscoroutinefunction(node_fn.__call__)
+    ):
+        async def _async_wrapper(state):
+            if is_debug():
+                # 记录入口
+                msg_count = len(state.get("messages", []))
+                rt = state.get("routing_target", "")
+                detail = f"msgs={msg_count}"
+                if rt:
+                    detail += f" routing_target={rt!r}"
+                log_graph_flow("enter", node_id, detail)
+
+            result = await node_fn(state)
+
+            if is_debug():
+                # 记录出口
+                if isinstance(result, dict):
+                    keys = sorted(k for k in result.keys() if result[k])
+                    rt_out = result.get("routing_target", "")
+                    detail = f"keys=[{', '.join(keys)}]"
+                    if rt_out:
+                        detail += f" → routing_target={rt_out!r}"
+                else:
+                    detail = f"type={type(result).__name__}"
+                log_graph_flow("exit", node_id, detail)
+
+            return result
+        return _async_wrapper
+    else:
+        def _sync_wrapper(state):
+            if is_debug():
+                msg_count = len(state.get("messages", []))
+                log_graph_flow("enter", node_id, f"msgs={msg_count}")
+
+            result = node_fn(state)
+
+            if is_debug():
+                if isinstance(result, dict):
+                    keys = sorted(k for k in result.keys() if result[k])
+                    log_graph_flow("exit", node_id, f"keys=[{', '.join(keys)}]")
+                else:
+                    log_graph_flow("exit", node_id, f"type={type(result).__name__}")
+
+            return result
+        return _sync_wrapper
 
 
 # ---------------------------------------------------------------------------

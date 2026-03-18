@@ -21,6 +21,8 @@ import subprocess
 import httpx
 from langchain_core.messages import AIMessage
 
+from framework.debug import is_debug
+
 logger = logging.getLogger(__name__)
 
 
@@ -34,6 +36,9 @@ class ProbeNode:
     async def __call__(self, state: dict) -> dict:
         name = self._name
         loop = asyncio.get_event_loop()
+
+        if is_debug():
+            logger.debug(f"[probe] 开始探测 {name!r} endpoint={self._endpoint!r}")
 
         if name == "claude":
             ok = await loop.run_in_executor(None, _probe_claude)

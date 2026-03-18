@@ -35,7 +35,7 @@ from pathlib import Path
 from langchain_core.messages import AIMessage
 
 from framework.config import AgentConfig
-from framework.debug import is_debug
+from framework.debug import is_debug, log_node_thinking
 from framework.resource_lock import acquire_resource
 from framework.signal_parser import get_signal_parser
 
@@ -200,22 +200,51 @@ class LlmNode:
         if is_debug():
             logger.debug(f"[{self._node_id}] prompt_len={len(prompt)} tools={tools}")
 
+        # ── Debug thinking 拦截器 ──────────────────────────────────────────
+        _thinking_chunks: list[str] = []
+        _output_chunks: list[str] = []
+        _original_cb = None
+        if is_debug():
+            _original_cb = _stream_cb.get()
+
+            def _debug_intercept(text: str, is_thinking: bool = False) -> None:
+                if is_thinking:
+                    _thinking_chunks.append(text)
+                else:
+                    _output_chunks.append(text)
+                if _original_cb:
+                    _original_cb(text, is_thinking)
+
+            _stream_cb.set(_debug_intercept)
+
         # ── LLM 调用（持资源锁）────────────────────────────────────────────
-        async with acquire_resource(
-            self._resource_lock,
-            timeout=self._resource_timeout,
-            holder=self._node_id,
-        ):
-            raw_output, new_session_id = await self.call_llm(
-                prompt,
-                session_id=session_id,
-                tools=tools,
-                cwd=project_root,
-                history=list(msgs),
-            )
+        try:
+            async with acquire_resource(
+                self._resource_lock,
+                timeout=self._resource_timeout,
+                holder=self._node_id,
+            ):
+                raw_output, new_session_id = await self.call_llm(
+                    prompt,
+                    session_id=session_id,
+                    tools=tools,
+                    cwd=project_root,
+                    history=list(msgs),
+                )
+        finally:
+            # 恢复原始 callback
+            if is_debug():
+                _stream_cb.set(_original_cb)
 
         if is_debug():
             logger.debug(f"[{self._node_id}] raw_output_preview={raw_output[:200]!r}")
+            # 记录思考内容到日志文件
+            thinking_text = "".join(_thinking_chunks)
+            log_node_thinking(
+                node_id=self._node_id,
+                thinking_text=thinking_text,
+                output_text=raw_output,
+            )
 
         # ── 路由信号检测（用注册的 SignalParser）────────────────────────────
         # 信号格式：{"route": "<node_id>", "context": "<question|background>"}

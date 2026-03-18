@@ -15,6 +15,8 @@ from pathlib import Path
 
 from langchain_core.messages import AIMessage
 
+from framework.debug import is_debug
+
 logger = logging.getLogger(__name__)
 
 _HEARTBEAT_THREAD = "__heartbeat__"
@@ -51,6 +53,8 @@ class HeartbeatNode:
         reply = await controller.invoke(self._prompt, thread_id=_HEARTBEAT_THREAD)
 
         logger.info(f"[heartbeat_run] {self._agent_dir.name!r} reply_len={len(reply)}")
+        if is_debug():
+            logger.debug(f"[heartbeat_run] reply_preview={reply[:200]!r}")
         return {"messages": [AIMessage(content=reply)]}
 
 

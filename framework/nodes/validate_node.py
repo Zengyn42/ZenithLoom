@@ -9,6 +9,7 @@ import os
 import py_compile
 
 from framework.config import AgentConfig
+from framework.debug import is_debug
 
 logger = logging.getLogger(__name__)
 
@@ -26,9 +27,20 @@ class ValidateNode:
         msgs = state.get("messages")
         last_output = msgs[-1].content if msgs and hasattr(msgs[-1], "content") else ""
         root = state.get("project_root") or ""
+
+        if is_debug():
+            rt = state.get("routing_target", "")
+            logger.debug(
+                f"[validate] retry={retry}/{self.max_retries} "
+                f"output_len={len(last_output)} root={root!r} "
+                f"routing_target={rt!r}"
+            )
+
         reason = _check_failure(last_output, root)
         if reason:
             logger.warning(f"[validate] 验证失败: {reason}")
+        elif is_debug():
+            logger.debug("[validate] 验证通过")
         return {"rollback_reason": reason}
 
 
