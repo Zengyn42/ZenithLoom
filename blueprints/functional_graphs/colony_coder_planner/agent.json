@@ -1,0 +1,46 @@
+{
+  "name": "colony_coder_planner",
+  "persona_files": [],
+  "graph": {
+    "state_schema": "colony_executor",
+    "nodes": [
+      {
+        "id": "plan",
+        "type": "CLAUDE_SDK",
+        "session_key": "session_a",
+        "system_prompt": "You are the Colony Coder planning layer. Analyze the coding task and produce an initial technical approach."
+      },
+      {
+        "id": "design_debate",
+        "type": "CLAUDE_SDK",
+        "session_key": "session_a",
+        "system_prompt": "You are reviewing the technical plan. Identify risks, gaps, and alternative approaches."
+      },
+      {
+        "id": "claude_swarm",
+        "type": "CLAUDE_SDK",
+        "session_key": "session_a",
+        "system_prompt": "You are a multi-perspective reviewer. Evaluate the plan from three angles: correctness, maintainability, and testability. Synthesize a final recommendation."
+      },
+      {
+        "id": "task_decompose",
+        "type": "CLAUDE_SDK",
+        "session_key": "session_a",
+        "system_prompt": "Decompose the approved plan into atomic coding tasks. Output JSON with: tasks (list of {id, description, dependencies}), execution_order (list of task ids), refined_plan (prose summary), working_directory (absolute path)."
+      },
+      {
+        "id": "decomposition_validator",
+        "type": "DETERMINISTIC"
+      }
+    ],
+    "edges": [
+      {"from": "__start__",               "to": "plan"},
+      {"from": "plan",                    "to": "design_debate"},
+      {"from": "design_debate",           "to": "claude_swarm"},
+      {"from": "claude_swarm",            "to": "task_decompose"},
+      {"from": "task_decompose",          "to": "decomposition_validator"},
+      {"from": "decomposition_validator", "to": "task_decompose", "type": "routing_to"},
+      {"from": "decomposition_validator", "to": "__end__",        "type": "routing_to"}
+    ]
+  }
+}
