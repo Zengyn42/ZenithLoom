@@ -1,0 +1,81 @@
+{
+  "name": "colony_coder_executor",
+  "persona_files": [],
+  "graph": {
+    "state_schema": "colony_executor",
+    "nodes": [
+      {
+        "id": "code_gen",
+        "type": "OLLAMA",
+        "model": "qwen3.5:27b",
+        "tools": ["read_file", "write_file", "list_dir"],
+        "session_key": "executor_session"
+      },
+      {
+        "id": "soft_validate",
+        "type": "OLLAMA",
+        "model": "qwen3.5:27b",
+        "tools": ["read_file", "bash_exec", "submit_validation"],
+        "session_key": "executor_session"
+      },
+      {
+        "id": "self_fix",
+        "type": "OLLAMA",
+        "model": "qwen3.5:27b",
+        "tools": ["read_file", "write_file", "bash_exec"],
+        "session_key": "executor_session"
+      },
+      {
+        "id": "apply_patch",
+        "type": "EXTERNAL_TOOL",
+        "backend": "code_execution",
+        "timeout": 30
+      },
+      {
+        "id": "execute",
+        "type": "EXTERNAL_TOOL",
+        "backend": "code_execution",
+        "timeout": 60
+      },
+      {
+        "id": "hard_validate",
+        "type": "DETERMINISTIC"
+      },
+      {
+        "id": "error_classifier",
+        "type": "DETERMINISTIC"
+      },
+      {
+        "id": "rescue_router",
+        "type": "DETERMINISTIC"
+      },
+      {
+        "id": "rollback_state",
+        "type": "DETERMINISTIC"
+      },
+      {
+        "id": "claude_rescue",
+        "type": "CLAUDE_SDK",
+        "session_key": "session_b",
+        "system_prompt": "You are ApexCoder, a rescue agent. Analyze the error and produce a corrected implementation."
+      }
+    ],
+    "edges": [
+      {"from": "__start__",        "to": "code_gen"},
+      {"from": "code_gen",         "to": "apply_patch"},
+      {"from": "apply_patch",      "to": "soft_validate"},
+      {"from": "soft_validate",    "to": "hard_validate"},
+      {"from": "execute",          "to": "hard_validate"},
+      {"from": "self_fix",         "to": "apply_patch"},
+      {"from": "claude_rescue",    "to": "apply_patch"},
+      {"from": "hard_validate",    "to": "execute",          "type": "routing_to"},
+      {"from": "hard_validate",    "to": "error_classifier", "type": "routing_to"},
+      {"from": "hard_validate",    "to": "__end__",           "type": "routing_to"},
+      {"from": "error_classifier", "to": "self_fix",          "type": "routing_to"},
+      {"from": "error_classifier", "to": "claude_rescue",     "type": "routing_to"},
+      {"from": "error_classifier", "to": "rescue_router",     "type": "routing_to"},
+      {"from": "rescue_router",    "to": "rollback_state",    "type": "routing_to"},
+      {"from": "rollback_state",   "to": "claude_rescue",     "type": "routing_to"}
+    ]
+  }
+}
