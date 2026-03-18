@@ -310,3 +310,35 @@ async def test_executor_graph_compiles():
         "claude_rescue",
     }
     assert required <= node_ids, f"Missing: {required - node_ids}"
+
+
+def test_integration_route_pass():
+    from blueprints.functional_graphs.colony_coder_integrator.validators import integration_route
+    result = integration_route({"validation_output": {"status": "pass"}, "retry_count": 0})
+    assert result["routing_target"] == "__end__"
+    assert result["success"] is True
+
+
+def test_integration_route_fail_rescue():
+    from blueprints.functional_graphs.colony_coder_integrator.validators import integration_route
+    result = integration_route({"validation_output": {"status": "fail"}, "retry_count": 0})
+    assert result["routing_target"] == "integration_rescue"
+    assert result["retry_count"] == 1
+
+
+def test_integration_route_abort_at_cap():
+    from blueprints.functional_graphs.colony_coder_integrator.validators import integration_route
+    result = integration_route({"validation_output": {"status": "fail"}, "retry_count": 2})
+    assert result["routing_target"] == "__end__"
+    assert result["success"] is False
+
+
+@pytest.mark.asyncio
+async def test_integrator_graph_compiles():
+    import blueprints.functional_graphs.colony_coder_executor.state  # noqa: F401
+    from framework.agent_loader import AgentLoader
+    from pathlib import Path
+    g = await AgentLoader(Path("blueprints/functional_graphs/colony_coder_integrator")).build_graph()
+    node_ids = set(g.nodes) - {"__start__"}
+    required = {"integration_test", "integration_rescue", "apply_patch", "integration_route"}
+    assert required <= node_ids, f"Missing: {required - node_ids}"
