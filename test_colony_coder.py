@@ -342,3 +342,14 @@ async def test_integrator_graph_compiles():
     node_ids = set(g.nodes) - {"__start__"}
     required = {"integration_test", "integration_rescue", "apply_patch", "integration_route"}
     assert required <= node_ids, f"Missing: {required - node_ids}"
+
+
+@pytest.mark.asyncio
+async def test_master_graph_compiles():
+    # Must import state.py first to register "colony_executor" schema
+    import blueprints.functional_graphs.colony_coder_executor.state  # noqa: F401
+    from framework.agent_loader import AgentLoader
+    from pathlib import Path
+    g = await AgentLoader(Path("blueprints/functional_graphs/colony_coder")).build_graph()
+    node_ids = set(g.nodes) - {"__start__"}
+    assert {"plan", "execute", "integrate"} <= node_ids
