@@ -121,6 +121,12 @@ def _(config, node_config):
     return SubgraphRefNode(config, node_config)
 
 
+@register_node("DETERMINISTIC")
+def _(config, node_config):
+    from framework.nodes.deterministic_node import DeterministicNode
+    return DeterministicNode(config, node_config)
+
+
 @register_node("EXTERNAL_TOOL")
 def _(config, node_config):
     from framework.nodes.external_tool_node import ExternalToolNode
