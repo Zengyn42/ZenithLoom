@@ -221,19 +221,23 @@ class EntityLoader:
             spec=spec,
         )
 
-    async def get_engine(self):
-        """懒加载引擎单例（向后兼容，推荐改用 get_controller()）。"""
+    async def _build_engine(self):
+        """懒加载编译图单例（内部使用）。"""
         if self._engine is None:
             self._engine = await self.build_graph()
         return self._engine
 
     async def get_controller(self):
-        """懒加载 GraphController 单例（推荐接口）。"""
+        """懒加载 GraphController 单例（唯一推荐的外部入口）。"""
         if self._controller is None:
             from framework.graph_controller import GraphController
-            graph = await self.get_engine()
+            graph = await self._build_engine()
             self._controller = GraphController(graph, self.session_mgr, self.load_config())
         return self._controller
+
+    async def get_engine(self):
+        """已废弃：请改用 get_controller()。保留供旧代码/测试向后兼容。"""
+        return await self._build_engine()
 
     def invalidate_engine(self) -> None:
         """使引擎和控制器缓存失效（compact/reset 后调用）。"""

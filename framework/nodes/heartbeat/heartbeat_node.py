@@ -13,7 +13,7 @@ node_config 字段：
 import logging
 from pathlib import Path
 
-from langchain_core.messages import AIMessage, HumanMessage
+from langchain_core.messages import AIMessage
 
 logger = logging.getLogger(__name__)
 
@@ -32,29 +32,24 @@ class HeartbeatNode:
     def __init__(self, node_config: dict):
         self._agent_dir = Path(node_config["agent_dir"]).resolve()
         self._prompt = node_config["prompt"]
-        self._engine = None  # lazily built
+        self._controller = None  # lazily built
 
-    async def _get_engine(self):
-        if self._engine is None:
+    async def _get_controller(self):
+        if self._controller is None:
             from framework.agent_loader import EntityLoader
             loader = EntityLoader(self._agent_dir)
-            self._engine = await loader.get_engine()
-        return self._engine
+            self._controller = await loader.get_controller()
+        return self._controller
 
     async def __call__(self, state: dict) -> dict:
-        engine = await self._get_engine()
+        controller = await self._get_controller()
         logger.info(
             f"[heartbeat_run] invoking {self._agent_dir.name!r} "
             f"thread={_HEARTBEAT_THREAD!r} prompt={self._prompt[:60]!r}"
         )
 
-        result = await engine.ainvoke(
-            {"messages": [HumanMessage(content=self._prompt)]},
-            config={"configurable": {"thread_id": _HEARTBEAT_THREAD}},
-        )
+        reply = await controller.invoke(self._prompt, thread_id=_HEARTBEAT_THREAD)
 
-        messages = result.get("messages", [])
-        reply = messages[-1].content if messages else ""
         logger.info(f"[heartbeat_run] {self._agent_dir.name!r} reply_len={len(reply)}")
         return {"messages": [AIMessage(content=reply)]}
 
