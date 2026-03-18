@@ -38,6 +38,7 @@ from framework.config import AgentConfig
 from framework.debug import is_debug, log_node_thinking
 from framework.resource_lock import acquire_resource
 from framework.signal_parser import get_signal_parser
+from framework.token_guard import TokenLimitExceeded, check_before_llm
 
 logger = logging.getLogger(__name__)
 
@@ -217,6 +218,24 @@ class LlmNode:
 
             _stream_cb.set(_debug_intercept)
 
+        # ── Token 安全阀 ─────────────────────────────────────────────────
+        try:
+            check_before_llm(
+                prompt=prompt, history=list(msgs), node_id=self._node_id,
+            )
+        except TokenLimitExceeded as exc:
+            if is_debug() and _original_cb is not None:
+                _stream_cb.set(_original_cb)
+            logger.error(str(exc))
+            ns[self._session_key] = session_id
+            return {
+                "messages": [AIMessage(content=f"⛔ {exc}")],
+                "routing_target": "__end__",
+                "node_sessions": ns,
+                "success": False,
+                "abort_reason": str(exc),
+            }
+
         # ── LLM 调用（持资源锁）────────────────────────────────────────────
         try:
             async with acquire_resource(
@@ -271,7 +290,9 @@ class LlmNode:
                 "consult_count": 0,
                 "subgraph_call_counts": {},  # 无路由 = 新一轮对话，重置按子图计数
                 "rollback_reason": "",
-                "retry_count": 0,
+                # 注意：不在此处重置 retry_count！
+                # retry_count 由 DETERMINISTIC validator 节点管理，
+                # LLM 节点强制归零会破坏 validator 的重试逻辑（如 colony_coder 死循环 bug）。
                 "node_sessions": ns,
             }
 

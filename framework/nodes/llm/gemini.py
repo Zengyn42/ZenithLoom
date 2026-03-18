@@ -33,6 +33,7 @@ from framework.config import AgentConfig
 from framework.debug import is_debug, log_node_thinking
 from framework.nodes.llm.llm_node import LlmNode as AgentNode
 from framework.resource_lock import acquire_resource
+from framework.token_guard import TokenLimitExceeded, check_before_llm
 import framework.nodes.llm.gemini_session as gem_sess
 from framework.nodes.llm.gemini_session import ConversationRecord
 
@@ -395,6 +396,18 @@ class GeminiCodeAssistNode(_GeminiSessionMixin, AgentNode):
                 f"session_id={session_id[:8] if session_id else 'new'}"
             )
 
+        # ── Token 安全阀 ──
+        try:
+            check_before_llm(prompt=prompt, history=list(msgs), node_id=self._node_id)
+        except TokenLimitExceeded as exc:
+            logger.error(str(exc))
+            return {
+                "messages": [AIMessage(content=f"⛔ {exc}")],
+                "routing_target": "",
+                "routing_context": "",
+                "node_sessions": ns,
+            }
+
         try:
             async with acquire_resource(
                 self._resource_lock,
@@ -743,6 +756,18 @@ class GeminiCLINode(AgentNode):
                 f"prompt_preview={prompt[:120]!r} "
                 f"session_id={session_id[:8] if session_id else 'new'}"
             )
+
+        # ── Token 安全阀 ──
+        try:
+            check_before_llm(prompt=prompt, history=list(msgs), node_id=self._node_id)
+        except TokenLimitExceeded as exc:
+            logger.error(str(exc))
+            return {
+                "messages": [AIMessage(content=f"⛔ {exc}")],
+                "routing_target": "",
+                "routing_context": "",
+                "node_sessions": ns,
+            }
 
         try:
             async with acquire_resource(
