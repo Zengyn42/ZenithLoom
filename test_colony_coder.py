@@ -217,3 +217,96 @@ async def test_planner_graph_compiles():
     node_ids = set(g.nodes) - {"__start__"}
     required = {"plan", "design_debate", "claude_swarm", "task_decompose", "decomposition_validator"}
     assert required <= node_ids, f"Missing nodes: {required - node_ids}"
+
+
+def test_hard_validate_pass():
+    from blueprints.functional_graphs.colony_coder_executor.validators import hard_validate
+    result = hard_validate({
+        "validation_output": {"status": "pass", "severity": "low"},
+        "transient_retry_count": 0, "retry_count": 0,
+    })
+    assert result["routing_target"] == "execute"
+
+
+def test_hard_validate_routes_to_error_classifier():
+    from blueprints.functional_graphs.colony_coder_executor.validators import hard_validate
+    result = hard_validate({
+        "validation_output": {"status": "fail", "severity": "medium"},
+        "transient_retry_count": 0, "retry_count": 0,
+    })
+    assert result["routing_target"] == "error_classifier"
+
+
+def test_hard_validate_abort_at_cap():
+    from blueprints.functional_graphs.colony_coder_executor.validators import hard_validate
+    result = hard_validate({
+        "validation_output": {"status": "fail", "severity": "high"},
+        "transient_retry_count": 0, "retry_count": 3,
+    })
+    assert result["routing_target"] == "__end__"
+    assert result["success"] is False
+
+
+def test_error_classifier_transient():
+    from blueprints.functional_graphs.colony_coder_executor.validators import error_classifier
+    result = error_classifier({
+        "validation_output": {"category": "syntax_error", "severity": "low"},
+        "transient_retry_count": 0,
+    })
+    assert result["routing_target"] == "self_fix"
+    assert result["transient_retry_count"] == 1
+
+
+def test_error_classifier_escalates_to_claude():
+    from blueprints.functional_graphs.colony_coder_executor.validators import error_classifier
+    result = error_classifier({
+        "validation_output": {"category": "syntax_error", "severity": "low"},
+        "transient_retry_count": 2,  # at TRANSIENT_RETRY_CAP
+    })
+    assert result["routing_target"] == "claude_rescue"
+
+
+def test_rescue_router_dual_write():
+    from blueprints.functional_graphs.colony_coder_executor.validators import rescue_router
+    result = rescue_router({
+        "validation_output": {
+            "status": "fail", "category": "cross_task",
+            "severity": "high", "rationale": "shared interface broken",
+            "affected_scope": "t1,t2",
+        },
+        "cross_task_issues": [],
+        "current_task_id": "t3",
+    })
+    assert result["routing_target"] == "rollback_state"
+    assert len(result["cross_task_issues"]) == 1
+    assert result["affected_task_ids"] == ["t1", "t2"]
+
+
+def test_cascade_rollback_transitive():
+    from blueprints.functional_graphs.colony_coder_executor.validators import cascade_rollback
+    tasks = [
+        {"id": "t1", "dependencies": []},
+        {"id": "t2", "dependencies": ["t1"]},
+        {"id": "t3", "dependencies": ["t2"]},
+        {"id": "t4", "dependencies": []},
+    ]
+    affected = cascade_rollback(tasks, ["t1"])
+    assert "t2" in affected
+    assert "t3" in affected
+    assert "t4" not in affected
+
+
+@pytest.mark.asyncio
+async def test_executor_graph_compiles():
+    import blueprints.functional_graphs.colony_coder_executor.state  # register schema
+    from framework.agent_loader import AgentLoader
+    from pathlib import Path
+    g = await AgentLoader(Path("blueprints/functional_graphs/colony_coder_executor")).build_graph()
+    node_ids = set(g.nodes) - {"__start__"}
+    required = {
+        "code_gen", "soft_validate", "self_fix",
+        "apply_patch", "execute",
+        "hard_validate", "error_classifier", "rescue_router", "rollback_state",
+        "claude_rescue",
+    }
+    assert required <= node_ids, f"Missing: {required - node_ids}"
