@@ -7,8 +7,12 @@ GraphController 是图的统一入口：
   - 提供命名 session 切换接口（new_session / switch_session）
   - 提供 checkpoint 快照查询（get_history，P2 断点恢复）
 
-AgentLoader.get_controller() 替代 get_engine()；
-interfaces/cli.py 和 interfaces/discord_bot.py 统一通过 controller.run() 执行图。
+公开方法：
+  run(user_input)                        — 用 _active_thread_id 执行（对话场景）
+  invoke(user_input, thread_id, ...)     — 用指定 thread_id 执行（多频道 / heartbeat）
+  graph                                  — 底层编译图（只读 property，供复杂流式场景）
+
+EntityLoader.get_controller() 是唯一推荐入口；get_engine() 已移为内部方法。
 
 Session 生命周期（重启恢复流程）：
   controller 启动 → _init_session() 从 sessions.json 读最近 thread_id
@@ -232,6 +236,52 @@ class GraphController:
             "commit": commit_hash,
             "node_sessions": old_node_sessions,
         }
+
+    @property
+    def graph(self):
+        """底层编译图（只读）。仅供需要直接调用 astream/aget_state 的场景使用。"""
+        return self._graph
+
+    async def invoke(self, user_input: str, thread_id: str, workspace: str = "") -> str:
+        """
+        用指定 thread_id 执行图。
+
+        适用于需要绕过 _active_thread_id 管理的场景：
+          - Discord 多频道（每个频道有独立 thread_id）
+          - HeartbeatNode（固定用 "__heartbeat__" thread_id）
+
+        node_sessions 同步逻辑与 run() 一致。
+        """
+        if is_debug():
+            logger.debug(
+                f"[controller] invoke: thread_id={thread_id} "
+                f"input_len={len(user_input)}"
+            )
+
+        init_state: dict = {"messages": [HumanMessage(content=user_input)]}
+        if workspace:
+            init_state["workspace"] = workspace
+
+        result = await self._graph.ainvoke(
+            init_state,
+            config={"configurable": {"thread_id": thread_id}},
+        )
+
+        ns = result.get("node_sessions") or {}
+        if ns:
+            name = self._session_mgr.find_name_by_thread_id(thread_id)
+            if name:
+                for node_key, uuid in ns.items():
+                    if uuid:
+                        try:
+                            self._session_mgr.update_node_session(name, node_key, uuid)
+                        except Exception as e:
+                            logger.warning(
+                                f"[controller] update_node_session failed: {e}"
+                            )
+
+        messages = result.get("messages", [])
+        return messages[-1].content if messages else ""
 
     @property
     def rollback_log(self) -> RollbackLog:

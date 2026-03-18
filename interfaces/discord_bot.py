@@ -216,7 +216,7 @@ async def _refresh_history_file(channel, limit: int, exclude_msg_id: int) -> str
 # Agent 调用
 # ==========================================
 async def _invoke_agent_async(user_input: str, message=None) -> str:
-    engine = _controller._graph
+    engine = _controller.graph
     channel_id = message.channel.id if message else 0
     config = _get_channel_config(channel_id)
     workspace = _get_channel_workspace(channel_id)
@@ -265,7 +265,7 @@ async def _invoke_agent_streaming(user_input: str, message) -> None:
     from framework.base_interface import BaseInterface
 
     channel_id = message.channel.id
-    engine = _controller._graph
+    engine = _controller.graph
     config = _get_channel_config(channel_id)
     workspace = _get_channel_workspace(channel_id)
     agent_name = _loader.name if _loader else "Agent"
