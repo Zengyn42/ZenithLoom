@@ -2,8 +2,8 @@
 框架级 Gemini 节点 — framework/nodes/llm/gemini.py
 
 两种实现：
-  GeminiCodeAssistNode(AgentNode) — Code Assist HTTP API（GEMINI_API 节点类型）
-  GeminiCLINode(AgentNode)        — Gemini CLI subprocess（GEMINI_CLI 节点类型）
+  GeminiCodeAssistNode(LlmNode) — Code Assist HTTP API（GEMINI_API 节点类型）
+  GeminiCLINode(LlmNode)        — Gemini CLI subprocess（GEMINI_CLI 节点类型）
 
 共同接口：
   call_llm(prompt, session_id, tools, cwd) -> (text, new_session_id)
@@ -14,6 +14,13 @@
       1 char → 1s，2000+ chars → 20s，再叠加 ±2s 随机抖动
     （Claude 不需要此机制：SDK 子进程内部自行处理 rate limiting）
   - 403 / 429 立刻抛出 GeminiQuotaError，不重试
+
+permission_mode 实现：
+  Gemini CLI 通过 --yolo 标志控制自动批准行为，仅支持二档：
+    plan 模式   → 不传 --yolo → CLI 无 stdin 交互 → 写操作自动被拒绝（read-only）
+    其他模式    → 传 --yolo → 自动批准所有操作
+  Gemini CLI 无法区分 default / acceptEdits / bypassPermissions，三者行为相同。
+  GeminiCodeAssistNode 通过 HTTP API 调用，不执行本地文件操作，permission_mode 不影响其行为。
 """
 
 import asyncio
@@ -556,8 +563,14 @@ class GeminiCLINode(AgentNode):
             "gemini",
             "-m", model,
             "-o", "json",
-            "--yolo",
         ]
+        # permission_mode 控制 --yolo：
+        #   plan 模式 → 不传 --yolo，文件操作因无交互输入而被拒绝（read-only）
+        #   其他模式 → 传 --yolo，自动批准所有操作
+        if not self.is_plan_mode:
+            cmd.append("--yolo")
+        elif is_debug():
+            logger.debug(f"[gemini-cli] plan mode → 不传 --yolo（read-only mode）")
         if session_id:
             cmd.extend(["--resume", session_id])
 

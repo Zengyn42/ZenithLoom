@@ -25,8 +25,8 @@ load_dotenv()
 
 logging.basicConfig(level=logging.WARNING, stream=sys.stdout)
 
-# ── Must import before any graph building to register "colony_executor" schema ──
-import blueprints.functional_graphs.colony_coder_executor.state  # noqa: F401
+# ── Must import before any graph building to register "colony_coder_schema" ──
+import blueprints.functional_graphs.colony_coder.state  # noqa: F401
 
 from framework.agent_loader import AgentLoader
 from framework.nodes.llm.claude import ClaudeSDKNode

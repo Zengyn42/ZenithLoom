@@ -3,6 +3,19 @@
 
 由 main.py 注入 AgentLoader 后调用 run_discord(loader)。
 所有 agent 专属名称从 loader.name 动态获取。
+
+流式输出 429 Rate Limit 防护：
+  Discord 对消息编辑（PATCH /channels/{id}/messages/{id}）有严格的频率限制。
+  当 LLM 流式输出大量 token 时，bot 频繁 edit 同一条消息会触发 429 Too Many Requests。
+  discord.py 库虽有内置重试，但重试期间会阻塞后续编辑，导致日志刷屏且用户体验卡顿。
+
+  防护机制（_editor 内的 _safe_edit）：
+    1. 基线节流：TEXT_THROTTLE=1.0s、THINKING_THROTTLE=1.5s，控制编辑频率上限
+    2. 动态退避：捕获 429 后升级退避级别（+2s/+5s/+10s），退避期内跳过编辑
+       - 跳过意味着中间状态被截断，用户看到流式输出暂停几秒后直接跳到最新内容
+       - 优于阻塞重试：不堆积请求，不触发连锁 429
+    3. 自动恢复：15 秒无 429 后逐级降回正常频率
+    4. retry_after 优先：使用 Discord 返回的精确等待时间，兜底用退避步长表
 """
 
 import asyncio
@@ -361,7 +374,45 @@ class _DiscordInterface(BaseInterface):
             thinking_last     = 0.0
             text_last         = 0.0
             THINKING_THROTTLE = 1.5
-            TEXT_THROTTLE     = 0.5
+            TEXT_THROTTLE     = 1.0
+            # 429 动态退避：遇到 rate limit 后逐步加大编辑间隔，恢复后递减
+            _backoff_until    = 0.0      # 退避截止时间（loop.time）
+            _backoff_level    = 0        # 当前退避级别（0=正常）
+            _BACKOFF_STEPS    = [0, 2.0, 5.0, 10.0]  # 级别 → 额外等待秒数
+            _BACKOFF_DECAY    = 15.0     # 无 429 持续 N 秒后降一级
+
+            _last_429_time    = 0.0
+
+            async def _safe_edit(msg_obj, content: str) -> bool:
+                """编辑消息，捕获 429 并触发退避。返回 True=成功/跳过，False=429。"""
+                nonlocal _backoff_until, _backoff_level, _last_429_time
+                now = loop.time()
+                # 退避期内直接跳过编辑
+                if now < _backoff_until:
+                    return True
+                try:
+                    await msg_obj.edit(content=content)
+                    # 成功：如果距上次 429 够久，降级
+                    if _backoff_level > 0 and now - _last_429_time > _BACKOFF_DECAY:
+                        _backoff_level = max(0, _backoff_level - 1)
+                        if _backoff_level == 0:
+                            logger.debug("[discord-editor] 退避已恢复到正常频率")
+                    return True
+                except discord.HTTPException as e:
+                    if e.status == 429:
+                        # 提取 Discord 返回的 retry_after，兜底用退避步长
+                        retry_after = getattr(e, "retry_after", None) or _BACKOFF_STEPS[min(_backoff_level + 1, len(_BACKOFF_STEPS) - 1)]
+                        _backoff_level = min(_backoff_level + 1, len(_BACKOFF_STEPS) - 1)
+                        _backoff_until = now + retry_after
+                        _last_429_time = now
+                        logger.warning(
+                            f"[discord-editor] 429 rate limit, 退避 {retry_after:.1f}s "
+                            f"(level={_backoff_level})"
+                        )
+                        return False
+                    return True  # 非 429 错误静默跳过
+                except Exception:
+                    return True
 
             while True:
                 sentinel = False
@@ -379,9 +430,11 @@ class _DiscordInterface(BaseInterface):
                         text_buf.append(chunk)
 
                 now = loop.time()
+                # 退避期额外节流
+                extra_wait = _BACKOFF_STEPS[_backoff_level] if _backoff_level > 0 else 0
 
                 # 思考消息（💭 emoji + blockquote，流式更新）
-                if thinking_buf and (sentinel or now - thinking_last >= THINKING_THROTTLE):
+                if thinking_buf and (sentinel or now - thinking_last >= THINKING_THROTTLE + extra_wait):
                     thinking_last = now
                     preview   = "".join(thinking_buf)
                     max_body  = 1860
@@ -391,13 +444,10 @@ class _DiscordInterface(BaseInterface):
                     if thinking_msg[0] is None:
                         thinking_msg[0] = await message.channel.send(display)
                     else:
-                        try:
-                            await thinking_msg[0].edit(content=display)
-                        except Exception:
-                            pass
+                        await _safe_edit(thinking_msg[0], display)
 
                 # 文字草稿（从头追加，不截尾；完成后删除）
-                if text_buf and (sentinel or now - text_last >= TEXT_THROTTLE):
+                if text_buf and (sentinel or now - text_last >= TEXT_THROTTLE + extra_wait):
                     text_last = now
                     preview = "".join(text_buf)
                     cursor  = "" if sentinel else " ▌"
@@ -407,10 +457,7 @@ class _DiscordInterface(BaseInterface):
                         display = preview + cursor
                     if text_draft[0] is None:
                         text_draft[0] = await message.channel.send("▌")
-                    try:
-                        await text_draft[0].edit(content=display)
-                    except Exception:
-                        pass
+                    await _safe_edit(text_draft[0], display)
 
                 if sentinel:
                     break
