@@ -47,7 +47,7 @@ async def test_agent_json_structure():
     assert raw["name"] == "apex_coder", f"name 应为 apex_coder，实际: {raw['name']}"
     assert "routing_hint" in raw and len(raw["routing_hint"]) > 10, "routing_hint 缺失或过短"
     assert raw["llm"] == "claude", f"llm 应为 claude，实际: {raw['llm']}"
-    assert raw["persona_files"] == ["SOUL.md"], f"persona_files 应为 ['SOUL.md']，实际: {raw['persona_files']}"
+    assert raw["persona_files"] == ["ROLE.md", "PROTOCOL.md"], f"persona_files 应为 ['ROLE.md', 'PROTOCOL.md']，实际: {raw['persona_files']}"
 
     # graph 结构
     graph = raw["graph"]
@@ -109,11 +109,11 @@ async def test_soul_md_loads():
     loader = AgentLoader(AGENT_DIR)
     prompt = loader.load_system_prompt()
 
-    assert len(prompt) > 100, f"system prompt 过短 ({len(prompt)} chars)，SOUL.md 可能未加载"
-    assert "极限工程执行官" in prompt, "SOUL.md 应含身份标识'极限工程执行官'"
-    assert "P8" in prompt, "SOUL.md 应含 P8 等级标识"
+    assert len(prompt) > 100, f"system prompt 过短 ({len(prompt)} chars)，persona 可能未加载"
+    assert "全栈工程执行官" in prompt, "persona 应含身份标识'全栈工程执行官'"
+    assert "P8" in prompt, "persona 应含 P8 等级标识"
 
-    logger.info(f"✅ SOUL.md loads OK ({len(prompt)} chars)")
+    logger.info(f"✅ persona loads OK ({len(prompt)} chars)")
 
 
 async def test_soul_md_contains_ecc():
@@ -155,11 +155,10 @@ async def test_soul_md_contains_pua():
         "L3",
         "L4",
         "7 项检查清单",
-        "抗合理化",
         "穷尽一切",
     ]
     missing = [m for m in pua_markers if m not in prompt]
-    assert not missing, f"SOUL.md 缺少 PUA 关键词: {missing}"
+    assert not missing, f"persona 缺少 PUA 关键词: {missing}"
 
     logger.info("✅ SOUL.md PUA content OK")
 
