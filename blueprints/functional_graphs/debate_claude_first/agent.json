@@ -4,7 +4,7 @@
   "llm": "claude",
   "db_path": "debate_claude_first.db",
   "sessions_file": "sessions.json",
-  "tools": ["Read", "Glob", "Grep", "WebSearch"],
+  "tools": [],
   "permission_mode": "bypassPermissions",
   "max_retries": 0,
   "persona_files": [],
@@ -16,35 +16,40 @@
         "type": "CLAUDE_CLI",
         "model": "claude-opus-4-6",
         "session_key": "claude_debate",
-        "system_prompt": "你是一位资深软件架构师，正在参与一场多轮技术设计辩论。\n你的职责：提出设计方案、回应质疑、修订完善、最终总结。\n方案要具体可实施，包含关键技术决策和理由。\n吸收合理批评，解释你的设计决策。\n严禁执行任何操作或修改任何代码，只进行讨论和分析。"
+        "tools": [],
+        "system_prompt": "你是一位资深软件架构师，正在参与一场多轮技术设计辩论。\n你的职责：提出设计方案、回应质疑、修订完善、最终总结。\n方案要具体可实施，包含关键技术决策和理由。\n吸收合理批评，解释你的设计决策。\n\n⛔ 绝对禁止：\n- 禁止使用任何工具（Read, Write, Edit, Bash, Glob, Grep 等）\n- 禁止创建、修改、执行任何文件或代码\n- 你只能输出纯文本讨论和分析\n- 代码片段仅作为设计说明（伪代码级别），不得是可执行的完整实现"
       },
       {
         "id": "gemini_critique_1",
         "type": "GEMINI_CLI",
         "model": "gemini-3-pro-preview",
         "session_key": "gemini_debate",
-        "system_prompt": "你是一位资深技术顾问，正在参与一场多轮协作设计讨论。\n你的职责：对方案进行补充和完善，从可扩展性、可维护性、性能、安全性等维度提出改进建议。\n每轮发言从不同维度切入：第一轮关注方向性问题，后续轮次深入实现细节、团队能力匹配、技术栈兼容性等。\n以协作态度帮助方案变得更完善。严禁执行任何操作或修改任何代码，只进行讨论和分析。"
+        "tools": [],
+        "system_prompt": "你是一位资深技术顾问，正在参与一场多轮协作设计讨论。\n你的职责：对方案进行补充和完善，从可扩展性、可维护性、性能、安全性等维度提出改进建议。\n每轮发言从不同维度切入：第一轮关注方向性问题，后续轮次深入实现细节、团队能力匹配、技术栈兼容性等。\n以协作态度帮助方案变得更完善。\n\n⛔ 绝对禁止：\n- 禁止使用任何工具\n- 禁止创建、修改、执行任何文件或代码\n- 你只能输出纯文本讨论和分析"
       },
       {
         "id": "claude_revise",
         "type": "CLAUDE_CLI",
         "model": "claude-opus-4-6",
         "session_key": "claude_debate",
-        "system_prompt": "严禁执行任何操作或修改任何代码，只进行讨论和分析。"
+        "tools": [],
+        "system_prompt": "⛔ 绝对禁止使用任何工具、创建/修改任何文件。只进行纯文本讨论和分析。"
       },
       {
         "id": "gemini_critique_2",
         "type": "GEMINI_CLI",
         "model": "gemini-3-pro-preview",
         "session_key": "gemini_debate",
-        "system_prompt": "严禁执行任何操作或修改任何代码，只进行讨论和分析。"
+        "tools": [],
+        "system_prompt": "⛔ 绝对禁止使用任何工具、创建/修改任何文件。只进行纯文本讨论和分析。"
       },
       {
         "id": "claude_conclusion",
         "type": "CLAUDE_CLI",
         "model": "claude-opus-4-6",
         "session_key": "claude_debate",
-        "system_prompt": "严禁执行任何操作或修改任何代码，只进行讨论和分析。"
+        "tools": [],
+        "system_prompt": "⛔ 绝对禁止使用任何工具、创建/修改任何文件。只进行纯文本讨论和分析。\n\n你的职责：综合前面所有讨论，输出最终设计结论。包含：\n1. 最终推荐的技术方案\n2. 关键设计决策及理由\n3. 需要注意的风险和缓解措施\n4. 建议的文件结构（仅文件名，不含代码）和关键接口定义"
       }
     ],
     "edges": [
