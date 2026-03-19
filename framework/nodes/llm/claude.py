@@ -100,6 +100,15 @@ class ClaudeSDKNode(AgentNode):
             elif isinstance(_thinking_raw, dict):
                 _thinking_cfg = _thinking_raw
 
+        # tools=[] 时禁止的工具列表（写入/执行类）
+        # 保留只读工具：Read, Glob, Grep, WebSearch, WebFetch
+        # Claude SDK allowed_tools=[] 表示"未指定"（默认全部允许），
+        # 必须用 disallowed_tools 来真正禁止写入。
+        _WRITE_TOOLS = [
+            "Write", "Edit", "MultiEdit", "Bash",
+            "TodoWrite", "NotebookEdit",
+        ]
+
         def _make_options(sid: str) -> ClaudeAgentOptions:
             sp = self.node_config.get("system_prompt") or self.system_prompt or None
             node_tools = self.node_config.get("tools")
@@ -110,10 +119,18 @@ class ClaudeSDKNode(AgentNode):
                 _allowed = node_tools
             else:
                 _allowed = self.config.tools
+
+            # tools=[] → 只读模式：禁止写入/执行类工具，保留 Read/Glob/Grep/WebSearch/WebFetch
+            # Claude SDK allowed_tools=[] 表示"未指定"，必须用 disallowed_tools 来真正禁止
+            _disallowed = list(self.node_config.get("disallowed_tools") or [])
+            if isinstance(_allowed, list) and len(_allowed) == 0:
+                _disallowed = list(set(_disallowed + _WRITE_TOOLS))
+
             return ClaudeAgentOptions(
                 system_prompt=sp,
                 cwd=cwd or None,
                 allowed_tools=_allowed,
+                disallowed_tools=_disallowed,
                 permission_mode=permission_mode,
                 resume=sid or None,
                 model=self.node_config.get("model") or self.node_config.get("claude_model") or None,

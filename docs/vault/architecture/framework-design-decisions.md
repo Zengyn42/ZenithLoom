@@ -24,26 +24,42 @@
 
 ---
 
-## 决策 2: tools=[] 表示禁用，而非 fallback
+## 决策 2: tools=[] 表示只读模式
 
-> 来源: planner 节点无视 system prompt 使用工具
+> 来源: planner/debate 节点无视 system prompt 使用工具写文件
 
-**规则**: node_config 中 `"tools": []` 明确表示"该节点禁止使用任何工具"。
+**规则**: node_config 中 `"tools": []` 表示"只读模式" — 禁止写入/执行类工具，保留只读工具。
 
-**实现**:
+**语义**:
+| 配置 | 含义 |
+|------|------|
+| `"tools"` 不存在 | 使用全局工具集（config.tools） |
+| `"tools": ["Read", "Grep"]` | 仅允许指定工具 |
+| `"tools": []` | 只读模式：禁止 Write/Edit/Bash 等，保留 Read/Glob/Grep/WebSearch/WebFetch |
+
+**实现（两层）**:
+
+1. `llm_node.py _select_tools()` — 区分"未配置"和"配置为空列表"：
 ```python
-# llm_node.py _select_tools()
 _MISSING = object()
 node_tools = self._cfg.get("tools", _MISSING)
 if node_tools is _MISSING:
     tools = list(self.config.tools)  # 未配置 → 用全局
 else:
-    tools = list(node_tools or [])   # 显式配置 → 用配置值（含空列表）
+    tools = list(node_tools or [])   # 显式配置 → 用配置值
 ```
 
-同理 `claude.py` 的 `_make_options` 中 `allowed_tools` 也做了相同处理。
+2. `claude.py _make_options()` — 空列表时注入 disallowed_tools：
+```python
+_WRITE_TOOLS = ["Write", "Edit", "MultiEdit", "Bash", "TodoWrite", "NotebookEdit"]
+if isinstance(_allowed, list) and len(_allowed) == 0:
+    _disallowed = _WRITE_TOOLS  # 禁止写入，保留只读
+```
 
-**原因**: 空列表 `[]` 在 Python 中是 falsy，`[] or default` 会 fallback。必须用 sentinel 区分"未配置"和"配置为空"。
+**原因**:
+- Claude SDK `allowed_tools=[]` 表示"未指定"（默认全部允许），不能用它禁工具
+- 辩论节点需要搜索网络、读取文件来查资料，但绝不能写文件
+- System prompt "禁止使用工具" 不可靠，Claude 会无视
 
 ---
 
