@@ -88,6 +88,11 @@ class SubgraphRefNode:
 
         # 构建子图入口 state：只传子图 schema 需要的字段，避免 LangGraph 拒绝未知 key
         task = state.get("routing_context", "")
+        # routing_context 为空时，fallback 到父图最后一条消息内容
+        if not task:
+            parent_msgs = state.get("messages") or []
+            if parent_msgs:
+                task = parent_msgs[-1].content
         from langchain_core.messages import HumanMessage
         sub_state: dict = {
             "messages": [HumanMessage(content=task)] if task else [],
