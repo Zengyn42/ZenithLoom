@@ -154,26 +154,28 @@ async def test_ollama_tool_loop_text_response():
 
 
 def test_executor_state_has_required_fields():
-    from blueprints.functional_graphs.colony_coder_executor.state import ColonyCoderExecutorState
+    from blueprints.functional_graphs.colony_coder.state import ColonyCoderState
     import typing
-    hints = typing.get_type_hints(ColonyCoderExecutorState, include_extras=True)
+    hints = typing.get_type_hints(ColonyCoderState, include_extras=True)
     for f in ("tasks", "ollama_sessions", "validation_output", "success", "abort_reason"):
-        assert f in hints, f"ColonyCoderExecutorState missing field: {f}"
+        assert f in hints, f"ColonyCoderState missing field: {f}"
 
 
 def test_merge_dict_reducer():
-    from blueprints.functional_graphs.colony_coder_executor.state import _merge_dict
+    from blueprints.functional_graphs.colony_coder.state import _merge_dict
     a = {"k1": [1, 2], "k2": [3]}
     b = {"k2": [4], "k3": [5]}
     assert _merge_dict(a, b) == {"k1": [1, 2], "k2": [4], "k3": [5]}
 
 
-def test_colony_executor_schema_registered():
-    from framework.agent_loader import register_state_schema, _get_state_schemas
+def test_colony_coder_schema_registered():
+    from framework.agent_loader import _get_state_schemas
     # Importing state.py should auto-register the schema
-    import blueprints.functional_graphs.colony_coder_executor.state  # noqa: F401
+    import blueprints.functional_graphs.colony_coder.state  # noqa: F401
     schemas = _get_state_schemas()
-    assert "colony_executor" in schemas
+    assert "base_schema" in schemas, f"base_schema missing, got: {list(schemas.keys())}"
+    assert "debate_schema" in schemas, f"debate_schema missing, got: {list(schemas.keys())}"
+    assert "colony_coder_schema" in schemas, f"colony_coder_schema missing, got: {list(schemas.keys())}"
 
 
 def test_decomposition_validator_pass():
@@ -210,12 +212,12 @@ def test_decomposition_validator_abort_at_cap():
 
 @pytest.mark.asyncio
 async def test_planner_graph_compiles():
-    import blueprints.functional_graphs.colony_coder_executor.state  # noqa: F401
+    import blueprints.functional_graphs.colony_coder.state  # noqa: F401
     from framework.agent_loader import AgentLoader
     from pathlib import Path
     g = await AgentLoader(Path("blueprints/functional_graphs/colony_coder_planner")).build_graph()
     node_ids = set(g.nodes) - {"__start__"}
-    required = {"plan", "design_debate", "claude_swarm", "task_decompose", "decomposition_validator"}
+    required = {"design_debate", "claude_swarm", "task_decompose", "decomposition_validator"}
     assert required <= node_ids, f"Missing nodes: {required - node_ids}"
 
 
@@ -298,7 +300,7 @@ def test_cascade_rollback_transitive():
 
 @pytest.mark.asyncio
 async def test_executor_graph_compiles():
-    import blueprints.functional_graphs.colony_coder_executor.state  # register schema
+    import blueprints.functional_graphs.colony_coder.state  # noqa: F401
     from framework.agent_loader import AgentLoader
     from pathlib import Path
     g = await AgentLoader(Path("blueprints/functional_graphs/colony_coder_executor")).build_graph()
@@ -335,7 +337,7 @@ def test_integration_route_abort_at_cap():
 
 @pytest.mark.asyncio
 async def test_integrator_graph_compiles():
-    import blueprints.functional_graphs.colony_coder_executor.state  # noqa: F401
+    import blueprints.functional_graphs.colony_coder.state  # noqa: F401
     from framework.agent_loader import AgentLoader
     from pathlib import Path
     g = await AgentLoader(Path("blueprints/functional_graphs/colony_coder_integrator")).build_graph()
@@ -347,7 +349,7 @@ async def test_integrator_graph_compiles():
 @pytest.mark.asyncio
 async def test_master_graph_compiles():
     # Must import state.py first to register "colony_executor" schema
-    import blueprints.functional_graphs.colony_coder_executor.state  # noqa: F401
+    import blueprints.functional_graphs.colony_coder.state  # noqa: F401
     from framework.agent_loader import AgentLoader
     from pathlib import Path
     g = await AgentLoader(Path("blueprints/functional_graphs/colony_coder")).build_graph()

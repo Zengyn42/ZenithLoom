@@ -349,20 +349,21 @@ def _collect_routing_hints(graph_spec: dict) -> str:
     return "\n".join(lines)
 
 
-# Module-level state schema registry (add custom schemas before build_graph is called)
-_STATE_SCHEMAS: dict = {}  # populated after imports resolve; see _get_state_schemas()
-
-
-def _get_state_schemas() -> dict:
-    """Lazy-load default schemas + any registered custom schemas."""
-    from framework.state import BaseAgentState, DebateState
-    base = {"debate": DebateState, "base": BaseAgentState}
-    return {**base, **_STATE_SCHEMAS}
+# ── 向后兼容：旧代码 import register_state_schema / _get_state_schemas ──
+# 已迁移到 framework/registry.py（register_schema / get_all_schemas），
+# 保留别名避免 import 报错。
+from framework.registry import register_schema as _register_schema, get_all_schemas
 
 
 def register_state_schema(name: str, cls):
-    """Register a custom TypedDict as a named state schema for declarative graphs."""
-    _STATE_SCHEMAS[name] = cls
+    """向后兼容别名 — 请改用 framework.registry.register_schema()。"""
+    _register_schema(name, cls)
+
+
+def _get_state_schemas() -> dict:
+    """向后兼容别名 — 请改用 framework.registry.get_all_schemas()。"""
+    import framework.schema  # noqa: F401 — 确保内置 schema 已注册
+    return get_all_schemas()
 
 
 async def _build_declarative(
@@ -383,8 +384,8 @@ async def _build_declarative(
     from langgraph.checkpoint.sqlite.aio import AsyncSqliteSaver
     from langgraph.graph import END, START, StateGraph
 
-    from framework.registry import get_condition, get_node_factory
-    from framework.state import BaseAgentState
+    from framework.registry import get_condition, get_node_factory, get_all_schemas
+    from framework.schema.base import BaseAgentState
 
     # ── Step 0: routing_hint 注入 system_prompt ──────────────────────────────
     if system_prompt:
@@ -400,7 +401,9 @@ async def _build_declarative(
         _check_single_main(graph_spec)
 
     # ── Step 2: 构建图节点 ────────────────────────────────────────────────
-    state_schema = _get_state_schemas().get(graph_spec.get("state_schema", "base"), BaseAgentState)
+    import framework.schema  # noqa: F401 — 确保内置 schema 已注册
+    all_schemas = get_all_schemas()
+    state_schema = all_schemas.get(graph_spec.get("state_schema", "base_schema"), BaseAgentState)
     builder = StateGraph(state_schema)
 
     for node_def in graph_spec.get("nodes", []):

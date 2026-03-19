@@ -1,7 +1,7 @@
 """
 框架级 Claude SDK 节点 — framework/nodes/llm/claude.py
 
-ClaudeSDKNode 继承 AgentNode，实现 call_llm() 接口：
+ClaudeSDKNode 继承 LlmNode，实现 call_llm() 接口：
   call_llm(prompt, session_id, tools, cwd) -> (text, new_session_id)
     - session_id 空 -> 新建 session
     - session_id 非空 -> resume 已有 session（~/.claude/ 本地存储）
@@ -13,8 +13,15 @@ sdk_query() 通过 wait_for_result_and_end_input() 关闭 stdin，
 注意：SDK 内部 Query._read_messages_task 会将 ProcessError 包装成
 普通 Exception 再推入消息流，因此异常捕获需检测消息内容而非类型。
 
-基类 AgentNode.__call__() 处理所有图协议逻辑（路由、注入、信号检测）；
+基类 LlmNode.__call__() 处理所有图协议逻辑（路由、注入、信号检测）；
 ClaudeSDKNode 只负责 Claude SDK 调用。
+
+permission_mode 实现：
+  Claude SDK 原生支持全部四种模式（default / plan / acceptEdits / bypassPermissions）。
+  - self._permission_mode  → 直传给 ClaudeAgentOptions(permission_mode=...)
+  - self._get_disallowed_tools() → 直传给 ClaudeAgentOptions(disallowed_tools=...)
+    plan 模式时，基类自动将 _WRITE_TOOLS 合并到 disallowed_tools 列表中。
+  两个值均来自 LlmNode 基类，ClaudeSDKNode 无需自行处理 permission_mode 逻辑。
 """
 
 import json
@@ -77,11 +84,8 @@ class ClaudeSDKNode(AgentNode):
             stderr_lines.append(line)
             logger.debug(f"[claude/stderr] {line.rstrip()}")
 
-        # node_config 优先，退回到顶层 AgentConfig（兼容旧 agent.json）
+        # setting_sources / settings_override：node_config 优先，退回到顶层 AgentConfig
         _MISSING = object()
-        permission_mode = (
-            self.node_config.get("permission_mode") or self.config.permission_mode
-        )
         _node_sources = self.node_config.get("setting_sources", _MISSING)
         setting_sources = (
             _node_sources if _node_sources is not _MISSING else self.config.setting_sources
@@ -100,19 +104,14 @@ class ClaudeSDKNode(AgentNode):
             elif isinstance(_thinking_raw, dict):
                 _thinking_cfg = _thinking_raw
 
-        # tools=[] 时禁止的工具列表（写入/执行类）
-        # 保留只读工具：Read, Glob, Grep, WebSearch, WebFetch
-        # Claude SDK allowed_tools=[] 表示"未指定"（默认全部允许），
-        # 必须用 disallowed_tools 来真正禁止写入。
-        _WRITE_TOOLS = [
-            "Write", "Edit", "MultiEdit", "Bash",
-            "TodoWrite", "NotebookEdit",
-        ]
+        # permission_mode + disallowed_tools 统一由基类 LlmNode 管理
+        # Claude SDK 原生支持 permission_mode，直接传入
+        # disallowed_tools 由基类 _get_disallowed_tools() 根据 mode 自动计算
+        _disallowed = self._get_disallowed_tools()
 
         def _make_options(sid: str) -> ClaudeAgentOptions:
             sp = self.node_config.get("system_prompt") or self.system_prompt or None
             node_tools = self.node_config.get("tools")
-            # tools=[] 表示禁用所有工具，不应 fallback
             if tools is not None:
                 _allowed = tools
             elif node_tools is not None:
@@ -120,18 +119,12 @@ class ClaudeSDKNode(AgentNode):
             else:
                 _allowed = self.config.tools
 
-            # tools=[] → 只读模式：禁止写入/执行类工具，保留 Read/Glob/Grep/WebSearch/WebFetch
-            # Claude SDK allowed_tools=[] 表示"未指定"，必须用 disallowed_tools 来真正禁止
-            _disallowed = list(self.node_config.get("disallowed_tools") or [])
-            if isinstance(_allowed, list) and len(_allowed) == 0:
-                _disallowed = list(set(_disallowed + _WRITE_TOOLS))
-
             return ClaudeAgentOptions(
                 system_prompt=sp,
                 cwd=cwd or None,
                 allowed_tools=_allowed,
                 disallowed_tools=_disallowed,
-                permission_mode=permission_mode,
+                permission_mode=self._permission_mode,
                 resume=sid or None,
                 model=self.node_config.get("model") or self.node_config.get("claude_model") or None,
                 env={"CLAUDECODE": "", "CLAUDE_CODE_SESSION": "", "CLAUDE_AGENT_SDK": "1"},

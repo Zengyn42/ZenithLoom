@@ -2,7 +2,7 @@
   "name": "colony_coder_executor",
   "persona_files": [],
   "graph": {
-    "state_schema": "colony_executor",
+    "state_schema": "colony_coder_schema",
     "nodes": [
       {
         "id": "code_gen",

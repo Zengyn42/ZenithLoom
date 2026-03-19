@@ -105,7 +105,7 @@ async def test_executor_cross_task_routing():
 
 @pytest.mark.asyncio
 async def test_planner_graph_compiles_e2e():
-    import blueprints.functional_graphs.colony_coder_executor.state  # noqa: F401
+    import blueprints.functional_graphs.colony_coder.state  # noqa: F401
     from framework.agent_loader import AgentLoader
     g = await AgentLoader(Path("blueprints/functional_graphs/colony_coder_planner")).build_graph()
     assert set(g.nodes) - {"__start__"} >= {
@@ -115,7 +115,7 @@ async def test_planner_graph_compiles_e2e():
 
 @pytest.mark.asyncio
 async def test_executor_graph_compiles_e2e():
-    import blueprints.functional_graphs.colony_coder_executor.state
+    import blueprints.functional_graphs.colony_coder.state  # noqa: F401
     from framework.agent_loader import AgentLoader
     g = await AgentLoader(Path("blueprints/functional_graphs/colony_coder_executor")).build_graph()
     assert set(g.nodes) - {"__start__"} >= {
@@ -126,7 +126,7 @@ async def test_executor_graph_compiles_e2e():
 
 @pytest.mark.asyncio
 async def test_integrator_graph_compiles_e2e():
-    import blueprints.functional_graphs.colony_coder_executor.state  # noqa: F401
+    import blueprints.functional_graphs.colony_coder.state  # noqa: F401
     from framework.agent_loader import AgentLoader
     g = await AgentLoader(Path("blueprints/functional_graphs/colony_coder_integrator")).build_graph()
     assert set(g.nodes) - {"__start__"} >= {
@@ -136,7 +136,7 @@ async def test_integrator_graph_compiles_e2e():
 
 @pytest.mark.asyncio
 async def test_master_graph_compiles_e2e():
-    import blueprints.functional_graphs.colony_coder_executor.state  # noqa: F401 — registers "colony_executor"
+    import blueprints.functional_graphs.colony_coder.state  # noqa: F401
     from framework.agent_loader import AgentLoader
     g = await AgentLoader(Path("blueprints/functional_graphs/colony_coder")).build_graph()
     assert set(g.nodes) - {"__start__"} >= {"plan", "execute", "integrate"}

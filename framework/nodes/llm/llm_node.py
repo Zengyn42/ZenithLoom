@@ -8,11 +8,38 @@ LlmNode 是所有 LLM 节点的抽象基类，封装图协议逻辑。
   LlmNode（base class）
     ├── __call__(state) → dict      ← LangGraph 节点，处理路由、tool_rules、信号检测
     └── call_llm(prompt, ...) → (str, str)  ← 抽象方法，子类实现
-  ClaudeNode(LlmNode)            ← Claude CLI SDK 实现
-  GeminiNode(LlmNode)            ← Gemini Code Assist API 实现
-  OllamaNode(LlmNode)            ← 本地 vLLM/Ollama 实现
+  ClaudeSDKNode(LlmNode)         ← Claude CLI SDK 实现
+  GeminiCodeAssistNode(LlmNode)  ← Gemini Code Assist HTTP API 实现
+  GeminiCLINode(LlmNode)         ← Gemini CLI subprocess 实现
+  OllamaNode(LlmNode)            ← 本地 Ollama 实现
+
+permission_mode — LlmNode 级权限控制抽象：
+  agent.json 中声明 "permission_mode": "<mode>"，LlmNode 基类解析并存储到
+  self._permission_mode。各子类负责将其映射到 provider 原生机制。
+
+  可用模式：
+    "default"            标准模式 — 工具操作需用户确认
+    "plan"               只读/规划模式 — 禁止一切写入/执行操作，仅可推理和读取
+    "acceptEdits"        自动接受文件编辑，其他操作仍需确认
+    "bypassPermissions"  跳过所有权限检查，全自动执行
+
+  各子类实现：
+    ClaudeSDKNode   → SDK 原生支持四种模式：permission_mode 参数直传 + disallowed_tools
+    GeminiCLINode   → 二档控制：plan 时不传 --yolo（CLI 无 stdin → 写操作失败）；
+                      其余模式传 --yolo（自动批准）。CLI 无法区分 default/acceptEdits/bypass
+    OllamaNode      → plan 时 system_prompt 注入禁写指令 + _call_with_tools 过滤写入类工具；
+                      其余模式正常调用。Ollama 无原生权限机制
+
+  基类提供的辅助接口：
+    self._permission_mode   str         当前模式值
+    self.is_plan_mode       property    是否为 plan 模式
+    self._get_disallowed_tools()        plan 模式自动合并 _WRITE_TOOLS 到禁用列表
+    _WRITE_TOOLS            frozenset   写入/执行类工具名集合
+
+  优先级：node_config["permission_mode"] > config.permission_mode > "default"
 
 node_config（来自 agent.json）驱动行为：
+  permission_mode        str   权限模式（见上方详细说明）
   first_turn_suffix      str   首轮 prompt 末尾附加字符串，如 "Hani:"
   user_msg_prefix        str   用户消息前缀，如 "老板: "
   gemini_mention_pattern str   触发强制咨询的 @Gemini 正则，如 "@[Gg]emini"
@@ -21,6 +48,7 @@ node_config（来自 agent.json）驱动行为：
   resource_lock          str   持锁资源名，如 "GPU_0_VRAM_22GB"（可选）
   resource_timeout       float 资源锁超时秒数（默认 300）
   signal_parser          str   信号解析器类型（默认 "json_line"）
+  resume_prompt          str   共享 session 时 resume 使用的固定指令（避免重复前一节点输出）
   id                     str   节点 ID，用于 node_sessions 键名（默认 "claude_main"）
 """
 
@@ -74,7 +102,26 @@ class LlmNode:
       - 动态注入（rollback warning、Gemini 建议、project_meta）
       - 路由信号检测（routing_target）
       - tool_rules 关键词匹配
+      - permission_mode 权限控制（plan / default / acceptEdits / bypassPermissions）
+
+    permission_mode 控制层级（声明式，agent.json 中配置）：
+      "plan"              只读/规划模式 — 可推理和读取，禁止所有写入/执行操作
+      "default"           标准模式 — 工具操作需确认
+      "acceptEdits"       自动接受文件编辑
+      "bypassPermissions" 跳过所有权限检查
+
+    各子类负责将 permission_mode 映射到各自 provider 的原生机制：
+      ClaudeSDKNode  → SDK permission_mode 参数 + disallowed_tools
+      GeminiCLINode  → --yolo 控制（plan 时不传 --yolo）
+      OllamaNode     → system_prompt 注入禁写指令 + 不传 tool 定义
     """
+
+    # 写入/执行类工具 — plan 模式下自动禁止
+    # 子类通过 _get_disallowed_tools() 获取，按需传给各自 provider
+    _WRITE_TOOLS = frozenset([
+        "Write", "Edit", "MultiEdit", "Bash",
+        "TodoWrite", "NotebookEdit", "Agent",
+    ])
 
     def __init__(self, config: AgentConfig, node_config: dict):
         self.config = config
@@ -86,6 +133,13 @@ class LlmNode:
         self._node_id = node_config.get("id", "claude_main")
         # session_key：多个节点共享同一 session 时使用（如 debate 子图的 Claude 节点）
         self._session_key = node_config.get("session_key", self._node_id)
+
+        # permission_mode：节点级 > 顶层配置级 > 默认值
+        self._permission_mode: str = (
+            node_config.get("permission_mode")
+            or getattr(config, "permission_mode", None)
+            or "default"
+        )
 
         # Token 安全阀：node_config["token_limit"] > 按 type 默认值 > 环境变量
         node_type = node_config.get("type", "")
@@ -129,6 +183,23 @@ class LlmNode:
             Path(d) for d in node_config.get("add_dirs", [])
         ]
 
+    @property
+    def is_plan_mode(self) -> bool:
+        """当前节点是否处于 plan（只读/规划）模式。"""
+        return self._permission_mode == "plan"
+
+    def _get_disallowed_tools(self) -> list[str]:
+        """基于 permission_mode 返回应禁用的工具列表。
+
+        plan 模式：禁用所有写入/执行类工具（_WRITE_TOOLS）。
+        其他模式：仅返回 node_config 中显式声明的 disallowed_tools。
+        子类可直接使用此方法获取禁用列表，传给各自 provider。
+        """
+        base = list(self._cfg.get("disallowed_tools") or [])
+        if self.is_plan_mode:
+            base = list(set(base) | self._WRITE_TOOLS)
+        return base
+
     def _load_skill_content(self) -> str:
         """
         扫描 add_dirs 中的 .claude/skills/*/SKILL.md，拼接内容。
@@ -168,6 +239,14 @@ class LlmNode:
         latest_input = msgs[-1].content
         # project_root（!setproject）优先；退回 per-session workspace
         project_root = state.get("project_root", "") or state.get("workspace", "") or None
+
+        # resume_prompt：当节点共享 session（session_key != node_id），
+        # 且 state 中已有该 session 时，使用固定指令替代 msgs[-1]，
+        # 避免将前一个共享节点的 AIMessage 输出原封不动回传导致重复。
+        _resume_prompt = self._cfg.get("resume_prompt")
+        ns_peek = state.get("node_sessions") or {}
+        if _resume_prompt and ns_peek.get(self._session_key):
+            latest_input = _resume_prompt
 
         # node_sessions UUID 路由（session_key 允许多节点共享 session）
         ns = dict(state.get("node_sessions") or {})

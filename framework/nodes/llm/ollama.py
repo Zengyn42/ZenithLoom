@@ -1,7 +1,7 @@
 """
 框架级 Ollama LLM 节点 — framework/nodes/llm/ollama.py
 
-OllamaNode 继承 AgentNode，实现 call_llm() 接口：
+OllamaNode 继承 LlmNode，实现 call_llm() 接口：
   call_llm(prompt, session_id, tools, cwd) → (text, session_id)
 
 通过 Ollama HTTP API 调用本地模型（llama、qwen 等）。
@@ -12,6 +12,14 @@ agent.json 配置：
   node_config["model"]:    "llama3.2:3b"              # 模型名
   node_config["endpoint"]: "http://localhost:11434"    # Ollama endpoint（默认）
   node_config["timeout"]:  120                         # 超时秒数（默认）
+
+permission_mode 实现：
+  Ollama 无原生权限控制机制，通过两层软限制模拟：
+    plan 模式：
+      1. system_prompt 末尾注入禁写指令（_PLAN_MODE_SUFFIX），明确禁止文件操作和命令执行
+      2. _call_with_tools() 中过滤掉 _WRITE_TOOLS 中的工具 schema，使模型无法调用写入工具
+    其他模式（default / acceptEdits / bypassPermissions）：
+      行为相同，正常调用。Ollama 无法区分这三种模式。
 """
 
 import json
@@ -80,7 +88,13 @@ class OllamaNode(AgentNode):
         import uuid as _uuid
         from framework.nodes.llm.tools import TOOL_REGISTRY, build_tool_schemas
 
-        tool_schemas = build_tool_schemas(self._tools)
+        # plan 模式：从工具列表中剔除写入/执行类工具
+        effective_tools = self._tools
+        if self.is_plan_mode:
+            effective_tools = [t for t in self._tools if t not in self._WRITE_TOOLS]
+            if is_debug():
+                logger.debug(f"[ollama] plan mode: tools {self._tools} → {effective_tools}")
+        tool_schemas = build_tool_schemas(effective_tools)
         session_key = self._node_config.get("session_key", self._node_config.get("id", ""))
 
         # Load or init session messages
@@ -89,9 +103,12 @@ class OllamaNode(AgentNode):
         session_uuid = node_sessions.get(session_key)
         messages: list = list(ollama_sessions.get(session_uuid, [])) if session_uuid else []
 
-        # System prompt
+        # System prompt（plan 模式追加禁写指令）
         if self._system_prompt and not any(m.get("role") == "system" for m in messages):
-            messages.insert(0, {"role": "system", "content": self._system_prompt})
+            sys_content = self._system_prompt
+            if self.is_plan_mode:
+                sys_content = sys_content + self._PLAN_MODE_SUFFIX
+            messages.insert(0, {"role": "system", "content": sys_content})
 
         # Append current user message
         lm = (state.get("messages") or [])
@@ -187,6 +204,15 @@ class OllamaNode(AgentNode):
 
         return updates
 
+    # plan 模式下追加到 system_prompt 的禁写指令
+    _PLAN_MODE_SUFFIX = (
+        "\n\n⛔ 你当前处于「规划模式」。绝对禁止：\n"
+        "- 创建、修改、删除任何文件或代码\n"
+        "- 执行任何 shell 命令\n"
+        "- 调用任何写入类工具（Write, Edit, Bash 等）\n"
+        "你只能进行纯文本讨论、分析和规划。"
+    )
+
     async def call_llm(
         self,
         prompt: str,
@@ -210,8 +236,14 @@ class OllamaNode(AgentNode):
             logger.debug(f"[ollama] model={self._model} prompt_len={len(prompt)} history_len={len(history) if history else 0}")
 
         messages = []
-        if self._system_prompt:
-            messages.append({"role": "system", "content": self._system_prompt})
+        # plan 模式：system_prompt 追加禁写指令
+        sys_prompt = self._system_prompt
+        if self.is_plan_mode and sys_prompt:
+            sys_prompt = sys_prompt + self._PLAN_MODE_SUFFIX
+        elif self.is_plan_mode:
+            sys_prompt = self._PLAN_MODE_SUFFIX.strip()
+        if sys_prompt:
+            messages.append({"role": "system", "content": sys_prompt})
 
         # 多轮对话历史（跳过最后一条，即当前 prompt 的 HumanMessage）
         if history and len(history) > 1:

@@ -5,11 +5,11 @@
   "db_path": "debate_claude_first.db",
   "sessions_file": "sessions.json",
   "tools": [],
-  "permission_mode": "bypassPermissions",
+  "permission_mode": "plan",
   "max_retries": 0,
   "persona_files": [],
   "graph": {
-    "state_schema": "debate",
+    "state_schema": "debate_schema",
     "nodes": [
       {
         "id": "claude_propose",

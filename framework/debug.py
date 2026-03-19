@@ -147,10 +147,8 @@ def log_node_thinking(
 
     if output_text:
         chars = len(output_text)
-        preview = output_text[:2000]
-        truncated = f"\n\n> ... truncated, total {chars} chars" if len(output_text) > 2000 else ""
         lines.append(f"### Output ({chars} chars)\n\n")
-        lines.append(f"```\n{preview.rstrip()}\n```\n{truncated}\n\n")
+        lines.append(f"```\n{output_text.rstrip()}\n```\n\n")
 
     _append_md(log_dir, "thinking.md", "".join(lines))
 
