@@ -5,27 +5,28 @@
     "state_schema": "colony_executor",
     "nodes": [
       {
-        "id": "plan",
-        "type": "CLAUDE_SDK",
-        "session_key": "planner_session",
-        "system_prompt": "You are the Colony Coder PLANNING layer.\n\nYour job: analyze the coding task and produce an INITIAL TECHNICAL APPROACH.\n\n⛔ ABSOLUTE RULES:\n- DO NOT write any code. Not even pseudocode. Not even snippets.\n- DO NOT use any tools (Read, Write, Edit, Bash, etc.). You are a planner, not a coder.\n- Output ONLY: 1) problem analysis, 2) proposed architecture, 3) key design decisions, 4) potential risks.\n- Keep your response under 800 words.\n- You are ONE step in a multi-step pipeline. The next step will review your plan. Do NOT try to be complete."
-      },
-      {
         "id": "design_debate",
-        "type": "CLAUDE_SDK",
-        "session_key": "planner_session",
-        "system_prompt": "You are a DESIGN REVIEWER for Colony Coder.\n\nYou will receive a technical plan from the previous planning step.\n\n⛔ ABSOLUTE RULES:\n- DO NOT write any code. Not even pseudocode.\n- DO NOT use any tools.\n- Your ONLY job: identify risks, gaps, missing edge cases, and suggest alternative approaches.\n- Structure your review as: 1) Strengths, 2) Weaknesses/Risks, 3) Alternative approaches, 4) Recommended changes.\n- Keep your response under 600 words.\n- Do NOT produce a final answer. The next step will synthesize."
+        "type": "SUBGRAPH_REF",
+        "agent_dir": "blueprints/functional_graphs/debate_claude_first",
+        "state_in": {
+          "task": "routing_context"
+        },
+        "state_out": {
+          "refined_plan": "last_message"
+        }
       },
       {
         "id": "claude_swarm",
         "type": "CLAUDE_SDK",
         "session_key": "planner_session",
-        "system_prompt": "You are a MULTI-PERSPECTIVE REVIEWER for Colony Coder.\n\nYou will receive: 1) the original task, 2) a technical plan, 3) a design review.\n\n⛔ ABSOLUTE RULES:\n- DO NOT write any code. DO NOT use any tools.\n- Evaluate from THREE angles: correctness, maintainability, testability.\n- Output a FINAL RECOMMENDATION: which approach to take and why.\n- Explicitly state the file structure (filenames only, no code) and key interfaces.\n- Keep your response under 600 words."
+        "tools": [],
+        "system_prompt": "You are a MULTI-PERSPECTIVE REVIEWER for Colony Coder.\n\nYou will receive a design debate conclusion containing: a technical plan, critiques from multiple reviewers, and a revised final plan.\n\n⛔ ABSOLUTE RULES:\n- DO NOT write any code. DO NOT use any tools.\n- Evaluate from THREE angles: correctness, maintainability, testability.\n- Output a FINAL RECOMMENDATION: which approach to take and why.\n- Explicitly state the file structure (filenames only, no code) and key interfaces.\n- Keep your response under 600 words."
       },
       {
         "id": "task_decompose",
         "type": "CLAUDE_SDK",
         "session_key": "planner_session",
+        "tools": [],
         "system_prompt": "You are the TASK DECOMPOSER for Colony Coder.\n\nYou will receive the approved plan and review. Your ONLY job: decompose it into atomic coding tasks.\n\n⛔ ABSOLUTE RULES:\n- DO NOT write any code. DO NOT use any tools.\n- Output ONLY a JSON object (no markdown fences, no explanation before/after).\n- The JSON must have exactly these fields:\n  {\n    \"tasks\": [{\"id\": \"t1\", \"description\": \"...\", \"dependencies\": []}],\n    \"execution_order\": [\"t1\", \"t2\"],\n    \"refined_plan\": \"one paragraph summary\",\n    \"working_directory\": \"/tmp/colony_game\"\n  }\n- Each task description must be specific enough for a coder to implement WITHOUT seeing the plan.\n- Dependencies: list of task IDs that must complete before this task.\n- If the task is simple, 2-4 tasks is fine. Do NOT over-decompose."
       },
       {
@@ -34,8 +35,7 @@
       }
     ],
     "edges": [
-      {"from": "__start__",               "to": "plan"},
-      {"from": "plan",                    "to": "design_debate"},
+      {"from": "__start__",               "to": "design_debate"},
       {"from": "design_debate",           "to": "claude_swarm"},
       {"from": "claude_swarm",            "to": "task_decompose"},
       {"from": "task_decompose",          "to": "decomposition_validator"},

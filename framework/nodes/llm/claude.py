@@ -103,10 +103,17 @@ class ClaudeSDKNode(AgentNode):
         def _make_options(sid: str) -> ClaudeAgentOptions:
             sp = self.node_config.get("system_prompt") or self.system_prompt or None
             node_tools = self.node_config.get("tools")
+            # tools=[] 表示禁用所有工具，不应 fallback
+            if tools is not None:
+                _allowed = tools
+            elif node_tools is not None:
+                _allowed = node_tools
+            else:
+                _allowed = self.config.tools
             return ClaudeAgentOptions(
                 system_prompt=sp,
                 cwd=cwd or None,
-                allowed_tools=tools or node_tools or self.config.tools,
+                allowed_tools=_allowed,
                 permission_mode=permission_mode,
                 resume=sid or None,
                 model=self.node_config.get("model") or self.node_config.get("claude_model") or None,

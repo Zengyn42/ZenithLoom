@@ -369,8 +369,17 @@ class LlmNode:
         return f"{prefix}{user_input}" if prefix else user_input
 
     def _select_tools(self, user_input: str) -> list[str] | None:
-        """tool_rules 关键词匹配后动态追加工具。node_config.tools 优先于顶层 config.tools。"""
-        tools = list(self._cfg.get("tools") or self.config.tools)
+        """tool_rules 关键词匹配后动态追加工具。node_config.tools 优先于顶层 config.tools。
+
+        注意：node_config["tools"] = [] 表示"禁用所有工具"，
+        不应 fallback 到 config.tools。仅当 key 不存在时才 fallback。
+        """
+        _MISSING = object()
+        node_tools = self._cfg.get("tools", _MISSING)
+        if node_tools is _MISSING:
+            tools = list(self.config.tools)
+        else:
+            tools = list(node_tools or [])
         for pattern, extra in self._tool_rules:
             if pattern.search(user_input):
                 for t in extra:
