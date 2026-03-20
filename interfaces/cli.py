@@ -87,11 +87,7 @@ class _CliInterface(BaseInterface):
         session_mgr = self._session_mgr
         loader = self._loader
 
-        hb_graph, hb_cfg = await loader.build_heartbeat_graph()
-        if hb_graph is not None:
-            from framework.heartbeat import heartbeat_loop, run_heartbeat_once
-            asyncio.create_task(run_heartbeat_once(hb_graph, hb_cfg))
-            asyncio.create_task(heartbeat_loop(hb_graph, hb_cfg))
+        await loader.start_heartbeat()
 
         thread_id  = controller.active_thread_id
         name       = session_mgr.find_name_by_thread_id(thread_id) or "默认"

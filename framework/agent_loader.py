@@ -63,6 +63,7 @@ class EntityLoader:
         self._engine = None
         self._controller = None
         self._session_mgr = None
+        self._heartbeat_manager = None  # HeartbeatManager | None
 
         if is_debug():
             logger.debug(
@@ -240,6 +241,63 @@ class EntityLoader:
         """已废弃：请改用 get_controller()。保留供旧代码/测试向后兼容。"""
         return await self._build_engine()
 
+    @property
+    def heartbeat_manager(self):
+        """返回 HeartbeatManager 实例（可能为 None，需先调用 start_heartbeat）。"""
+        return self._heartbeat_manager
+
+    async def start_heartbeat(self):
+        """
+        启动 heartbeat 调度器。
+
+        1. 读 entity.json 的 "heartbeat" 字段 → blueprint 路径
+        2. 向后兼容：如果没有独立 blueprint，检查 agent.json["heartbeat"] 降级为单 task
+        3. 实例化 HeartbeatManager，await start()
+        4. 返回 manager（或 None）
+        """
+        from framework.heartbeat import HeartbeatManager
+
+        state_path = self._data_dir / "heartbeat_state.json"
+
+        # 优先：entity.json["heartbeat"] → 独立 blueprint 路径
+        entity_path = self._data_dir / "entity.json"
+        blueprint_path = None
+        if entity_path.exists():
+            try:
+                entity = json.loads(entity_path.read_text(encoding="utf-8"))
+                hb_ref = entity.get("heartbeat")
+                if isinstance(hb_ref, str) and hb_ref:
+                    # 相对路径解析到 data_dir
+                    candidate = (self._data_dir / hb_ref).resolve()
+                    if candidate.exists():
+                        blueprint_path = candidate
+                    else:
+                        # 尝试相对于项目 CWD
+                        candidate = Path(hb_ref).resolve()
+                        if candidate.exists():
+                            blueprint_path = candidate
+                elif isinstance(hb_ref, dict) and hb_ref.get("blueprint"):
+                    bp = hb_ref["blueprint"]
+                    candidate = (self._data_dir / bp).resolve()
+                    if candidate.exists():
+                        blueprint_path = candidate
+                    else:
+                        candidate = Path(bp).resolve()
+                        if candidate.exists():
+                            blueprint_path = candidate
+            except Exception as e:
+                logger.warning(f"[agent_loader] failed to read entity.json heartbeat: {e}")
+
+        if blueprint_path is None:
+            logger.debug(f"[agent_loader] {self.name!r}: no heartbeat configuration found")
+            return None
+
+        logger.info(f"[agent_loader] starting heartbeat for {self.name!r}: {blueprint_path}")
+        mgr = HeartbeatManager(blueprint_path, state_path)
+        await mgr.start()
+        self._heartbeat_manager = mgr
+        return mgr
+
     def invalidate_engine(self) -> None:
         """使引擎和控制器缓存失效（compact/reset 后调用）。"""
         self._engine = None
@@ -257,29 +315,6 @@ class EntityLoader:
         lines = ["flowchart LR"]
         _mermaid_render(graph_spec, lines, "  ", "")
         return "\n".join(lines)
-
-    async def build_heartbeat_graph(self) -> tuple:
-        """
-        构建心跳调度图（无 checkpointer，每次 invocation 独立）。
-
-        返回 (compiled_graph, hb_cfg)；若 heartbeat 未配置或无 graph 定义则返回 (None, {})。
-        """
-        hb_cfg = self._json.get("heartbeat")
-        if not hb_cfg or not isinstance(hb_cfg, dict):
-            return None, {}
-        graph_spec = hb_cfg.get("graph")
-        if not graph_spec or "nodes" not in graph_spec or "edges" not in graph_spec:
-            return None, hb_cfg
-
-        config = self.load_config()
-        logger.info(f"[agent_loader] building heartbeat graph for {self.name!r}")
-        # system_prompt="" → 跳过 persona 注入和 _check_single_main 验证
-        # checkpointer=None → 心跳图本身无需持久化（各 AGENT_RUN 节点自有 DB）
-        graph = await _build_declarative(
-            graph_spec, config, system_prompt="", checkpointer=None,
-            blueprint_dir=str(self._dir),
-        )
-        return graph, hb_cfg
 
 
 # 向后兼容别名
