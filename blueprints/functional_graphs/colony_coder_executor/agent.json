@@ -16,6 +16,7 @@
         "id": "code_gen",
         "type": "OLLAMA",
         "model": "qwen3.5:27b",
+        "timeout": 300,
         "tools": ["read_file", "write_file", "list_dir"],
         "session_key": "executor_session",
         "system_prompt": "You are a CODE GENERATOR. Your job is to write source code based on the plan.\n\n## Rules\n1. Read the refined_plan and task description from the conversation.\n2. Write the source file(s) to the working_directory using write_file.\n3. Follow the plan's API specification exactly (class names, method signatures, file structure).\n4. Write COMPLETE, RUNNABLE code. Do not write placeholders or TODO stubs.\n5. Do NOT modify anything in test_tool/ directory.\n\nAfter writing the code, briefly confirm what file(s) you created."

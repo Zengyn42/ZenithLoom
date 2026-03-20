@@ -38,13 +38,22 @@ async def main():
     graph = await loader.build_graph(checkpointer=None)
 
     task = (
-        "用 Python 写一个终端贪吃蛇游戏（Snake Game）。\n"
+        "用 Python 写一个终端双蛇对战游戏（Dual Snake Battle）。\n"
         "要求：\n"
         "1. 使用 curses 库实现终端 UI\n"
-        "2. 蛇可以上下左右移动，吃到食物变长\n"
-        "3. 撞墙或撞自己 Game Over，显示分数\n"
-        "4. 单文件实现，保存到 /tmp/colony_game/snake.py\n"
-        "5. 代码要有注释，可直接 python3 snake.py 运行"
+        "2. 两条蛇同时出现在屏幕上：一条由玩家控制（WASD），一条由电脑 AI 控制\n"
+        "3. 屏幕上随机出现食物，蛇吃到食物后身体变长\n"
+        "4. 蛇撞墙或撞自己则死亡，对方获胜\n"
+        "5. 两条蛇的对战规则：\n"
+        "   a. 头对头相撞：长度短的蛇被吃掉，长的蛇获胜。等长则同归于尽。\n"
+        "   b. 蛇A的头碰到蛇B的身体：比较蛇A的总长度与蛇B从被碰位置到尾部的长度。\n"
+        "      - 如果蛇A长度 > 蛇B被碰位置到尾部的长度，则蛇A获胜，蛇B从被碰位置截断（头到被碰位置保留，被碰位置到尾部消失）。\n"
+        "      - 如果蛇A长度 <= 蛇B被碰位置到尾部的长度，则蛇A被消灭，蛇B获胜。\n"
+        "6. 最后存活的蛇获胜，显示胜利信息和双方分数\n"
+        "7. 电脑 AI 需要有基本智能：追逐食物、躲避墙壁和蛇身\n"
+        "8. 单文件实现，保存到 /tmp/colony_game_v2/snake_battle.py\n"
+        "9. 代码要有注释，可直接 python3 snake_battle.py 运行\n"
+        "10. 按 Q 可随时退出游戏"
     )
 
     init_state = {
@@ -116,11 +125,14 @@ async def main():
         print(f"   final_files:     {last_state.get('final_files', [])}", flush=True)
 
         # ── 检查生成的文件 ──
-        working_dir = last_state.get("working_directory", "/tmp/colony_game")
-        snake_path = Path(working_dir) / "snake.py"
+        working_dir = last_state.get("working_directory", "/tmp/colony_game_v2")
+        # Find any .py files (game might be snake_battle.py or similar)
+        wd = Path(working_dir)
+        py_files = list(wd.glob("*.py")) if wd.exists() else []
+        snake_path = py_files[0] if py_files else wd / "snake_battle.py"
         if snake_path.exists():
             content = snake_path.read_text(encoding="utf-8")
-            print(f"\n🐍 snake.py exists ({len(content)} chars, {len(content.splitlines())} lines)")
+            print(f"\n🐍 {snake_path.name} exists ({len(content)} chars, {len(content.splitlines())} lines)")
             # 语法检查
             try:
                 compile(content, str(snake_path), "exec")
