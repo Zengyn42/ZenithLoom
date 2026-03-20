@@ -78,6 +78,15 @@ class ExternalToolNode:
 
     async def _run_code_execution(self, state: dict) -> dict:
         cmd_str: str = state.get("execution_command", "")
+        if not cmd_str.strip():
+            # execution_command 为空 → 跳过（code_gen 可能直接用工具写文件，无需额外命令）
+            if is_debug():
+                logger.debug("[external_tool] code_execution: execution_command is empty, skipping")
+            return {
+                "execution_stdout": "",
+                "execution_stderr": "",
+                "execution_returncode": 0,
+            }
         working_dir: str = state.get("working_directory") or ""
         cmd = shlex.split(cmd_str)
         cwd = working_dir if working_dir else None

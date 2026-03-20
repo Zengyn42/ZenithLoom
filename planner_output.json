@@ -1,0 +1,24 @@
+{
+  "tasks": [
+    {
+      "id": "t1",
+      "description": "Create the file /tmp/colony_game/snake.py from scratch. This is a complete terminal Snake game using only Python standard library (curses, random, collections.deque, dataclasses, typing). The file must contain:\n\n1. IMPORTS: curses, random, collections.deque, dataclasses.dataclass, typing.NamedTuple\n\n2. CONSTANTS: A DIRECTIONS dict mapping curses.KEY_UP/DOWN/LEFT/RIGHT to (dy, dx) tuples. A helper function is_opposite(dir_a, dir_b) that returns True if two directions sum to (0,0). A helper function calc_speed(score, config) returning max(config.SPEED_FLOOR, config.INITIAL_SPEED - score * config.SPEED_STEP).\n\n3. class Drawable(NamedTuple): y: int, x: int, char: str, color_pair: int = 0\n\n4. @dataclass class GameConfig with fields: MIN_WIDTH=40, MIN_HEIGHT=20, INITIAL_SPEED=100, SPEED_FLOOR=30, SPEED_STEP=2, HEAD_CHAR='@', BODY_CHAR='#', FOOD_CHAR='*'\n\n5. class SnakeGame:\n   - __init__(self, stdscr, config=GameConfig()): store stdscr/config, call _validate_terminal(), call _init_colors(), initialize snake as deque with 3 segments centered, snake_set as set of those coords, direction as KEY_RIGHT, last_moved_dir same, score=0, food=None, call _place_food(), set curses.curs_set(0) and stdscr.nodelay(True)\n   - _init_colors(self) -> bool: check curses.has_colors(), if yes call curses.start_color() and init color pairs (1=GREEN for snake, 2=RED for food, 3=YELLOW for text), return bool\n   - _validate_terminal(self): get terminal size via getmaxyx(), if height < MIN_HEIGHT or width < MIN_WIDTH, raise SystemExit with friendly message\n   - _place_food(self): compute playable area (inside border), randomly pick (y,x) not in snake_set. If no free cells exist, set self.won=True and return. Store as self.food\n   - _handle_input(self) -> bool: getch() with timeout, handle 'q' to quit (return False), 'p' to call _pause(), KEY_RESIZE to return False, arrow keys to update self.direction only if not is_opposite with last_moved_dir. Return True\n   - _move_snake(self) -> bool: compute new_head = (head_y + dy, head_x + dx). Check wall collision (border). Check self-collision (new_head in snake_set). If collision return False. Add new_head to deque left and snake_set. If new_head == food: score += 1, call _place_food(). Else: remove tail from deque right and snake_set. Update last_moved_dir. Return True\n   - _build_drawables(self) -> list[Drawable]: build list with head (HEAD_CHAR, color 1), body segments (BODY_CHAR, color 1), food (FOOD_CHAR, color 2)\n   - _draw(self): erase screen, draw border with stdscr.border(), iterate _build_drawables() and addch each (wrap in try/except curses.error), draw score on top line, refresh\n   - _show_splash(self): clear screen, display centered game title 'SNAKE', controls (arrows/p/q), 'Press any key to start', wait for keypress with nodelay(False) then restore nodelay(True)\n   - _show_game_over(self): display centered 'GAME OVER' or 'YOU WIN' (if self.won), show final score, 'Press any key to exit', wait for keypress with nodelay(False)\n   - _pause(self): display centered 'PAUSED - Press P to resume', loop with nodelay(False) until 'p' pressed, restore nodelay(True)\n   - run(self): call _show_splash(), then main loop: set timeout via calc_speed, call _handle_input (break if False), call _move_snake (break if False or self.won), call _draw(). After loop call _show_game_over()\n\n6. def main(stdscr): SnakeGame(stdscr).run()\n\n7. if __name__ == '__main__': curses.wrapper(main)\n\nThe game should be ~200-250 lines, fully functional, zero external dependencies, runnable with 'python3 snake.py'. Use try/except around addch calls to handle curses boundary errors gracefully. The border is drawn by curses.border() and the playable area is rows 1 to height-2, cols 1 to width-2.",
+      "dependencies": []
+    }
+  ],
+  "execution_order": [
+    "t1"
+  ],
+  "refined_plan": "非常感谢您三轮精彩的设计精炼！您的每一轮建议都将方案提升了一个维度。现在让我综合所有讨论，输出**最终设计结论**。\n\n---\n\n# 🐍 终端贪吃蛇游戏 — 最终设计结论\n\n## 一、最终推荐技术方案\n\n**单文件 OOP 架构 + curses 标准库**，保存至 `/tmp/colony_game/snake.py`",
+  "working_directory": "/tmp/colony_game",
+  "messages": [
+    {
+      "type": "human",
+      "content": "用 Python 写一个终端贪吃蛇游戏"
+    },
+    {
+      "type": "ai",
+      "content": "非常感谢您三轮精彩的设计精炼！您的每一轮建议都将方案提升了一个维度。现在让我综合所有讨论，输出**最终设计结论**。\n\n---\n\n# 🐍 终端贪吃蛇游戏 — 最终设计结论\n\n## 一、最终推荐技术方案\n\n**单文件 OOP 架构 + curses 标准库**，保存至 `/tmp/colony_game/snake.py`"
+    }
+  ]
+}
