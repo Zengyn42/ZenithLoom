@@ -56,6 +56,3 @@ class HeartbeatNode:
         if is_debug():
             logger.debug(f"[heartbeat_run] reply_preview={reply[:200]!r}")
         return {"messages": [AIMessage(content=reply)]}
-
-
-AgentRunNode = HeartbeatNode

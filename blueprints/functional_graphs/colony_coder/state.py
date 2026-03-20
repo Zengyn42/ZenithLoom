@@ -35,7 +35,7 @@ class ColonyCoderState(BaseAgentState):
     # Cross-task issues accumulate across tasks
     cross_task_issues: list
 
-    # Validation output from soft_validate / hard_validate
+    # Validation output from soft_validate (DETERMINISTIC: runs run_tests.sh)
     validation_output: Optional[dict]
 
     # Routing (last-write-wins to survive concurrent updates from fan-in races)
@@ -46,7 +46,7 @@ class ColonyCoderState(BaseAgentState):
     rescue_rationale: str
     affected_task_ids: list
 
-    # Code execution results (set by apply_patch / execute EXTERNAL_TOOL nodes)
+    # Code execution results (legacy — retained for integrator compatibility)
     execution_command: str
     execution_stdout: str
     execution_stderr: str

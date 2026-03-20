@@ -1,53 +1,71 @@
 """Deterministic validator nodes for colony_coder_integrator.
 
 Nodes:
-  inject_test_context — build a HumanMessage with test_files + working_directory for integration_test
-  integration_route   — routes to __end__ (pass/abort) | integration_rescue (retry)
+  integration_test  — run test_tool/run_tests.sh (DETERMINISTIC, no LLM)
+  integration_route — routes to __end__ (pass/abort) | integration_rescue (retry)
 """
 
-from langchain_core.messages import HumanMessage
+import logging
+
+logger = logging.getLogger(__name__)
 
 RETRY_CAP = 2
 
 
-def inject_test_context(state: dict) -> dict:
-    """Inject test context into messages so integration_test (Ollama) knows what to run.
+def integration_test(state: dict) -> dict:
+    """Run test_tool/run_tests.sh for integration verification. Pure code, no LLM.
 
-    test_files are in {working_directory}/test_tool/ and test the source code
-    in {working_directory}/. The integration_test runs test_tool against code_gen output.
+    Same protocol as executor's soft_validate:
+      - run_tests.sh is the unified test entry point
+      - exit code 0 = all tests pass
+      - exit code non-zero = failure
     """
+    import os
+    import subprocess
+
     working_dir = state.get("working_directory", "")
-    test_files = state.get("test_files") or []
-    final_files = state.get("final_files") or []
-    refined_plan = state.get("refined_plan", "")
+    runner = os.path.join(working_dir, "test_tool", "run_tests.sh")
 
-    lines = ["## Integration Test Instructions\n"]
-    lines.append(f"**Working directory**: `{working_dir}`\n")
+    if not os.path.isfile(runner):
+        return {"validation_output": {
+            "status": "fail",
+            "category": "missing_runner",
+            "rationale": f"test_tool/run_tests.sh not found in {working_dir}",
+        }}
 
-    if test_files:
-        lines.append("**Test tool files** (pre-written tests in `test_tool/` subfolder):")
-        for tf in test_files:
-            lines.append(f"  - `{tf}`")
-        lines.append(f"\n**How to run**: `cd {working_dir} && python3 <test_file>`")
-        lines.append("Each test file imports source code from the parent directory (working_directory).")
-    else:
-        lines.append("⚠️ No test files found in test_tool/. Submit validation with status='fail', category='missing_tests'.")
+    try:
+        r = subprocess.run(
+            ["bash", runner],
+            cwd=working_dir,
+            capture_output=True,
+            text=True,
+            timeout=120,
+        )
+        if r.returncode == 0:
+            return {"validation_output": {
+                "status": "pass",
+                "category": "all_tests_pass",
+                "rationale": r.stdout[-2000:] if r.stdout else "All tests passed",
+            }}
 
-    if final_files:
-        lines.append(f"\n**Source files to verify** (written by code_gen): {', '.join(f'`{f}`' for f in final_files)}")
-        lines.append("The test_tool tests should exercise these source files.")
-
-    if refined_plan:
-        lines.append(f"\n**Plan summary**: {refined_plan[:300]}")
-
-    lines.append("\n**Your job**:")
-    lines.append("1. Run each test file from test_tool/.")
-    lines.append("2. If ALL tests pass (exit 0): submit_validation with status='pass'.")
-    lines.append("3. If ANY test fails: submit_validation with status='fail', include the full error output in rationale, set category='test_failure'.")
-    lines.append("4. Do NOT modify any files. Just run and report.")
-
-    content = "\n".join(lines)
-    return {"messages": [HumanMessage(content=content)]}
+        output = (r.stdout + "\n" + r.stderr)[-3000:]
+        return {"validation_output": {
+            "status": "fail",
+            "category": "test_failure",
+            "rationale": output,
+        }}
+    except subprocess.TimeoutExpired:
+        return {"validation_output": {
+            "status": "fail",
+            "category": "timeout",
+            "rationale": "run_tests.sh exceeded 120s timeout",
+        }}
+    except OSError as e:
+        return {"validation_output": {
+            "status": "fail",
+            "category": "execution_error",
+            "rationale": str(e),
+        }}
 
 
 def integration_route(state: dict) -> dict:
