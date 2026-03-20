@@ -2,6 +2,7 @@
 
 Nodes (each function = one DETERMINISTIC node):
   extract_test_files      — scan test_tool/ for test files
+  inject_validate_context — inject working_dir + test paths for soft_validate
   validate_router         — single router: pass/self_fix/rescue/abort
   rescue_router           — cross-task issues: dual-write to cross_task_issues
   rollback_state          — cascade-rollback affected tasks
@@ -41,6 +42,32 @@ def extract_test_files(state: dict) -> dict:
     return {"test_files": test_files}
 
 
+def inject_validate_context(state: dict) -> dict:
+    """Build a HumanMessage with test file paths and working_directory for soft_validate.
+
+    soft_validate runs on an isolated Ollama session (validator_session) with no
+    prior context. This node tells it exactly what to run and where.
+    """
+    working_dir = state.get("working_directory", "")
+    test_files = state.get("test_files") or []
+
+    lines = ["## Validation Task\n"]
+    lines.append(f"**Working directory**: `{working_dir}`\n")
+
+    if test_files:
+        lines.append("**Test files to run** (run ALL of them):")
+        for tf in test_files:
+            lines.append(f"- `cd {working_dir} && python3 {tf}`")
+    else:
+        lines.append("⚠️ No test files found. Submit fail with category='missing_tests'.")
+
+    lines.append("\n**Instructions**: Use bash_exec to run each test command above. "
+                 "Report ACTUAL results via submit_validation. Do NOT guess or assume.")
+
+    from langchain_core.messages import HumanMessage
+    return {"messages": [HumanMessage(content="\n".join(lines))]}
+
+
 SELF_FIX_CAP = 5
 CROSS_TASK_CATEGORIES = {"cross_task", "interface_mismatch", "dependency_break"}
 
@@ -72,9 +99,35 @@ def validate_router(state: dict) -> dict:
             "abort_reason": vo.get("rationale", "validate_router_abort"),
         }
 
-    # any failure + under cap → self_fix
+    # any failure + under cap → self_fix (inject error context as message)
     if self_fix_count < SELF_FIX_CAP:
-        return {"routing_target": "self_fix", "transient_retry_count": self_fix_count + 1}
+        from langchain_core.messages import HumanMessage
+
+        working_dir = state.get("working_directory", "")
+        test_files = state.get("test_files") or []
+
+        lines = [f"## Validation FAILED (attempt {self_fix_count + 1}/{SELF_FIX_CAP})\n"]
+        lines.append(f"**Working directory**: `{working_dir}`")
+        lines.append(f"**Category**: `{category}`\n")
+        lines.append("### Test Output (from run_tests.sh)")
+        lines.append(f"```\n{vo.get('rationale', 'no output captured')}\n```\n")
+
+        if test_files:
+            lines.append("### Test files (these are the SPEC — do NOT modify)")
+            for tf in test_files:
+                lines.append(f"- `{working_dir}/{tf}`")
+
+        lines.append("\n### Your task")
+        lines.append("1. Read the error output above carefully.")
+        lines.append("2. Read the failing source file(s).")
+        lines.append("3. Fix the SOURCE CODE only. Tests are the specification.")
+        lines.append("4. Write the fixed file back to the same path.")
+
+        return {
+            "routing_target": "self_fix",
+            "transient_retry_count": self_fix_count + 1,
+            "messages": [HumanMessage(content="\n".join(lines))],
+        }
 
     # 5 retries exhausted → rollback → claude_rescue
     if category in CROSS_TASK_CATEGORIES:

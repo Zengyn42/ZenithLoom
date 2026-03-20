@@ -49,6 +49,10 @@ class ColonyCoderState(BaseAgentState):
     execution_stderr: str
     execution_returncode: Optional[int]
 
+    # Override node_sessions with merge reducer for parallel fan-out writes
+    # (test_designer + code_gen both write node_sessions simultaneously)
+    node_sessions: Annotated[dict, _merge_dict]
+
     # Ollama sessions stored in state (not files) for LangGraph checkpoint compatibility.
     # merge_dict reducer prevents parallel node writes from clobbering each other.
     ollama_sessions: Annotated[dict, _merge_dict]
