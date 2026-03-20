@@ -7,11 +7,13 @@ Debug 模式功能：
   1. is_debug() → True  各模块输出 logger.debug() 级别日志
   2. log_node_thinking()  记录每个 LLM 节点的思考内容到 .md 文件
   3. log_graph_flow()     记录图节点流转到 .md 文件
+  4. log_state_snapshot()  记录节点输出后的 state 快照到 state_snapshots.md
 
 日志目录结构（按图层级组织）：
   logs/YYYY-MM-DD/<graph_name>/<subgraph_name>/...
-    flow.md       — 节点流转时间线
-    thinking.md   — LLM 思考内容
+    flow.md              — 节点流转时间线
+    thinking.md          — LLM 思考内容
+    state_snapshots.md   — 每个节点执行后的 state 快照（含 LLM 完整输出）
 
 图层级由 push_graph_scope() / pop_graph_scope() 管理，
 GraphController 和 SubgraphRefNode 自动调用。
@@ -209,3 +211,84 @@ def log_graph_flow(
 
     # 同时输出到 Python logger
     logger.debug(f"[flow] {sym} {node_id} {detail}")
+
+
+# ── State snapshot 日志 ──────────────────────────────────────────────────
+
+
+def _format_message(msg) -> str:
+    """格式化单条 LangChain message，保留完整内容。"""
+    role = getattr(msg, "type", "unknown")
+    content = getattr(msg, "content", "")
+    return f"**[{role}]** ({len(content)} chars)\n\n{content}"
+
+
+def _format_state_value(key: str, value) -> str:
+    """格式化单个 state 字段的值。"""
+    if key == "messages":
+        # messages 单独处理，每条完整展示
+        if not value:
+            return "_empty_"
+        parts = []
+        for i, msg in enumerate(value):
+            parts.append(f"#### Message {i}: {_format_message(msg)}")
+        return "\n\n".join(parts)
+    if isinstance(value, str):
+        if not value:
+            return "_empty string_"
+        return f"```\n{value}\n```"
+    if isinstance(value, (list, dict)):
+        import json
+        try:
+            formatted = json.dumps(value, ensure_ascii=False, indent=2)
+            return f"```json\n{formatted}\n```"
+        except (TypeError, ValueError):
+            return f"```\n{repr(value)}\n```"
+    return f"`{repr(value)}`"
+
+
+def log_state_snapshot(
+    node_id: str,
+    node_output: dict,
+    full_state: dict | None = None,
+) -> None:
+    """
+    记录节点输出后的 state 快照到 state_snapshots.md。
+
+    仅在 is_debug() == True 时实际写入。
+
+    Args:
+        node_id: 节点 ID
+        node_output: 该节点返回的 dict（增量更新）
+        full_state: 可选，节点执行前的完整 state（用于展示上下文）
+    """
+    if not _DEBUG:
+        return
+    if not node_output:
+        return
+
+    log_dir = _get_log_dir()
+    scope = _graph_scope.get()
+    scope_label = " / ".join(scope) if scope else "unknown"
+
+    _ensure_md_header(
+        log_dir, "state_snapshots.md",
+        f"# State Snapshots — {scope_label}\n\n"
+        "每个节点执行后输出的 state 增量。\n\n"
+    )
+
+    timestamp = datetime.now().strftime("%H:%M:%S.%f")[:-3]
+    lines: list[str] = []
+    lines.append(f"---\n\n## {timestamp} — `{node_id}` output\n\n")
+
+    # 输出该节点返回的每个字段
+    for key in sorted(node_output.keys()):
+        val = node_output[key]
+        # 跳过空值
+        if val is None or val == "" or val == [] or val == {}:
+            continue
+        lines.append(f"### `{key}`\n\n")
+        lines.append(_format_state_value(key, val))
+        lines.append("\n\n")
+
+    _append_md(log_dir, "state_snapshots.md", "".join(lines))

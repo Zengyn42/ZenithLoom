@@ -127,6 +127,8 @@ class SubgraphRefNode:
                 for node_id, update in event.items():
                     if node_id in ("__start__", "__end__"):
                         continue
+                    if not update:
+                        continue
                     # 跟踪最新 state 用于最终结果映射
                     last_state.update(update)
                     msgs = update.get("messages", [])

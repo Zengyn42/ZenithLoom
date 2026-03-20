@@ -17,12 +17,29 @@ CROSS_TASK_CATEGORIES = {"cross_task", "interface_mismatch", "dependency_break"}
 
 
 def hard_validate(state: dict) -> dict:
-    """Route based on validation_output.status."""
+    """Route based on validation_output.status.
+
+    Flow:
+      soft_validate → hard_validate (pass → execute) → hard_validate (done → __end__)
+                                    (fail → error_classifier or abort)
+
+    After execute runs, execution_returncode is set in state. If we see
+    pass + execution_returncode exists, it means execute already ran
+    successfully, so we route to __end__ instead of looping.
+    """
     vo = state.get("validation_output") or {}
     status = vo.get("status", "fail")
     retry_count = state.get("retry_count", 0)
 
     if status == "pass":
+        # 如果 execute 已经运行过（execution_returncode 存在），
+        # 说明是从 execute → hard_validate 的第二次进入，应该结束。
+        if state.get("execution_returncode") is not None:
+            return {
+                "routing_target": "__end__",
+                "success": state.get("execution_returncode", 0) == 0,
+                "abort_reason": state.get("execution_stderr", "") if state.get("execution_returncode", 0) != 0 else "",
+            }
         return {"routing_target": "execute"}
 
     if status == "abort" or retry_count >= RETRY_CAP:

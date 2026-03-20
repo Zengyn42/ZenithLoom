@@ -43,6 +43,12 @@ class ColonyCoderState(BaseAgentState):
     rescue_rationale: str
     affected_task_ids: list
 
+    # Code execution results (set by apply_patch / execute EXTERNAL_TOOL nodes)
+    execution_command: str
+    execution_stdout: str
+    execution_stderr: str
+    execution_returncode: Optional[int]
+
     # Ollama sessions stored in state (not files) for LangGraph checkpoint compatibility.
     # merge_dict reducer prevents parallel node writes from clobbering each other.
     ollama_sessions: Annotated[dict, _merge_dict]

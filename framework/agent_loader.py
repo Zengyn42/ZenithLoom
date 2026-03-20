@@ -32,7 +32,7 @@ from collections import defaultdict
 from pathlib import Path
 
 from framework.config import AgentConfig
-from framework.debug import is_debug, log_graph_flow
+from framework.debug import is_debug, log_graph_flow, log_state_snapshot
 
 logger = logging.getLogger(__name__)
 
@@ -546,6 +546,8 @@ def _wrap_node_for_flow_log(node_id: str, node_fn):
                     detail = f"keys=[{', '.join(keys)}]"
                     if rt_out:
                         detail += f" → routing_target={rt_out!r}"
+                    # 记录 state snapshot
+                    log_state_snapshot(node_id, result, full_state=state)
                 else:
                     detail = f"type={type(result).__name__}"
                 log_graph_flow("exit", node_id, detail)
@@ -563,6 +565,8 @@ def _wrap_node_for_flow_log(node_id: str, node_fn):
             if is_debug():
                 if isinstance(result, dict):
                     keys = sorted(k for k in result.keys() if result[k])
+                    # 记录 state snapshot
+                    log_state_snapshot(node_id, result, full_state=state)
                     log_graph_flow("exit", node_id, f"keys=[{', '.join(keys)}]")
                 else:
                     log_graph_flow("exit", node_id, f"type={type(result).__name__}")
