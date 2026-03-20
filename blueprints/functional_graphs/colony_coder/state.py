@@ -38,6 +38,9 @@ class ColonyCoderState(BaseAgentState):
     # Validation output from soft_validate / hard_validate
     validation_output: Optional[dict]
 
+    # Routing (last-write-wins to survive concurrent updates from fan-in races)
+    routing_target: Annotated[str, lambda a, b: b]
+
     # Rescue context
     rescue_scope: str
     rescue_rationale: str
