@@ -33,28 +33,5 @@
   "persona_files": [
     "ROLE.md",
     "PROTOCOL.md"
-  ],
-  "heartbeat": {
-    "interval_hours": 23,
-    "prompt": "Heartbeat check.",
-    "graph": {
-      "nodes": [
-        {
-          "id": "probe_ollama",
-          "type": "PROBE",
-          "name": "ollama"
-        }
-      ],
-      "edges": [
-        {
-          "from": "__start__",
-          "to": "probe_ollama"
-        },
-        {
-          "from": "probe_ollama",
-          "to": "__end__"
-        }
-      ]
-    }
-  }
+  ]
 }
