@@ -5,23 +5,24 @@
     "state_schema": "colony_coder_schema",
     "nodes": [
       {
+        "id": "inject_test_context",
+        "type": "DETERMINISTIC"
+      },
+      {
         "id": "integration_test",
         "type": "OLLAMA",
         "model": "qwen3.5:27b",
         "tools": ["read_file", "bash_exec", "submit_validation"],
-        "session_key": "integrator_session"
+        "session_key": "integrator_session",
+        "system_prompt": "You are the INTEGRATION TESTER for Colony Coder.\n\nYour job: run test_tool tests against the source code, then submit the validation result.\n\n## How it works:\n- Source code is in the working_directory (e.g., `/tmp/colony_game/snake.py`)\n- Test files are in the `test_tool/` subfolder (e.g., `/tmp/colony_game/test_tool/test_snake.py`)\n- Tests import source code from the parent directory via sys.path\n\n## Steps:\n1. Read the instructions in the conversation to find working_directory and test file paths.\n2. Run each test: `cd <working_directory> && python3 <test_file>`\n3. If ALL tests pass (exit code 0): submit_validation with status='pass'.\n4. If ANY test fails: submit_validation with status='fail', include the full error output in rationale, set category='test_failure'.\n\n⛔ RULES:\n- Do NOT modify the test files or the source code.\n- Do NOT skip any tests.\n- Run tests exactly as they are.\n- If no test files are provided, submit_validation with status='fail', category='missing_tests'."
       },
       {
         "id": "integration_rescue",
         "type": "CLAUDE_SDK",
         "session_key": "session_b",
-        "system_prompt": "You are ApexCoder. The integration tests failed. Analyze the failures and produce a fix."
-      },
-      {
-        "id": "apply_patch",
-        "type": "EXTERNAL_TOOL",
-        "backend": "code_execution",
-        "timeout": 30
+        "tools": ["Write", "Edit", "Read", "Bash"],
+        "permission_mode": "bypassPermissions",
+        "system_prompt": "You are ApexCoder. The integration tests failed. Read the test output, analyze the failures, and fix the SOURCE CODE (not the tests). The tests are the specification — the code must pass them."
       },
       {
         "id": "integration_route",
@@ -29,10 +30,10 @@
       }
     ],
     "edges": [
-      {"from": "__start__",          "to": "integration_test"},
+      {"from": "__start__",          "to": "inject_test_context"},
+      {"from": "inject_test_context", "to": "integration_test"},
       {"from": "integration_test",   "to": "integration_route"},
-      {"from": "integration_rescue", "to": "apply_patch"},
-      {"from": "apply_patch",        "to": "integration_test"},
+      {"from": "integration_rescue", "to": "integration_test"},
       {"from": "integration_route",  "to": "__end__",             "type": "routing_to"},
       {"from": "integration_route",  "to": "integration_rescue",  "type": "routing_to"}
     ]

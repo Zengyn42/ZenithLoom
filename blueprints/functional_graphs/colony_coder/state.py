@@ -53,6 +53,9 @@ class ColonyCoderState(BaseAgentState):
     # merge_dict reducer prevents parallel node writes from clobbering each other.
     ollama_sessions: Annotated[dict, _merge_dict]
 
+    # Test files written by test_designer (ApexCoder) for integration verification
+    test_files: list                   # list of test file paths relative to working_directory
+
     # Final output
     final_files: list
     abort_reason: Optional[str]

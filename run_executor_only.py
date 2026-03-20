@@ -83,6 +83,7 @@ def _load_snapshot(path: str) -> dict:
         "execution_stdout": "",
         "execution_stderr": "",
         "execution_returncode": None,
+        "test_files": [],
     }
     return state
 
