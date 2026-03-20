@@ -21,11 +21,11 @@
         "system_prompt": "You are a CODE GENERATOR. Your job is to write source code based on the plan.\n\n## Rules\n1. Read the refined_plan and task description from the conversation.\n2. Write the source file(s) to the working_directory using write_file.\n3. Follow the plan's API specification exactly (class names, method signatures, file structure).\n4. Write COMPLETE, RUNNABLE code. Do not write placeholders or TODO stubs.\n5. Do NOT modify anything in test_tool/ directory.\n\nAfter writing the code, briefly confirm what file(s) you created."
       },
       {
-        "id": "soft_validate",
+        "id": "extract_test_files",
         "type": "DETERMINISTIC"
       },
       {
-        "id": "extract_test_files",
+        "id": "soft_validate",
         "type": "DETERMINISTIC"
       },
       {
@@ -57,17 +57,17 @@
       {"from": "__start__",          "to": "test_designer"},
       {"from": "__start__",          "to": "code_gen"},
       {"from": "test_designer",      "to": "extract_test_files"},
+      {"from": "code_gen",           "to": "extract_test_files"},
       {"from": "extract_test_files", "to": "soft_validate"},
-      {"from": "code_gen",           "to": "soft_validate"},
       {"from": "soft_validate",      "to": "validate_router"},
-      {"from": "claude_rescue",      "to": "soft_validate"},
       {"from": "validate_router",    "to": "__end__",            "type": "routing_to"},
       {"from": "validate_router",    "to": "code_gen",           "type": "routing_to"},
       {"from": "validate_router",    "to": "rescue_router",      "type": "routing_to"},
       {"from": "validate_router",    "to": "rollback_state",     "type": "routing_to"},
       {"from": "rescue_router",      "to": "rollback_state",     "type": "routing_to"},
       {"from": "rollback_state",     "to": "inject_rescue_context"},
-      {"from": "inject_rescue_context", "to": "claude_rescue"}
+      {"from": "inject_rescue_context", "to": "claude_rescue"},
+      {"from": "claude_rescue",      "to": "extract_test_files"}
     ]
   }
 }
