@@ -19,8 +19,7 @@ import 时自动执行注册（无副作用，幂等）。
   AGENT_REF        — SubgraphRefNode，同 SUBGRAPH_REF（向后兼容别名）
   EXTERNAL_TOOL    — ExternalToolNode，通用外部 CLI 调用（gws / obsidian / cli-anything-* 等）
   PROBE            — ProbeNode，服务存活探针（heartbeat 图专用，claude/gemini/ollama）
-  HEARTBEAT        — HeartbeatNode，调度主图节点（heartbeat 图专用，持独立 AgentLoader）
-  AGENT_RUN        — HeartbeatNode，同 HEARTBEAT（向后兼容别名）
+  HEARTBEAT        — HeartbeatNode，调度主图节点（heartbeat 专用，持独立 EntityLoader）
 
 条件谓词（ConditionFn：state → bool）：
   always           — 总是 True
@@ -144,11 +143,6 @@ def _(config, node_config):
     from framework.nodes.heartbeat.heartbeat_node import HeartbeatNode
     return HeartbeatNode(node_config)
 
-
-@register_node("AGENT_RUN")
-def _(config, node_config):
-    from framework.nodes.heartbeat.heartbeat_node import HeartbeatNode
-    return HeartbeatNode(node_config)
 
 
 # ---------------------------------------------------------------------------
