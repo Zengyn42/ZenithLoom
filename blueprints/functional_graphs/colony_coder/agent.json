@@ -34,6 +34,7 @@
         "state_out": {
           "completed_tasks": "completed_tasks",
           "final_files": "final_files",
+          "test_files": "test_files",
           "success": "success",
           "abort_reason": "abort_reason",
           "messages": "messages"
@@ -46,7 +47,9 @@
         "state_in": {
           "completed_tasks": "completed_tasks",
           "final_files": "final_files",
+          "test_files": "test_files",
           "working_directory": "working_directory",
+          "refined_plan": "refined_plan",
           "messages": "messages"
         },
         "state_out": {

@@ -5,44 +5,43 @@
     "state_schema": "colony_coder_schema",
     "nodes": [
       {
+        "id": "test_designer",
+        "type": "CLAUDE_SDK",
+        "session_key": "test_designer_session",
+        "tools": ["Write", "Edit", "Read", "Bash"],
+        "permission_mode": "bypassPermissions",
+        "system_prompt": "You are ApexCoder — the TEST DESIGNER for Colony Coder.\n\nYou will receive a refined plan describing what code should be built.\nThe source code does NOT exist yet — another agent will write it AFTER you.\nYour ONLY job: write automated test files into the `test_tool/` subfolder.\n\n## How to work\n1. Read the plan carefully. Identify the target file(s), classes, functions, and expected behavior.\n2. Create the test_tool/ directory: `mkdir -p <working_directory>/test_tool`\n3. Use the Write tool to create test file(s) inside `<working_directory>/test_tool/`.\n4. Use Bash to verify test files have no syntax errors: `python3 -c \"import ast; ast.parse(open('<file>').read())\"`\n\n## Test file rules\n- Save to: `<working_directory>/test_tool/test_<name>.py`\n- The test file must add the PARENT directory (working_directory) to sys.path so it can import source code:\n  ```python\n  import sys, os\n  sys.path.insert(0, os.path.join(os.path.dirname(__file__), '..'))\n  ```\n- Runnable with: `cd <working_directory> && python3 test_tool/test_<name>.py`\n- Exit code 0 = all pass, non-zero = failure.\n- Print clear PASS/FAIL per test case.\n- Keep it 50–150 lines. Focus on what matters.\n\n## What to test\n- **Syntax & structure**: source file compiles, expected classes/functions exist (use ast.parse).\n- **Pure logic**: test functions that don't need I/O (collision detection, scoring, data structures).\n- **For curses/terminal/GUI programs**: do NOT launch the UI. Instead:\n  - Mock `curses.wrapper` / `stdscr` to test initialization logic.\n  - Test pure-logic classes (Snake, Food, etc.) directly.\n- **For CLI programs**: test with `subprocess.run` and piped stdin/stdout.\n\n## What NOT to do\n- Do NOT write the source code. Only tests.\n- Do NOT write tests outside of test_tool/ directory.\n- Do NOT try to run the actual program interactively."
+      },
+      {
         "id": "code_gen",
         "type": "OLLAMA",
         "model": "qwen3.5:27b",
         "tools": ["read_file", "write_file", "list_dir"],
-        "session_key": "executor_session"
+        "session_key": "executor_session",
+        "system_prompt": "You are a CODE GENERATOR. Your job is to write source code based on the plan.\n\n## Rules\n1. Read the refined_plan and task description from the conversation.\n2. Write the source file(s) to the working_directory using write_file.\n3. Follow the plan's API specification exactly (class names, method signatures, file structure).\n4. Write COMPLETE, RUNNABLE code. Do not write placeholders or TODO stubs.\n5. Do NOT modify anything in test_tool/ directory.\n\nAfter writing the code, briefly confirm what file(s) you created."
       },
       {
         "id": "soft_validate",
         "type": "OLLAMA",
         "model": "qwen3.5:27b",
         "tools": ["read_file", "bash_exec", "submit_validation"],
-        "session_key": "executor_session"
+        "session_key": "executor_session",
+        "system_prompt": "You are a CODE VALIDATOR. Your job is to validate the source code that was just written.\n\n## Steps\n1. Run the test files: `cd <working_directory> && python3 test_tool/test_<name>.py`\n2. Check the output and exit code.\n3. Use submit_validation to report the result:\n   - If ALL tests pass (exit 0): status='pass'\n   - If tests fail: status='fail', include error output in rationale, set category='test_failure'\n   - If source file has syntax errors: status='fail', category='syntax_error'\n\n## Rules\n- Do NOT modify any files.\n- Do NOT skip tests.\n- Always submit a validation result."
       },
       {
         "id": "self_fix",
         "type": "OLLAMA",
         "model": "qwen3.5:27b",
         "tools": ["read_file", "write_file", "bash_exec"],
-        "session_key": "executor_session"
+        "session_key": "executor_session",
+        "system_prompt": "You are a CODE FIXER. Previous validation found errors in the source code.\n\n## Steps\n1. Read the error details from the conversation.\n2. Read the failing source file and the test file in test_tool/.\n3. Fix the SOURCE CODE only (not the tests — tests are the specification).\n4. Write the fixed file back to the same path.\n\n## Rules\n- Do NOT modify test files in test_tool/.\n- Fix the root cause, not just the symptom.\n- Keep fixes minimal and targeted."
       },
       {
-        "id": "apply_patch",
-        "type": "EXTERNAL_TOOL",
-        "backend": "code_execution",
-        "timeout": 30
-      },
-      {
-        "id": "execute",
-        "type": "EXTERNAL_TOOL",
-        "backend": "code_execution",
-        "timeout": 60
-      },
-      {
-        "id": "hard_validate",
+        "id": "extract_test_files",
         "type": "DETERMINISTIC"
       },
       {
-        "id": "error_classifier",
+        "id": "validate_router",
         "type": "DETERMINISTIC"
       },
       {
@@ -54,28 +53,34 @@
         "type": "DETERMINISTIC"
       },
       {
+        "id": "inject_rescue_context",
+        "type": "DETERMINISTIC"
+      },
+      {
         "id": "claude_rescue",
         "type": "CLAUDE_SDK",
-        "session_key": "session_b",
-        "system_prompt": "You are ApexCoder, a rescue agent. Analyze the error and produce a corrected implementation."
+        "session_key": "rescue_session",
+        "tools": ["Write", "Edit", "Read", "Bash"],
+        "permission_mode": "bypassPermissions",
+        "system_prompt": "You are ApexCoder — the RESCUE agent.\n\nYou receive full context: the planner's design, the test_tool specification, the current (broken) source code, and the error details.\n\nYour mission: fix or rewrite the source code so ALL test_tool tests pass.\nThe tests are the SPECIFICATION — do NOT modify them.\n\nAfter fixing, run the tests yourself to verify before finishing."
       }
     ],
     "edges": [
-      {"from": "__start__",        "to": "code_gen"},
-      {"from": "code_gen",         "to": "apply_patch"},
-      {"from": "apply_patch",      "to": "soft_validate"},
-      {"from": "soft_validate",    "to": "hard_validate"},
-      {"from": "execute",          "to": "hard_validate"},
-      {"from": "self_fix",         "to": "apply_patch"},
-      {"from": "claude_rescue",    "to": "apply_patch"},
-      {"from": "hard_validate",    "to": "execute",          "type": "routing_to"},
-      {"from": "hard_validate",    "to": "error_classifier", "type": "routing_to"},
-      {"from": "hard_validate",    "to": "__end__",           "type": "routing_to"},
-      {"from": "error_classifier", "to": "self_fix",          "type": "routing_to"},
-      {"from": "error_classifier", "to": "claude_rescue",     "type": "routing_to"},
-      {"from": "error_classifier", "to": "rescue_router",     "type": "routing_to"},
-      {"from": "rescue_router",    "to": "rollback_state",    "type": "routing_to"},
-      {"from": "rollback_state",   "to": "claude_rescue",     "type": "routing_to"}
+      {"from": "__start__",          "to": "test_designer"},
+      {"from": "__start__",          "to": "code_gen"},
+      {"from": "test_designer",      "to": "extract_test_files"},
+      {"from": "extract_test_files", "to": "soft_validate"},
+      {"from": "code_gen",           "to": "soft_validate"},
+      {"from": "soft_validate",      "to": "validate_router"},
+      {"from": "self_fix",           "to": "soft_validate"},
+      {"from": "claude_rescue",      "to": "soft_validate"},
+      {"from": "validate_router",    "to": "__end__",          "type": "routing_to"},
+      {"from": "validate_router",    "to": "self_fix",         "type": "routing_to"},
+      {"from": "validate_router",    "to": "rescue_router",    "type": "routing_to"},
+      {"from": "validate_router",    "to": "rollback_state",   "type": "routing_to"},
+      {"from": "rescue_router",      "to": "rollback_state",   "type": "routing_to"},
+      {"from": "rollback_state",     "to": "inject_rescue_context"},
+      {"from": "inject_rescue_context", "to": "claude_rescue"}
     ]
   }
 }
