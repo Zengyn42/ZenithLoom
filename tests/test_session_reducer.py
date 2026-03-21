@@ -31,3 +31,12 @@ def test_debate_state_node_sessions_has_merge_reducer():
     ann = hints["node_sessions"]
     args = get_args(ann)
     assert args[1] is _merge_dict
+
+
+def test_colony_coder_state_node_sessions_has_merge_reducer():
+    from blueprints.functional_graphs.colony_coder.state import ColonyCoderState
+    from framework.schema.reducers import _merge_dict
+    hints = get_type_hints(ColonyCoderState, include_extras=True)
+    ann = hints["node_sessions"]
+    args = get_args(ann)
+    assert args[1] is _merge_dict

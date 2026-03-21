@@ -3,6 +3,6 @@ Shared LangGraph state reducers for BootstrapBuilder schemas.
 """
 
 
-def _merge_dict(a: dict, b: dict) -> dict:
+def _merge_dict(a: dict | None, b: dict | None) -> dict:
     """Merge reducer: b's values overwrite a's for shared keys. Safe for parallel node writes."""
-    return {**a, **b}
+    return {**(a or {}), **(b or {})}

@@ -6,5 +6,5 @@
 # 转发所有符号到新位置
 from blueprints.functional_graphs.colony_coder.state import (  # noqa: F401
     ColonyCoderState as ColonyCoderExecutorState,
-    _merge_dict,
 )
+from framework.schema.reducers import _merge_dict  # noqa: F401
