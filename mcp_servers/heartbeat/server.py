@@ -47,6 +47,36 @@ _managers: dict[str, HeartbeatManager] = {}   # name → manager
 _state_dir: Path = _PROJECT_ROOT / "data" / "heartbeat"
 _pid_file: Path = _state_dir / "mcp.pid"
 _autoload_paths: list[str] = []  # 启动时自动装载的 blueprint 路径
+_active_sessions: set = set()  # 活跃的 ServerSession 引用，用于推送告警
+
+
+def _capture_session():
+    """从当前 request context 捕获 ServerSession 并保存。"""
+    try:
+        ctx = mcp.get_context()
+        if ctx._request_context and ctx._request_context.session:
+            _active_sessions.add(ctx._request_context.session)
+    except Exception:
+        pass
+
+
+async def _broadcast_alert(alert: dict):
+    """
+    向所有已连接的 Agent 推送告警（通过 SSE LoggingMessageNotification）。
+    HeartbeatManager.on_failure 回调指向这里。
+    """
+    dead_sessions = set()
+    for session in _active_sessions:
+        try:
+            await session.send_log_message(
+                level="error",
+                data=alert,
+                logger="heartbeat",
+            )
+        except Exception:
+            dead_sessions.add(session)
+    # 清理已断开的 session
+    _active_sessions.difference_update(dead_sessions)
 
 # ---------------------------------------------------------------------------
 # Lifespan — 启动时自动装载 blueprint，关闭时停止所有 tasks
@@ -88,10 +118,12 @@ mcp = FastMCP(
 
 
 @mcp.tool()
-async def heartbeat_load_blueprint(blueprint_path: str) -> str:
+async def heartbeat_load_blueprint(blueprint_path: str, overrides: str = "") -> str:
     """
     装载一个 heartbeat blueprint 并启动其中定义的所有 tasks。
     blueprint_path: heartbeat.json 文件的路径（绝对路径或相对于项目根）。
+    overrides: JSON 字符串，按 task_id 覆盖参数。例如:
+      {"probe_claude": {"interval_hours": 2, "timeout": 60}}
     如果该 blueprint 已装载，返回提示。
     """
     path = Path(blueprint_path)
@@ -114,7 +146,19 @@ async def heartbeat_load_blueprint(blueprint_path: str) -> str:
     state_path = _state_dir / f"{name}_state.json"
     state_path.parent.mkdir(parents=True, exist_ok=True)
 
-    mgr = HeartbeatManager(path, state_path)
+    # 解析 entity 级覆写
+    task_overrides = {}
+    if overrides:
+        try:
+            task_overrides = json.loads(overrides) if isinstance(overrides, str) else overrides
+        except Exception as e:
+            logger.warning(f"Failed to parse overrides: {e}")
+
+    # 捕获当前调用者的 session（用于后续推送告警）
+    _capture_session()
+
+    mgr = HeartbeatManager(path, state_path, on_failure=_broadcast_alert,
+                           task_overrides=task_overrides)
     await mgr.start()
     _managers[name] = mgr
 
@@ -222,6 +266,30 @@ async def heartbeat_set_interval(task_id: str, hours: float) -> str:
     for mgr in _managers.values():
         known.extend(mgr._tasks.keys())
     return f"Unknown task: {task_id!r}. Known: {known}"
+
+
+@mcp.tool()
+def heartbeat_alerts() -> str:
+    """
+    拉取所有未确认的失败告警（拉取即清空）。
+    无告警时返回 "No alerts."。
+    """
+    all_alerts = []
+    for bp_name, mgr in _managers.items():
+        for alert in mgr.get_alerts():
+            alert["blueprint"] = bp_name
+            all_alerts.append(alert)
+
+    if not all_alerts:
+        return "No alerts."
+
+    lines = [f"⚠ {len(all_alerts)} alert(s):"]
+    for a in all_alerts:
+        lines.append(
+            f"  [{a['blueprint']}] {a['task_id']} FAILED "
+            f"(×{a['consecutive_failures']}) at {a['time']}: {a['error']}"
+        )
+    return "\n".join(lines)
 
 
 # ---------------------------------------------------------------------------

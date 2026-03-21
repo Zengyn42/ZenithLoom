@@ -17,12 +17,20 @@ Connector 注册：
   !help 据此过滤并生成对应 connector 的命令列表。
 """
 
+import asyncio
+import json
+import logging
 import os
 import re as _re
 from datetime import datetime, timezone
 from langchain_core.messages import HumanMessage
 
 _SEND_FILE_RE = _re.compile(r"\[SEND_FILE:\s*([^\]]+)\]")
+
+_logger = logging.getLogger(__name__)
+
+# 严重告警阈值：连续失败 N 次升级为 critical
+_CRITICAL_THRESHOLD = 3
 
 
 class BaseInterface:
@@ -40,6 +48,74 @@ class BaseInterface:
         """初始化 controller 和 session_mgr（所有子类应在 run() 开头调用）。"""
         self._controller = await self._loader.get_controller()
         self._session_mgr = self._controller.session_mgr
+
+    # ------------------------------------------------------------------
+    # Heartbeat 告警回调（SSE 推送驱动，非轮询）
+    # ------------------------------------------------------------------
+
+    def _register_alert_callback(self) -> None:
+        """
+        将 _handle_alert 注册到 HeartbeatMCPProxy 的 logging_callback。
+        MCP Server 失败时通过 SSE 主动推送 LoggingMessageNotification，
+        Agent 端 ClientSession 收到后直接触发此回调。零轮询。
+        """
+        proxy = self._loader.heartbeat_proxy
+        if proxy is None:
+            return
+        proxy.set_alert_callback(self._handle_alert)
+        _logger.info("[base_interface] heartbeat alert callback registered (SSE push)")
+
+    async def _handle_alert(self, alert: dict) -> None:
+        """
+        SSE 推送触发的告警处理入口。
+
+        分级响应：
+          - consecutive_failures < 3 → _on_heartbeat_alert()（直接通知用户）
+          - consecutive_failures >= 3 → _on_heartbeat_critical()（唤醒 Agent）
+        """
+        consecutive = alert.get("consecutive_failures", 1)
+        alert_text = (
+            f"[{alert.get('task_id', '?')}] {alert.get('type', '?')} FAILED "
+            f"(×{consecutive}) at {alert.get('time', '?')}: {alert.get('error', '?')}"
+        )
+
+        if consecutive >= _CRITICAL_THRESHOLD:
+            await self._on_heartbeat_critical(alert_text)
+        else:
+            await self._on_heartbeat_alert(alert_text)
+
+    async def _on_heartbeat_alert(self, alert_text: str) -> None:
+        """
+        普通告警：直接通知用户（不经过 LLM）。
+        子类覆写此方法实现具体输出。默认只 log。
+        """
+        _logger.warning(f"[heartbeat_alert] {alert_text}")
+
+    async def _on_heartbeat_critical(self, alert_text: str) -> None:
+        """
+        严重告警：唤醒 Agent，让 LLM 分析失败并给用户建议。
+        注入告警信息作为用户消息触发 Agent 响应。
+        子类覆写 _deliver_agent_alert() 控制输出渠道。
+        """
+        _logger.warning(f"[heartbeat_critical] escalating to Agent: {alert_text}")
+        prompt = (
+            f"[SYSTEM ALERT — Heartbeat 失败告警]\n\n{alert_text}\n\n"
+            "请分析上述 heartbeat 探针失败的情况，告知用户可能的原因和建议的修复措施。"
+        )
+        try:
+            response = await self.invoke_agent(prompt)
+            await self._deliver_agent_alert(alert_text, response)
+        except Exception as e:
+            _logger.error(f"[heartbeat_critical] agent invocation failed: {e}")
+            # 降级为普通通知
+            await self._on_heartbeat_alert(alert_text)
+
+    async def _deliver_agent_alert(self, alert_text: str, agent_response: str) -> None:
+        """
+        投递 Agent 生成的告警响应。子类覆写。
+        默认只 log。
+        """
+        _logger.warning(f"[heartbeat_agent_alert] {agent_response}")
 
     # ------------------------------------------------------------------
     # Session 上下文解析（Discord 子类按频道覆写）

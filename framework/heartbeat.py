@@ -44,13 +44,27 @@ class HeartbeatManager:
     从 heartbeat blueprint (heartbeat.json) 加载 tasks，
     为每个 task 启动独立 asyncio 后台循环，
     提供查询 / 控制 API 供 LLM 工具调用。
+
+    失败告警机制：
+      task 执行失败时，alert 自动入队（_alerts 列表）。
+      Agent 通过 get_alerts() 拉取未确认告警，拉取即清空。
     """
 
-    def __init__(self, blueprint_path: Path, state_path: Path):
+    def __init__(self, blueprint_path: Path, state_path: Path,
+                 on_failure=None, task_overrides: dict | None = None):
+        """
+        on_failure: async callable(alert_dict) — 失败时立即回调。
+                    由 MCP Server 设置为 send_log_message 推送。
+        task_overrides: {task_id: {key: value}} — entity 级参数覆写。
+                        支持 interval_hours, timeout 等任意字段。
+        """
         self._blueprint_path = Path(blueprint_path)
         self._state_path = Path(state_path)
         self._tasks: dict[str, TaskEntry] = {}
         self._loops: dict[str, asyncio.Task] = {}
+        self._alerts: list[dict] = []  # 未确认的失败告警（兜底，供 heartbeat_alerts 工具拉取）
+        self._on_failure = on_failure  # async callable(alert_dict) | None
+        self._task_overrides = task_overrides or {}  # entity 级参数覆写
 
     # ── 生命周期 ──────────────────────────────────────────────────────────
 
@@ -69,10 +83,15 @@ class HeartbeatManager:
 
         for task_def in blueprint.get("tasks", []):
             task_id = task_def["id"]
+
+            # merge entity 级覆写（优先级: entity overrides > blueprint 默认）
+            if task_id in self._task_overrides:
+                task_def = {**task_def, **self._task_overrides[task_id]}
+
             task_type = task_def.get("type", "PROBE")
             interval = task_def.get("interval_hours", _DEFAULT_INTERVAL)
 
-            # merge 用户运行时覆盖的 interval
+            # merge 用户运行时覆盖的 interval（优先级最高）
             if task_id in saved_state:
                 interval = saved_state[task_id].get("interval_hours", interval)
 
@@ -146,6 +165,16 @@ class HeartbeatManager:
             f"Last Run: {last}\n"
             f"Last Result: {entry.last_result or '(none)'}"
         )
+
+    def get_alerts(self) -> list[dict]:
+        """
+        拉取并清空未确认的失败告警。
+        返回 list[dict]，每项含 task_id, type, error, consecutive_failures, time。
+        空列表表示无告警。
+        """
+        alerts = list(self._alerts)
+        self._alerts.clear()
+        return alerts
 
     # ── 控制 API（给 LLM 工具调用）────────────────────────────────────────
 
@@ -237,6 +266,22 @@ class HeartbeatManager:
                         f"[heartbeat] task {task_id!r} failed "
                         f"(consecutive={consecutive_failures}): {e}"
                     )
+                    # 构建告警
+                    alert = {
+                        "task_id": task_id,
+                        "type": entry.type,
+                        "error": str(e),
+                        "consecutive_failures": consecutive_failures,
+                        "time": datetime.now().isoformat(timespec="seconds"),
+                    }
+                    # 告警入队（兜底，供 heartbeat_alerts 工具拉取）
+                    self._alerts.append(alert)
+                    # 主动推送回调（SSE push to Agent）
+                    if self._on_failure:
+                        try:
+                            await self._on_failure(alert)
+                        except Exception as cb_err:
+                            logger.warning(f"[heartbeat] on_failure callback error: {cb_err}")
                 finally:
                     entry.last_run = datetime.now()
                     self._save_state()
