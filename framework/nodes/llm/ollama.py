@@ -57,25 +57,99 @@ class OllamaNode(AgentNode):
         logger.info(f"[ollama] model={self._model} endpoint={self._endpoint} options={self._options}")
 
     async def __call__(self, state: dict) -> dict:
-        if self._tools:
+        if self._tools or self._has_dynamic_tools():
             return await self._call_with_tools(state)
         return await super().__call__(state)
 
-    async def _post_chat(self, messages: list, tools: list | None = None) -> dict:
-        """Non-streaming POST to /api/chat. Returns parsed response dict."""
+    @staticmethod
+    def _has_dynamic_tools() -> bool:
+        """检查 TOOL_REGISTRY 中是否存在动态注册的工具（如 heartbeat_*）。"""
+        from framework.nodes.llm.tools import TOOL_REGISTRY
+        return any(k.startswith("heartbeat_") for k in TOOL_REGISTRY)
+
+    async def _stream_chat(self, messages: list, tools: list | None = None) -> dict:
+        """
+        流式 POST to /api/chat，支持 thinking stream + tool_calls。
+
+        返回与非流式 _post_chat 相同格式的 response dict：
+          {"message": {"role": "assistant", "content": "...", "tool_calls": [...]}}
+
+        Ollama 流式 + tools 行为：
+          - thinking/content 逐 chunk 流式返回
+          - tool_calls 出现在 done=true 的最终 chunk 中
+          - 通过 stream callback 实时推送 thinking/text
+        """
+        from framework.nodes.llm.llm_node import get_stream_callback
+
+        opts = {k: v for k, v in self._options.items() if k != "think"}
         payload: dict = {
             "model": self._model,
             "messages": messages,
-            "stream": False,
+            "stream": True,
             "keep_alive": -1,
         }
         if tools:
             payload["tools"] = tools
+        if opts:
+            payload["options"] = opts
+        if "think" in self._options:
+            payload["think"] = self._options["think"]
+
+        stream_cb = get_stream_callback()
+        full_content = ""
+        tool_calls = []
 
         async with httpx.AsyncClient(timeout=self._timeout) as client:
-            resp = await client.post(f"{self._endpoint}/api/chat", json=payload)
-            resp.raise_for_status()
-            return resp.json()
+            async with client.stream(
+                "POST",
+                f"{self._endpoint}/api/chat",
+                json=payload,
+            ) as response:
+                if response.status_code != 200:
+                    body = await response.aread()
+                    try:
+                        error = json.loads(body).get("error", f"HTTP {response.status_code}")
+                    except Exception:
+                        error = f"HTTP {response.status_code}"
+                    raise httpx.HTTPStatusError(
+                        error, request=response.request, response=response
+                    )
+
+                async for line in response.aiter_lines():
+                    if not line:
+                        continue
+                    try:
+                        chunk = json.loads(line)
+                    except json.JSONDecodeError:
+                        continue
+
+                    msg_obj = chunk.get("message", {})
+
+                    # 流式 thinking
+                    thinking = msg_obj.get("thinking", "")
+                    if thinking and stream_cb is not None:
+                        stream_cb(thinking, True)
+
+                    # 流式 content
+                    token = msg_obj.get("content", "")
+                    if token:
+                        full_content += token
+                        if stream_cb is not None:
+                            stream_cb(token, False)
+
+                    # tool_calls（通常在 done=true 的 chunk 中）
+                    tc = msg_obj.get("tool_calls")
+                    if tc:
+                        tool_calls.extend(tc)
+
+                    if chunk.get("done"):
+                        break
+
+        # 组装为与非流式相同的返回格式
+        assembled_msg: dict = {"role": "assistant", "content": full_content}
+        if tool_calls:
+            assembled_msg["tool_calls"] = tool_calls
+        return {"message": assembled_msg}
 
     async def _call_with_tools(self, state: dict) -> dict:
         """Multi-turn Ollama tool-calling loop.
@@ -89,9 +163,17 @@ class OllamaNode(AgentNode):
         from framework.nodes.llm.tools import TOOL_REGISTRY, build_tool_schemas
 
         # plan 模式：从工具列表中剔除写入/执行类工具
-        effective_tools = self._tools
+        effective_tools = list(self._tools)
+
+        # 自动发现动态注册的工具（heartbeat_* 等），无需 blueprint 声明
+        dynamic = [k for k in TOOL_REGISTRY if k.startswith("heartbeat_") and k not in effective_tools]
+        if dynamic:
+            effective_tools.extend(dynamic)
+            if is_debug():
+                logger.debug(f"[ollama] dynamic tools discovered: {dynamic}")
+
         if self.is_plan_mode:
-            effective_tools = [t for t in self._tools if t not in self._WRITE_TOOLS]
+            effective_tools = [t for t in effective_tools if t not in self._WRITE_TOOLS]
             if is_debug():
                 logger.debug(f"[ollama] plan mode: tools {self._tools} → {effective_tools}")
         tool_schemas = build_tool_schemas(effective_tools)
@@ -99,8 +181,7 @@ class OllamaNode(AgentNode):
 
         # Load or init session messages
         ollama_sessions: dict = dict(state.get("ollama_sessions") or {})
-        node_sessions: dict = dict(state.get("node_sessions") or {})
-        session_uuid = node_sessions.get(session_key)
+        session_uuid = (state.get("node_sessions") or {}).get(session_key)
         messages: list = list(ollama_sessions.get(session_uuid, [])) if session_uuid else []
 
         # System prompt（plan 模式追加禁写指令）
@@ -151,7 +232,7 @@ class OllamaNode(AgentNode):
                         "abort_reason": str(exc),
                     }
 
-            response = await self._post_chat(messages, tools=tool_schemas)
+            response = await self._stream_chat(messages, tools=tool_schemas)
             last_msg = response.get("message", {})
             messages.append(last_msg)
 
@@ -187,11 +268,10 @@ class OllamaNode(AgentNode):
         # Persist session
         if not session_uuid:
             session_uuid = str(_uuid.uuid4())
-        node_sessions[session_key] = session_uuid
         ollama_sessions[session_uuid] = messages
 
         updates: dict = {
-            "node_sessions": node_sessions,
+            "node_sessions": {session_key: session_uuid},
             "ollama_sessions": ollama_sessions,
         }
         if terminal_result:
@@ -230,8 +310,6 @@ class OllamaNode(AgentNode):
         tools/cwd：忽略（Ollama 工具调用留待后续实现）。
         keep_alive=-1：模型常驻 RAM，防止 5 分钟后自动卸载。
         """
-        from framework.nodes.llm.llm_node import get_stream_callback
-
         if is_debug():
             logger.debug(f"[ollama] model={self._model} prompt_len={len(prompt)} history_len={len(history) if history else 0}")
 
@@ -259,73 +337,18 @@ class OllamaNode(AgentNode):
         # ── Token 安全阀 ──
         check_before_llm(messages=messages, node_id=self._node_id, limit=self._token_limit)
 
-        # "think" is a top-level Ollama /api/chat param, NOT inside "options"
-        opts = {k: v for k, v in self._options.items() if k != "think"}
-        payload = {
-            "model": self._model,
-            "messages": messages,
-            "stream": True,
-            "keep_alive": -1,
-        }
-        if opts:
-            payload["options"] = opts
-        if "think" in self._options:
-            payload["think"] = self._options["think"]
-
-        stream_cb = get_stream_callback()
-        full_text = ""
-
         try:
-            async with httpx.AsyncClient(timeout=self._timeout) as client:
-                async with client.stream(
-                    "POST",
-                    f"{self._endpoint}/api/chat",
-                    json=payload,
-                ) as response:
-                    if response.status_code != 200:
-                        body = await response.aread()
-                        try:
-                            error = json.loads(body).get("error", f"HTTP {response.status_code}")
-                        except Exception:
-                            error = f"HTTP {response.status_code}"
-                        msg = f"[Ollama 错误] {error}"
-                        logger.error(msg)
-                        return msg, session_id
-
-                    async for line in response.aiter_lines():
-                        if not line:
-                            continue
-                        try:
-                            chunk = json.loads(line)
-                        except json.JSONDecodeError:
-                            continue
-
-                        msg_obj = chunk.get("message", {})
-                        thinking = msg_obj.get("thinking", "")
-                        token = msg_obj.get("content", "")
-
-                        if thinking and stream_cb is not None:
-                            stream_cb(thinking, True)
-
-                        if token:
-                            full_text += token
-                            if stream_cb is not None:
-                                stream_cb(token, False)
-
-                        if chunk.get("done"):
-                            break
-
+            resp = await self._stream_chat(messages)
+            full_text = resp.get("message", {}).get("content", "")
         except httpx.ConnectError as e:
-            msg = (
+            full_text = (
                 f"[Ollama 连接失败] 无法连接到 {self._endpoint}，"
                 f"请确认 Ollama 正在运行。({e})"
             )
-            logger.error(msg)
-            return msg, session_id
-        except httpx.TimeoutException:
-            msg = f"[Ollama 超时] 模型 {self._model} 响应超时（{self._timeout}s）"
-            logger.error(msg)
-            return msg, session_id
+            logger.error(full_text)
+        except (httpx.TimeoutException, httpx.HTTPStatusError) as e:
+            full_text = f"[Ollama 错误] {e}"
+            logger.error(full_text)
 
         return full_text, session_id
 
