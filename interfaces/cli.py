@@ -104,12 +104,14 @@ class _CliInterface(BaseInterface):
                 )
             except (KeyboardInterrupt, EOFError):
                 print(f"\n\n{agent_name} 待命中，再见。")
+                await loader.stop_heartbeat()
                 break
 
             if not user_input:
                 continue
             if user_input.lower() in ("q", "quit", "exit"):
                 print(f"{agent_name} 待命中，再见。")
+                await loader.stop_heartbeat()
                 break
 
             if user_input.startswith("!"):
