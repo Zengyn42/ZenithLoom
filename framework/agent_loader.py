@@ -277,19 +277,31 @@ class EntityLoader:
             logger.debug(f"[agent_loader] {self.name!r}: no heartbeat configuration")
             return None
 
-        # 解析 heartbeat 配置
+        # 解析 heartbeat 配置 → 统一为 list[dict]
+        # 支持三种格式：
+        #   "path/to/blueprint.json"                       — 单 blueprint 字符串
+        #   {"blueprint": "path", "server_url": "..."}     — 单 blueprint 字典
+        #   ["path1.json", {"blueprint": "path2.json"}]    — 多 blueprint 数组
         if isinstance(hb_ref, str):
-            blueprint_path = hb_ref
-            server_url = "http://127.0.0.1:8100/sse"
+            entries = [{"blueprint": hb_ref}]
         elif isinstance(hb_ref, dict):
-            blueprint_path = hb_ref.get("blueprint", "")
-            server_url = hb_ref.get("server_url", "http://127.0.0.1:8100/sse")
+            entries = [hb_ref]
+        elif isinstance(hb_ref, list):
+            entries = []
+            for item in hb_ref:
+                if isinstance(item, str):
+                    entries.append({"blueprint": item})
+                elif isinstance(item, dict):
+                    entries.append(item)
         else:
             logger.warning(f"[agent_loader] invalid heartbeat config: {hb_ref}")
             return None
 
-        if not blueprint_path:
+        if not entries:
             return None
+
+        # 取第一个 entry 的 server_url（所有 blueprint 共享同一个 MCP Server）
+        server_url = entries[0].get("server_url", "http://127.0.0.1:8100/sse")
 
         # connect() 自动检测并启动 MCP Server
         proxy = HeartbeatMCPProxy(server_url)
@@ -302,9 +314,14 @@ class EntityLoader:
             )
             return None
 
-        # 装载 blueprint（proxy 内部追踪名称）
-        result = await proxy.load_blueprint(blueprint_path)
-        logger.info(f"[agent_loader] {self.name!r} heartbeat: {result}")
+        # 装载所有 blueprint（proxy 内部追踪名称，传递 entity 级覆写）
+        for entry in entries:
+            bp_path = entry.get("blueprint", "")
+            if not bp_path:
+                continue
+            overrides = entry.get("overrides")
+            result = await proxy.load_blueprint(bp_path, overrides=overrides)
+            logger.info(f"[agent_loader] {self.name!r} heartbeat: {result}")
 
         # 注册工具到框架 tool registry（供 Ollama 使用）
         from framework.nodes.llm.heartbeat_tools import make_heartbeat_tools

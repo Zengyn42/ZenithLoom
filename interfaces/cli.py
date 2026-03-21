@@ -82,12 +82,24 @@ class _CliInterface(BaseInterface):
             print("\n已取消")
             return ""
 
+    async def _on_heartbeat_alert(self, alert_text: str) -> None:
+        """CLI: 直接打印告警到终端。"""
+        print(f"\n\x1b[93m⚠ [Heartbeat Alert]\x1b[0m\n{alert_text}\n> ", end="", flush=True)
+
+    async def _deliver_agent_alert(self, alert_text: str, agent_response: str) -> None:
+        """CLI: 打印 Agent 分析的严重告警。"""
+        agent_name = self._loader.name
+        print(f"\n\x1b[91m🚨 [Heartbeat Critical — {agent_name} 分析]\x1b[0m")
+        print(agent_response)
+        print("> ", end="", flush=True)
+
     async def run(self):
         controller = self._controller
         session_mgr = self._session_mgr
         loader = self._loader
 
         await loader.start_heartbeat()
+        self._register_alert_callback()
 
         thread_id  = controller.active_thread_id
         name       = session_mgr.find_name_by_thread_id(thread_id) or "默认"

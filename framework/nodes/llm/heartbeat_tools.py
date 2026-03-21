@@ -83,10 +83,16 @@ class HeartbeatMCPProxy:
     MCP 客户端代理。连接 Heartbeat MCP Server，
     提供 call_tool() 方法供框架 tool loop 转发调用。
 
+    告警推送：
+      MCP Server 在 task 失败时通过 SSE 发送 LoggingMessageNotification。
+      ClientSession 的 logging_callback 收到后，调用 _alert_callback。
+      接口层通过 set_alert_callback() 注册具体处理函数。
+
     生命周期：
       1. connect() — 检测 server 是否运行，未运行则自动启动；然后建立 SSE 连接
-      2. load_blueprint(path) — 装载 blueprint 并记录名称
-      3. cleanup() — 卸载所有本 proxy 装载的 blueprint，断开连接
+      2. set_alert_callback(fn) — 注册告警回调（SSE push 驱动）
+      3. load_blueprint(path) — 装载 blueprint 并记录名称
+      4. cleanup() — 卸载所有本 proxy 装载的 blueprint，断开连接
     """
 
     def __init__(self, server_url: str = "http://127.0.0.1:8100/sse"):
@@ -97,6 +103,33 @@ class HeartbeatMCPProxy:
         self._cm = None  # context manager for sse_client
         self._session_cm = None  # context manager for ClientSession
         self._loaded_blueprints: list[str] = []  # 本 proxy 装载的 blueprint 名称
+        self._alert_callback = None  # async callable(alert_dict) | None
+
+    def set_alert_callback(self, callback) -> None:
+        """注册告警回调。callback 签名: async def(alert: dict) -> None。"""
+        self._alert_callback = callback
+
+    async def _on_log_message(self, params) -> None:
+        """
+        MCP LoggingMessageNotification 回调。
+        MCP Server 用 send_log_message(level="error", data=alert_dict) 推送告警。
+        """
+        if self._alert_callback is None:
+            return
+        # params.level: str, params.data: Any, params.logger: str | None
+        if params.level == "error" and isinstance(params.data, dict):
+            try:
+                await self._alert_callback(params.data)
+            except Exception as e:
+                logger.error(f"[heartbeat_proxy] alert callback error: {e}")
+
+    def _create_session(self, read_stream, write_stream) -> ClientSession:
+        """创建 ClientSession 并注入 logging_callback。"""
+        return ClientSession(
+            read_stream,
+            write_stream,
+            logging_callback=self._on_log_message,
+        )
 
     async def connect(self):
         """
@@ -111,7 +144,7 @@ class HeartbeatMCPProxy:
                 try:
                     self._cm = sse_client(self._server_url)
                     self._read_stream, self._write_stream = await self._cm.__aenter__()
-                    self._session_cm = ClientSession(self._read_stream, self._write_stream)
+                    self._session_cm = self._create_session(self._read_stream, self._write_stream)
                     self._session = await self._session_cm.__aenter__()
                     await self._session.initialize()
                     logger.info(f"[heartbeat_proxy] connected to {self._server_url} (attempt {attempt + 1})")
@@ -127,7 +160,7 @@ class HeartbeatMCPProxy:
         # Server 已在运行，直接连接
         self._cm = sse_client(self._server_url)
         self._read_stream, self._write_stream = await self._cm.__aenter__()
-        self._session_cm = ClientSession(self._read_stream, self._write_stream)
+        self._session_cm = self._create_session(self._read_stream, self._write_stream)
         self._session = await self._session_cm.__aenter__()
         await self._session.initialize()
         logger.info(f"[heartbeat_proxy] connected to {self._server_url}")
@@ -169,9 +202,13 @@ class HeartbeatMCPProxy:
             logger.error(f"[heartbeat_proxy] call_tool({name}) failed: {e}")
             return f"MCP call failed: {e}"
 
-    async def load_blueprint(self, blueprint_path: str) -> str:
+    async def load_blueprint(self, blueprint_path: str, overrides: dict | None = None) -> str:
         """装载 blueprint 并记录名称（供 cleanup 时卸载）。"""
-        result = await self.call_tool("heartbeat_load_blueprint", {"blueprint_path": blueprint_path})
+        args = {"blueprint_path": blueprint_path}
+        if overrides:
+            import json as _json
+            args["overrides"] = _json.dumps(overrides)
+        result = await self.call_tool("heartbeat_load_blueprint", args)
         # 从返回结果中提取 blueprint 名称（格式: "Loaded '<name>' — ..."）
         if result.startswith("Loaded '"):
             name = result.split("'")[1]
@@ -243,6 +280,11 @@ def make_heartbeat_tools(proxy: HeartbeatMCPProxy):
         result = await proxy.call_tool("heartbeat_set_interval", {"task_id": task_id, "hours": hours})
         return {"result": result}
 
+    async def heartbeat_alerts() -> dict:
+        """拉取未确认的失败告警（拉取即清空）。"""
+        result = await proxy.call_tool("heartbeat_alerts", {})
+        return {"result": result}
+
     registry = {
         "heartbeat_load_blueprint": heartbeat_load_blueprint,
         "heartbeat_unload_blueprint": heartbeat_unload_blueprint,
@@ -251,6 +293,7 @@ def make_heartbeat_tools(proxy: HeartbeatMCPProxy):
         "heartbeat_status": heartbeat_status,
         "heartbeat_run": heartbeat_run,
         "heartbeat_set_interval": heartbeat_set_interval,
+        "heartbeat_alerts": heartbeat_alerts,
     }
 
     schemas = {
@@ -364,6 +407,18 @@ def make_heartbeat_tools(proxy: HeartbeatMCPProxy):
                         },
                     },
                     "required": ["task_id", "hours"],
+                },
+            },
+        },
+        "heartbeat_alerts": {
+            "type": "function",
+            "function": {
+                "name": "heartbeat_alerts",
+                "description": "Fetch and clear unacknowledged failure alerts from heartbeat tasks",
+                "parameters": {
+                    "type": "object",
+                    "properties": {},
+                    "required": [],
                 },
             },
         },
