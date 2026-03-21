@@ -361,7 +361,7 @@ class LlmNode:
                 "routing_target": routing_target,
                 "routing_context": routing_context,
                 "consult_count": 0,  # 新路由请求，重置计数（防止上一轮子图的计数泄漏阻塞本轮路由）
-                "node_sessions": {self._session_key: new_session_id or session_id},
+                "node_sessions": {self._session_key: new_session_id},
             }
         else:
             result = {
@@ -374,7 +374,7 @@ class LlmNode:
                 # 注意：不在此处重置 retry_count！
                 # retry_count 由 DETERMINISTIC validator 节点管理，
                 # LLM 节点强制归零会破坏 validator 的重试逻辑（如 colony_coder 死循环 bug）。
-                "node_sessions": {self._session_key: new_session_id or session_id},
+                "node_sessions": {self._session_key: new_session_id},
             }
 
         return result
