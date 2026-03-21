@@ -63,7 +63,7 @@ class EntityLoader:
         self._engine = None
         self._controller = None
         self._session_mgr = None
-        self._heartbeat_manager = None  # HeartbeatManager | None
+        self._heartbeat_proxy = None  # HeartbeatMCPProxy | None
 
         if is_debug():
             logger.debug(
@@ -242,61 +242,76 @@ class EntityLoader:
         return await self._build_engine()
 
     @property
-    def heartbeat_manager(self):
-        """返回 HeartbeatManager 实例（可能为 None，需先调用 start_heartbeat）。"""
-        return self._heartbeat_manager
+    def heartbeat_proxy(self):
+        """返回 HeartbeatMCPProxy 实例（可能为 None，需先调用 start_heartbeat）。"""
+        return self._heartbeat_proxy
 
     async def start_heartbeat(self):
         """
-        启动 heartbeat 调度器。
+        连接 Heartbeat MCP Server 并装载 entity 指定的 blueprint。
 
-        1. 读 entity.json 的 "heartbeat" 字段 → blueprint 路径
-        2. 向后兼容：如果没有独立 blueprint，检查 agent.json["heartbeat"] 降级为单 task
-        3. 实例化 HeartbeatManager，await start()
-        4. 返回 manager（或 None）
+        1. 读 entity.json 的 "heartbeat" 字段 → blueprint 路径 + MCP server URL
+        2. 连接 MCP Server
+        3. 调用 heartbeat_load_blueprint 装载 blueprint
+        4. 将 MCP 工具注册到框架 tool registry（供 Ollama 等使用）
+        5. 返回 proxy（或 None）
         """
-        from framework.heartbeat import HeartbeatManager
+        from framework.nodes.llm.heartbeat_tools import HeartbeatMCPProxy
 
-        state_path = self._data_dir / "heartbeat_state.json"
-
-        # 优先：entity.json["heartbeat"] → 独立 blueprint 路径
         entity_path = self._data_dir / "entity.json"
-        blueprint_path = None
-        if entity_path.exists():
-            try:
-                entity = json.loads(entity_path.read_text(encoding="utf-8"))
-                hb_ref = entity.get("heartbeat")
-                if isinstance(hb_ref, str) and hb_ref:
-                    # 相对路径解析到 data_dir
-                    candidate = (self._data_dir / hb_ref).resolve()
-                    if candidate.exists():
-                        blueprint_path = candidate
-                    else:
-                        # 尝试相对于项目 CWD
-                        candidate = Path(hb_ref).resolve()
-                        if candidate.exists():
-                            blueprint_path = candidate
-                elif isinstance(hb_ref, dict) and hb_ref.get("blueprint"):
-                    bp = hb_ref["blueprint"]
-                    candidate = (self._data_dir / bp).resolve()
-                    if candidate.exists():
-                        blueprint_path = candidate
-                    else:
-                        candidate = Path(bp).resolve()
-                        if candidate.exists():
-                            blueprint_path = candidate
-            except Exception as e:
-                logger.warning(f"[agent_loader] failed to read entity.json heartbeat: {e}")
-
-        if blueprint_path is None:
-            logger.debug(f"[agent_loader] {self.name!r}: no heartbeat configuration found")
+        if not entity_path.exists():
+            logger.debug(f"[agent_loader] {self.name!r}: no entity.json, skip heartbeat")
             return None
 
-        logger.info(f"[agent_loader] starting heartbeat for {self.name!r}: {blueprint_path}")
-        mgr = HeartbeatManager(blueprint_path, state_path)
-        await mgr.start()
-        self._heartbeat_manager = mgr
-        return mgr
+        try:
+            entity = json.loads(entity_path.read_text(encoding="utf-8"))
+        except Exception as e:
+            logger.warning(f"[agent_loader] failed to read entity.json: {e}")
+            return None
+
+        hb_ref = entity.get("heartbeat")
+        if not hb_ref:
+            logger.debug(f"[agent_loader] {self.name!r}: no heartbeat configuration")
+            return None
+
+        # 解析 heartbeat 配置
+        if isinstance(hb_ref, str):
+            blueprint_path = hb_ref
+            server_url = "http://127.0.0.1:8100/sse"
+        elif isinstance(hb_ref, dict):
+            blueprint_path = hb_ref.get("blueprint", "")
+            server_url = hb_ref.get("server_url", "http://127.0.0.1:8100/sse")
+        else:
+            logger.warning(f"[agent_loader] invalid heartbeat config: {hb_ref}")
+            return None
+
+        if not blueprint_path:
+            return None
+
+        # 连接 MCP Server
+        proxy = HeartbeatMCPProxy(server_url)
+        try:
+            await proxy.connect()
+        except Exception as e:
+            logger.error(
+                f"[agent_loader] {self.name!r}: failed to connect Heartbeat MCP Server "
+                f"at {server_url}: {e}. Is the server running?"
+            )
+            return None
+
+        # 装载 blueprint
+        result = await proxy.call_tool("heartbeat_load_blueprint", {"blueprint_path": blueprint_path})
+        logger.info(f"[agent_loader] {self.name!r} heartbeat: {result}")
+
+        # 注册工具到框架 tool registry（供 Ollama 使用）
+        from framework.nodes.llm.heartbeat_tools import make_heartbeat_tools
+        from framework.nodes.llm.tools import TOOL_REGISTRY, TOOL_SCHEMAS
+        registry, schemas = make_heartbeat_tools(proxy)
+        TOOL_REGISTRY.update(registry)
+        TOOL_SCHEMAS.update(schemas)
+
+        self._heartbeat_proxy = proxy
+        return proxy
 
     def invalidate_engine(self) -> None:
         """使引擎和控制器缓存失效（compact/reset 后调用）。"""
