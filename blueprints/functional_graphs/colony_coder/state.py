@@ -11,12 +11,8 @@ from __future__ import annotations
 from typing import Annotated, Optional
 
 from framework.schema.base import BaseAgentState
+from framework.schema.reducers import _merge_dict
 from framework.registry import register_schema
-
-
-def _merge_dict(a: dict, b: dict) -> dict:
-    """Merge reducer: b's values overwrite a's for shared keys. Safe for parallel node writes."""
-    return {**a, **b}
 
 
 class ColonyCoderState(BaseAgentState):
@@ -24,6 +20,7 @@ class ColonyCoderState(BaseAgentState):
     tasks: list                        # list of {"id", "description", "dependencies"}
     execution_order: list              # ordered list of task ids
     refined_plan: str
+    qa_plan: str                       # QA test design from planner (user/design perspective)
     working_directory: str
     current_task_index: int
     current_task_id: str
@@ -35,7 +32,7 @@ class ColonyCoderState(BaseAgentState):
     # Cross-task issues accumulate across tasks
     cross_task_issues: list
 
-    # Validation output from soft_validate (DETERMINISTIC: runs run_tests.sh)
+    # Validation output from qa_router (DETERMINISTIC: parses QA verdict)
     validation_output: Optional[dict]
 
     # Routing (last-write-wins to survive concurrent updates from fan-in races)
