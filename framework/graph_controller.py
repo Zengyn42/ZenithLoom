@@ -99,24 +99,31 @@ class GraphController:
         finally:
             pop_graph_scope()
 
-        # 将最新 node_sessions 从 checkpoint 同步到 sessions.json（单向：checkpoint → sessions.json）
-        # sessions.json 中的 node_sessions 是冗余副本，LangGraph 不会读取它；
-        # 实际运行时各节点从 checkpoint 恢复的 state["node_sessions"] 获取 UUID。
-        ns = result.get("node_sessions") or {}
-        if ns:
-            name = self._session_mgr.find_name_by_thread_id(self._active_thread_id)
-            if name:
-                for node_key, uuid in ns.items():
-                    if uuid:
-                        try:
-                            self._session_mgr.update_node_session(name, node_key, uuid)
-                        except Exception as e:
-                            logger.warning(
-                                f"[controller] update_node_session failed: {e}"
-                            )
+        # 将最新 node_sessions 从 checkpoint 同步到 sessions.json
+        self.sync_node_sessions(result)
 
         messages = result.get("messages", [])
         return messages[-1].content if messages else ""
+
+    def sync_node_sessions(self, result: dict, thread_id: str | None = None) -> None:
+        """
+        Sync node_sessions from graph result into sessions.json.
+        Called after ainvoke() to keep sessions.json up to date.
+        thread_id defaults to self._active_thread_id.
+        """
+        ns = result.get("node_sessions") or {}
+        if not ns:
+            return
+        tid = thread_id or self._active_thread_id
+        name = self._session_mgr.find_name_by_thread_id(tid)
+        if not name:
+            return
+        for node_key, uuid in ns.items():
+            if uuid:
+                try:
+                    self._session_mgr.update_node_session(name, node_key, uuid)
+                except Exception as e:
+                    logger.warning(f"[controller] sync_node_sessions failed: {e}")
 
     async def new_session(self, name: str, workspace: str = "") -> None:
         """
@@ -276,18 +283,8 @@ class GraphController:
         finally:
             pop_graph_scope()
 
-        ns = result.get("node_sessions") or {}
-        if ns:
-            name = self._session_mgr.find_name_by_thread_id(thread_id)
-            if name:
-                for node_key, uuid in ns.items():
-                    if uuid:
-                        try:
-                            self._session_mgr.update_node_session(name, node_key, uuid)
-                        except Exception as e:
-                            logger.warning(
-                                f"[controller] update_node_session failed: {e}"
-                            )
+        # 将最新 node_sessions 从 checkpoint 同步到 sessions.json
+        self.sync_node_sessions(result, thread_id)
 
         messages = result.get("messages", [])
         return messages[-1].content if messages else ""

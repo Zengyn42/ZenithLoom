@@ -180,6 +180,9 @@ class BaseInterface:
             if self._streaming:
                 set_stream_callback(None)
 
+        # P3 fix: sync node_sessions to sessions.json (controller.run() does this; ainvoke() does not)
+        self._controller.sync_node_sessions(result_state, thread_id)
+
         return self._extract_response(result_state)
 
     def _on_stream_chunk(self, text: str, is_thinking: bool = False) -> None:
