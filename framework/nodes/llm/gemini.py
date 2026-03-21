@@ -373,8 +373,7 @@ class GeminiCodeAssistNode(_GeminiSessionMixin, AgentNode):
         routing_context = state.get("routing_context", "")
         msgs = state.get("messages", [])
 
-        ns = dict(state.get("node_sessions") or {})
-        session_id = ns.get(self._session_key, "")
+        session_id = (state.get("node_sessions") or {}).get(self._session_key, "")
         workspace = state.get("workspace", "")
 
         if routing_context:
@@ -412,7 +411,7 @@ class GeminiCodeAssistNode(_GeminiSessionMixin, AgentNode):
                 "messages": [AIMessage(content=f"⛔ {exc}")],
                 "routing_target": "",
                 "routing_context": "",
-                "node_sessions": ns,
+                "node_sessions": {self._session_key: session_id},
             }
 
         try:
@@ -431,10 +430,9 @@ class GeminiCodeAssistNode(_GeminiSessionMixin, AgentNode):
                 "routing_target": "",
                 "routing_context": "",
                 "consult_count": state.get("consult_count", 0) + 1,
-                "node_sessions": ns,
+                "node_sessions": {self._session_key: session_id},
             }
 
-        ns[self._session_key] = new_session_id or session_id
         logger.info(f"[{self._node_id}] done, consult_count→{state.get('consult_count', 0) + 1}")
         if is_debug():
             log_node_thinking(node_id=self._node_id, output_text=reply)
@@ -443,7 +441,7 @@ class GeminiCodeAssistNode(_GeminiSessionMixin, AgentNode):
             "routing_target": "",     # 清除路由信号，让 validate 正常路由
             "routing_context": "",
             "consult_count": state.get("consult_count", 0) + 1,
-            "node_sessions": ns,
+            "node_sessions": {self._session_key: new_session_id or session_id},
         }
 
 
@@ -742,8 +740,7 @@ class GeminiCLINode(AgentNode):
         routing_context = state.get("routing_context", "")
         msgs = state.get("messages", [])
 
-        ns = dict(state.get("node_sessions") or {})
-        session_id = ns.get(self._session_key, "")
+        session_id = (state.get("node_sessions") or {}).get(self._session_key, "")
         workspace = state.get("workspace", "")
 
         if routing_context:
@@ -779,7 +776,7 @@ class GeminiCLINode(AgentNode):
                 "messages": [AIMessage(content=f"⛔ {exc}")],
                 "routing_target": "",
                 "routing_context": "",
-                "node_sessions": ns,
+                "node_sessions": {self._session_key: session_id},
             }
 
         try:
@@ -798,10 +795,9 @@ class GeminiCLINode(AgentNode):
                 "routing_target": "",
                 "routing_context": "",
                 "consult_count": state.get("consult_count", 0) + 1,
-                "node_sessions": ns,
+                "node_sessions": {self._session_key: session_id},
             }
 
-        ns[self._session_key] = new_session_id or session_id
         logger.info(f"[{self._node_id}] done, consult_count→{state.get('consult_count', 0) + 1}")
         if is_debug():
             log_node_thinking(node_id=self._node_id, output_text=reply)
@@ -810,5 +806,5 @@ class GeminiCLINode(AgentNode):
             "routing_target": "",
             "routing_context": "",
             "consult_count": state.get("consult_count", 0) + 1,
-            "node_sessions": ns,
+            "node_sessions": {self._session_key: new_session_id or session_id},
         }

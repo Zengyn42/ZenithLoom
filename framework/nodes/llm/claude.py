@@ -202,7 +202,7 @@ class ClaudeSDKNode(AgentNode):
             return isinstance(e, ProcessError) or "exit code" in str(e).lower()
 
         result_text = ""
-        new_session_id = session_id
+        new_session_id = ""
         is_error = False
 
         try:
@@ -218,7 +218,12 @@ class ClaudeSDKNode(AgentNode):
                 logger.warning(
                     f"[claude] resume sid={session_id[:8]} 失败，以新 session 重试..."
                 )
-                result_text, new_session_id, is_error = await _run_once("", prompt)
+                try:
+                    result_text, new_session_id, is_error = await _run_once("", prompt)
+                except Exception:
+                    # Retry also failed; new_session_id stays ""
+                    # llm_node will write "" which clears the session → fresh start next turn
+                    raise
             else:
                 raise
 

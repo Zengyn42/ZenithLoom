@@ -121,7 +121,6 @@ async def test_agent_node_call():
         "last_stable_commit": "",
         "retry_count": 0,
         "rollback_reason": "",
-        "claude_session_id": "",
         "node_sessions": {},
         "knowledge_vault": "",
         "project_docs": "",

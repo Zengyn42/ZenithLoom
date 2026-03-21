@@ -499,6 +499,36 @@ async def _build_declarative(
                 blueprint_dir=blueprint_dir,
             )
             builder.add_node(node_id, _wrap_node_for_flow_log(node_id, inner))
+
+        elif node_type == "SUBGRAPH_NODE":
+            # Native LangGraph subgraph loaded from external agent_dir.
+            # Shares parent schema; child node sessions flow into
+            # parent's node_sessions via _merge_dict reducer.
+            raw_dir = node_def.get("agent_dir", "")
+            if not raw_dir:
+                raise ValueError(
+                    f"SUBGRAPH_NODE '{node_id}' must declare 'agent_dir'"
+                )
+            raw_path = Path(raw_dir)
+            if raw_path.is_absolute():
+                inner_dir = raw_path
+            else:
+                if not blueprint_dir:
+                    raise ValueError(
+                        f"SUBGRAPH_NODE '{node_id}': relative agent_dir "
+                        f"'{raw_dir}' requires a known blueprint_dir"
+                    )
+                inner_dir = Path(blueprint_dir) / raw_dir
+            inner_dir = inner_dir.resolve()
+            if not inner_dir.exists():
+                raise ValueError(
+                    f"SUBGRAPH_NODE '{node_id}': agent_dir not found: {inner_dir}"
+                )
+            inner_loader = EntityLoader(inner_dir)
+            inner_graph = await inner_loader.build_graph(checkpointer=None)
+            # Add as native subgraph (LangGraph handles state passthrough)
+            builder.add_node(node_id, inner_graph)
+
         else:
             factory = get_node_factory(node_type)
             # 仅主节点（ID 含 "main"）注入 system_prompt；其他节点忽略
@@ -766,7 +796,7 @@ def _mermaid_render(spec: dict, lines: list, indent: str, prefix: str) -> None:
         ntype = node_def.get("type", "")
         full  = _mermaid_id(prefix, raw)
 
-        if ntype in ("SUBGRAPH_REF", "AGENT_REF"):
+        if ntype in ("SUBGRAPH_REF", "AGENT_REF", "SUBGRAPH_NODE"):
             _mermaid_agent_ref(node_def, lines, indent, full, raw)
             continue
 
