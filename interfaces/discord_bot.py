@@ -97,6 +97,9 @@ _channel_active_session: dict[int, str] = {}
 # Per-channel：正在运行的 agent task（用于 !stop 取消当前请求）
 _channel_tasks: dict[int, asyncio.Task] = {}
 
+# 最后活跃的频道 ID（用于 heartbeat 告警推送）
+_last_active_channel_id: int | None = None
+
 
 # ==========================================
 # Per-channel session 辅助函数
@@ -241,6 +244,21 @@ async def _channel_consumer(channel_id: int) -> None:
             _channel_consumers.pop(channel_id, None)
             return
 
+        # ── 积压合并：如果队列里还有消息，全部取出合并为一条 ──────────
+        merged_inputs = [user_input]
+        extra_drained = 0
+        while not queue.empty():
+            try:
+                extra_input, extra_msg = queue.get_nowait()
+                merged_inputs.append(extra_input)
+                message = extra_msg  # 用最新的 message 对象做回复锚点
+                extra_drained += 1
+            except asyncio.QueueEmpty:
+                break
+        if extra_drained:
+            user_input = "\n\n".join(merged_inputs)
+            logger.info(f"[discord] 合并了 {extra_drained + 1} 条积压消息 (channel={channel_id})")
+
         iface = _DiscordInterface(_loader, channel_id=channel_id)
         task = asyncio.create_task(iface.invoke(user_input, message))
         _channel_tasks[channel_id] = task
@@ -261,6 +279,9 @@ async def _channel_consumer(channel_id: int) -> None:
         finally:
             _channel_tasks.pop(channel_id, None)
         queue.task_done()
+        # 补偿额外 drain 的 task_done 计数
+        for _ in range(extra_drained):
+            queue.task_done()
 
 
 # ==========================================
@@ -487,11 +508,16 @@ class _DiscordInterface(BaseInterface):
             except Exception:
                 pass
 
-        if not result:
+        # 用 streaming 累积的完整文本作为最终输出（覆盖 result），
+        # 避免 result 只含最后一轮 LLM 输出时丢失工具调用中间内容。
+        streamed_full = "".join(text_buf) if text_buf else ""
+        final_text = streamed_full or result or ""
+
+        if not final_text:
             await message.channel.send(f"（{agent_name} 没有输出，请重试）")
             return
 
-        clean_text, file_paths = _extract_attachments(result)
+        clean_text, file_paths = _extract_attachments(final_text)
         for chunk in (split_fence_aware(clean_text) if clean_text else []):
             await message.channel.send(chunk)
         for path in file_paths:
@@ -502,6 +528,71 @@ class _DiscordInterface(BaseInterface):
                 await message.channel.send(file=discord.File(path))
             except discord.HTTPException as e:
                 await message.channel.send(f"⚠️ 文件发送失败：{e}")
+
+
+# ==========================================
+# Heartbeat Alert Callback (Discord, SSE push)
+# ==========================================
+
+_CRITICAL_THRESHOLD = 3
+
+
+def _find_alert_channel():
+    """返回最后活跃的频道；如果没有活跃记录，回退到第一个可发送的频道。"""
+    if _last_active_channel_id is not None:
+        ch = bot.get_channel(_last_active_channel_id)
+        if ch is not None:
+            return ch
+    for guild in bot.guilds:
+        for ch in guild.text_channels:
+            if ch.permissions_for(guild.me).send_messages:
+                return ch
+    return None
+
+
+def _register_discord_alert_callback():
+    """将 Discord 告警处理注册到 HeartbeatMCPProxy 的 SSE 回调。"""
+    if _loader is None or _loader.heartbeat_proxy is None:
+        return
+    _loader.heartbeat_proxy.set_alert_callback(_discord_handle_alert)
+    logger.info("[Discord] heartbeat alert callback registered (SSE push)")
+
+
+async def _discord_handle_alert(alert: dict):
+    """
+    SSE 推送触发的 Discord 告警处理。
+    MCP Server 失败时通过 SSE LoggingMessageNotification 推送到这里。
+    """
+    channel = _find_alert_channel()
+    if channel is None:
+        logger.warning(f"[discord_alert] no channel to send alert: {alert}")
+        return
+
+    consecutive = alert.get("consecutive_failures", 1)
+    task_id = alert.get("task_id", "?")
+    error = alert.get("error", "?")
+    time_ = alert.get("time", "?")
+
+    alert_text = f"[{task_id}] FAILED (×{consecutive}) at {time_}: {error}"
+
+    if consecutive >= _CRITICAL_THRESHOLD and _controller:
+        # 严重告警 → 唤醒 Agent 分析
+        agent_name = _loader.name if _loader else "Agent"
+        prompt = (
+            f"[SYSTEM ALERT — Heartbeat 失败告警]\n\n{alert_text}\n\n"
+            "请分析上述 heartbeat 探针失败的情况，告知用户可能的原因和建议的修复措施。"
+        )
+        try:
+            iface = _DiscordInterface(_loader)
+            response = await iface.invoke_agent(prompt)
+            await channel.send(
+                f"🚨 **Heartbeat Critical — {agent_name} 分析**\n{response}"
+            )
+        except Exception as e:
+            logger.error(f"[discord_alert] agent invocation failed: {e}")
+            await channel.send(f"⚠ **Heartbeat Alert**\n```\n{alert_text}\n```")
+    else:
+        await channel.send(f"⚠ **Heartbeat Alert**\n```\n{alert_text}\n```")
 
 
 # ==========================================
@@ -552,6 +643,8 @@ async def on_ready():
         mgr = await _loader.start_heartbeat()
         if mgr is not None:
             logger.info(f"[Discord] heartbeat 已启动（agent={agent_name}）")
+            # 注册 SSE 推送告警回调
+            _register_discord_alert_callback()
 
 
 @bot.event
@@ -567,10 +660,12 @@ async def on_guild_channel_delete(channel):
 
 @bot.event
 async def on_message(message: discord.Message):
+    global _last_active_channel_id
     if message.author.bot:
         return
     if not _is_authorized(message.author):
         return
+    _last_active_channel_id = message.channel.id
     if message.content.startswith("!"):
         ctx = await bot.get_context(message)
         if ctx.command is not None:
