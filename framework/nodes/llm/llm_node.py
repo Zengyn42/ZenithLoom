@@ -249,12 +249,8 @@ class LlmNode:
             latest_input = _resume_prompt
 
         # node_sessions UUID 路由（session_key 允许多节点共享 session）
-        ns = dict(state.get("node_sessions") or {})
-        session_id = ns.get(self._session_key) or (
-            state.get("claude_session_id", "")
-            if self._node_id == "claude_main"
-            else ""
-        )
+        _ns = state.get("node_sessions") or {}
+        session_id = _ns.get(self._session_key, "")
 
         if is_debug():
             logger.debug(
@@ -315,11 +311,10 @@ class LlmNode:
             if is_debug() and _original_cb is not None:
                 _stream_cb.set(_original_cb)
             logger.error(str(exc))
-            ns[self._session_key] = session_id
             return {
                 "messages": [AIMessage(content=f"⛔ {exc}")],
                 "routing_target": "__end__",
-                "node_sessions": ns,
+                "node_sessions": {self._session_key: session_id},
                 "success": False,
                 "abort_reason": str(exc),
             }
@@ -359,8 +354,6 @@ class LlmNode:
         routing_target = signal.get("route", "") if signal else ""
         routing_context = signal.get("context", "") if signal else ""
 
-        ns[self._session_key] = new_session_id or session_id
-
         if routing_target:
             logger.info(f"[{self._node_id}] routing signal: target={routing_target!r}")
             result: dict = {
@@ -368,7 +361,7 @@ class LlmNode:
                 "routing_target": routing_target,
                 "routing_context": routing_context,
                 "consult_count": 0,  # 新路由请求，重置计数（防止上一轮子图的计数泄漏阻塞本轮路由）
-                "node_sessions": ns,
+                "node_sessions": {self._session_key: new_session_id or session_id},
             }
         else:
             result = {
@@ -381,7 +374,7 @@ class LlmNode:
                 # 注意：不在此处重置 retry_count！
                 # retry_count 由 DETERMINISTIC validator 节点管理，
                 # LLM 节点强制归零会破坏 validator 的重试逻辑（如 colony_coder 死循环 bug）。
-                "node_sessions": ns,
+                "node_sessions": {self._session_key: new_session_id or session_id},
             }
 
         # 向后兼容：claude_main 同步写 claude_session_id
