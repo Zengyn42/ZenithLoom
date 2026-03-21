@@ -250,11 +250,14 @@ class EntityLoader:
         """
         连接 Heartbeat MCP Server 并装载 entity 指定的 blueprint。
 
-        1. 读 entity.json 的 "heartbeat" 字段 → blueprint 路径 + MCP server URL
-        2. 连接 MCP Server
-        3. 调用 heartbeat_load_blueprint 装载 blueprint
-        4. 将 MCP 工具注册到框架 tool registry（供 Ollama 等使用）
-        5. 返回 proxy（或 None）
+        生命周期：
+          1. 读 entity.json 的 "heartbeat" 字段 → blueprint 路径 + MCP server URL
+          2. connect() 自动检测 server 是否运行，未运行则启动（detach）
+          3. load_blueprint() 装载 blueprint 并追踪名称
+          4. 将 MCP 工具注册到框架 tool registry（供 Ollama 等使用）
+          5. 返回 proxy（或 None）
+
+        关闭时调用 stop_heartbeat() 卸载本 agent 装载的 blueprint。
         """
         from framework.nodes.llm.heartbeat_tools import HeartbeatMCPProxy
 
@@ -288,19 +291,19 @@ class EntityLoader:
         if not blueprint_path:
             return None
 
-        # 连接 MCP Server
+        # connect() 自动检测并启动 MCP Server
         proxy = HeartbeatMCPProxy(server_url)
         try:
             await proxy.connect()
         except Exception as e:
             logger.error(
                 f"[agent_loader] {self.name!r}: failed to connect Heartbeat MCP Server "
-                f"at {server_url}: {e}. Is the server running?"
+                f"at {server_url}: {e}"
             )
             return None
 
-        # 装载 blueprint
-        result = await proxy.call_tool("heartbeat_load_blueprint", {"blueprint_path": blueprint_path})
+        # 装载 blueprint（proxy 内部追踪名称）
+        result = await proxy.load_blueprint(blueprint_path)
         logger.info(f"[agent_loader] {self.name!r} heartbeat: {result}")
 
         # 注册工具到框架 tool registry（供 Ollama 使用）
@@ -312,6 +315,18 @@ class EntityLoader:
 
         self._heartbeat_proxy = proxy
         return proxy
+
+    async def stop_heartbeat(self):
+        """
+        卸载本 agent 装载的所有 heartbeat blueprint 并断开连接。
+        MCP Server 在所有 blueprint 卸载后会自动退出。
+        """
+        if self._heartbeat_proxy is not None:
+            try:
+                await self._heartbeat_proxy.cleanup()
+            except Exception as e:
+                logger.warning(f"[agent_loader] {self.name!r} heartbeat cleanup failed: {e}")
+            self._heartbeat_proxy = None
 
     def invalidate_engine(self) -> None:
         """使引擎和控制器缓存失效（compact/reset 后调用）。"""

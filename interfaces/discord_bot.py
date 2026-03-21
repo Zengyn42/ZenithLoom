@@ -829,3 +829,14 @@ def run_discord(loader=None):
         return
     logger.info(f"[Discord] 启动中... agent={loader.name if loader else '?'} DEBUG={'ON' if is_debug() else 'OFF'}")
     bot.run(token, log_handler=None)
+
+    # bot.run() 返回说明 bot 已关闭 — 清理 heartbeat
+    if _loader:
+        import asyncio
+        try:
+            asyncio.run(_loader.stop_heartbeat())
+        except RuntimeError:
+            # 如果 event loop 已关闭，尝试创建新 loop
+            loop = asyncio.new_event_loop()
+            loop.run_until_complete(_loader.stop_heartbeat())
+            loop.close()

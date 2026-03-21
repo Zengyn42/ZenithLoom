@@ -6,23 +6,87 @@ Heartbeat MCP 客户端代理 — framework/nodes/llm/heartbeat_tools.py
 
 所有 agent 统一走 MCP Server，共享同一份 heartbeat 状态。
 
+生命周期管理：
+  - connect() 前先检查 MCP Server 是否运行，未运行则自动启动（detach）
+  - 追踪本 proxy 装载的 blueprint 名称
+  - cleanup() 卸载本 proxy 装载的所有 blueprint 并断开连接
+  - MCP Server 在所有 blueprint 卸载后自动退出
+
 注册模式：TOOL_REGISTRY + TOOL_SCHEMAS 字典，与 tools.py 一致。
 """
 
 import asyncio
 import json
 import logging
+import os
+import signal
+import subprocess
+import sys
+from pathlib import Path
 
 from mcp import ClientSession
 from mcp.client.sse import sse_client
 
 logger = logging.getLogger(__name__)
 
+# PID 文件路径（项目根/data/heartbeat/mcp.pid）
+_PROJECT_ROOT = Path(__file__).resolve().parent.parent.parent.parent
+_PID_FILE = _PROJECT_ROOT / "data" / "heartbeat" / "mcp.pid"
+
+
+def _is_server_running() -> bool:
+    """检查 Heartbeat MCP Server 进程是否存活（基于 PID 文件）。"""
+    if not _PID_FILE.exists():
+        return False
+    try:
+        pid = int(_PID_FILE.read_text().strip())
+        os.kill(pid, 0)  # signal 0 = 存活检测，不发送实际信号
+        return True
+    except (ValueError, ProcessLookupError, PermissionError, OSError):
+        # PID 文件残留但进程已死 → 清理
+        _PID_FILE.unlink(missing_ok=True)
+        return False
+
+
+def _launch_server(server_url: str) -> bool:
+    """
+    启动 Heartbeat MCP Server（detach 模式，SSE transport）。
+    从 server_url 解析 host/port。
+    返回 True 表示启动成功。
+    """
+    from urllib.parse import urlparse
+    parsed = urlparse(server_url)
+    host = parsed.hostname or "127.0.0.1"
+    port = parsed.port or 8100
+
+    _PID_FILE.parent.mkdir(parents=True, exist_ok=True)
+
+    proc = subprocess.Popen(
+        [
+            sys.executable, "-m", "mcp_servers.heartbeat",
+            "--transport", "sse",
+            "--host", host,
+            "--port", str(port),
+        ],
+        cwd=str(_PROJECT_ROOT),
+        stdout=subprocess.DEVNULL,
+        stderr=subprocess.DEVNULL,
+        start_new_session=True,  # detach from parent process group
+    )
+    _PID_FILE.write_text(str(proc.pid))
+    logger.info(f"[heartbeat_proxy] launched MCP Server pid={proc.pid} at {server_url}")
+    return True
+
 
 class HeartbeatMCPProxy:
     """
     MCP 客户端代理。连接 Heartbeat MCP Server，
     提供 call_tool() 方法供框架 tool loop 转发调用。
+
+    生命周期：
+      1. connect() — 检测 server 是否运行，未运行则自动启动；然后建立 SSE 连接
+      2. load_blueprint(path) — 装载 blueprint 并记录名称
+      3. cleanup() — 卸载所有本 proxy 装载的 blueprint，断开连接
     """
 
     def __init__(self, server_url: str = "http://127.0.0.1:8100/sse"):
@@ -32,9 +96,35 @@ class HeartbeatMCPProxy:
         self._write_stream = None
         self._cm = None  # context manager for sse_client
         self._session_cm = None  # context manager for ClientSession
+        self._loaded_blueprints: list[str] = []  # 本 proxy 装载的 blueprint 名称
 
     async def connect(self):
-        """连接到 MCP Server。"""
+        """
+        连接到 MCP Server。
+        如果 Server 未运行，自动启动（detach）并等待就绪。
+        """
+        if not _is_server_running():
+            _launch_server(self._server_url)
+            # 等待 server 就绪（最多 10 秒，每 0.5 秒重试）
+            for attempt in range(20):
+                await asyncio.sleep(0.5)
+                try:
+                    self._cm = sse_client(self._server_url)
+                    self._read_stream, self._write_stream = await self._cm.__aenter__()
+                    self._session_cm = ClientSession(self._read_stream, self._write_stream)
+                    self._session = await self._session_cm.__aenter__()
+                    await self._session.initialize()
+                    logger.info(f"[heartbeat_proxy] connected to {self._server_url} (attempt {attempt + 1})")
+                    return
+                except Exception:
+                    # 连接失败，清理半成品
+                    await self._cleanup_partial()
+                    continue
+            raise ConnectionError(
+                f"Heartbeat MCP Server failed to start within 10s at {self._server_url}"
+            )
+
+        # Server 已在运行，直接连接
         self._cm = sse_client(self._server_url)
         self._read_stream, self._write_stream = await self._cm.__aenter__()
         self._session_cm = ClientSession(self._read_stream, self._write_stream)
@@ -42,19 +132,25 @@ class HeartbeatMCPProxy:
         await self._session.initialize()
         logger.info(f"[heartbeat_proxy] connected to {self._server_url}")
 
-    async def disconnect(self):
-        """断开连接。"""
+    async def _cleanup_partial(self):
+        """清理连接失败的半成品资源。"""
         if self._session_cm:
             try:
                 await self._session_cm.__aexit__(None, None, None)
             except Exception:
                 pass
+            self._session_cm = None
         if self._cm:
             try:
                 await self._cm.__aexit__(None, None, None)
             except Exception:
                 pass
+            self._cm = None
         self._session = None
+
+    async def disconnect(self):
+        """断开连接。"""
+        await self._cleanup_partial()
         logger.info("[heartbeat_proxy] disconnected")
 
     async def call_tool(self, name: str, arguments: dict) -> str:
@@ -73,6 +169,35 @@ class HeartbeatMCPProxy:
             logger.error(f"[heartbeat_proxy] call_tool({name}) failed: {e}")
             return f"MCP call failed: {e}"
 
+    async def load_blueprint(self, blueprint_path: str) -> str:
+        """装载 blueprint 并记录名称（供 cleanup 时卸载）。"""
+        result = await self.call_tool("heartbeat_load_blueprint", {"blueprint_path": blueprint_path})
+        # 从返回结果中提取 blueprint 名称（格式: "Loaded '<name>' — ..."）
+        if result.startswith("Loaded '"):
+            name = result.split("'")[1]
+            if name not in self._loaded_blueprints:
+                self._loaded_blueprints.append(name)
+        logger.info(f"[heartbeat_proxy] load_blueprint: {result}")
+        return result
+
+    async def cleanup(self):
+        """
+        卸载本 proxy 装载的所有 blueprint，然后断开连接。
+        MCP Server 会在所有 blueprint 都被卸载后自动退出。
+        """
+        if self._session is None:
+            return
+
+        for name in list(self._loaded_blueprints):
+            try:
+                result = await self.call_tool("heartbeat_unload_blueprint", {"name": name})
+                logger.info(f"[heartbeat_proxy] cleanup unload '{name}': {result}")
+            except Exception as e:
+                logger.warning(f"[heartbeat_proxy] cleanup unload '{name}' failed: {e}")
+        self._loaded_blueprints.clear()
+
+        await self.disconnect()
+
 
 def make_heartbeat_tools(proxy: HeartbeatMCPProxy):
     """
@@ -85,7 +210,7 @@ def make_heartbeat_tools(proxy: HeartbeatMCPProxy):
 
     async def heartbeat_load_blueprint(blueprint_path: str) -> dict:
         """装载一个 heartbeat blueprint。"""
-        result = await proxy.call_tool("heartbeat_load_blueprint", {"blueprint_path": blueprint_path})
+        result = await proxy.load_blueprint(blueprint_path)
         return {"result": result}
 
     async def heartbeat_unload_blueprint(name: str) -> dict:

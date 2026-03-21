@@ -18,6 +18,8 @@ import argparse
 import asyncio
 import json
 import logging
+import os
+import signal
 import sys
 from contextlib import asynccontextmanager
 from pathlib import Path
@@ -43,6 +45,7 @@ logger = logging.getLogger("heartbeat_mcp")
 
 _managers: dict[str, HeartbeatManager] = {}   # name → manager
 _state_dir: Path = _PROJECT_ROOT / "data" / "heartbeat"
+_pid_file: Path = _state_dir / "mcp.pid"
 _autoload_paths: list[str] = []  # 启动时自动装载的 blueprint 路径
 
 # ---------------------------------------------------------------------------
@@ -51,16 +54,23 @@ _autoload_paths: list[str] = []  # 启动时自动装载的 blueprint 路径
 
 @asynccontextmanager
 async def lifespan(server):
-    # startup: autoload blueprints
+    # startup: write PID file
+    _pid_file.parent.mkdir(parents=True, exist_ok=True)
+    _pid_file.write_text(str(os.getpid()))
+    logger.info(f"PID file written: {_pid_file} (pid={os.getpid()})")
+
+    # autoload blueprints
     for bp_path in _autoload_paths:
         result = await heartbeat_load_blueprint(bp_path)
         logger.info(f"Autoload: {result}")
     yield
-    # shutdown: stop all managers
+    # shutdown: stop all managers, remove PID file
     for name, mgr in list(_managers.items()):
         await mgr.stop()
         logger.info(f"Shutdown: stopped '{name}'")
     _managers.clear()
+    _pid_file.unlink(missing_ok=True)
+    logger.info("PID file removed, server shutting down")
 
 # ---------------------------------------------------------------------------
 # MCP Server 定义
@@ -118,6 +128,7 @@ async def heartbeat_unload_blueprint(name: str) -> str:
     """
     卸载一个已装载的 heartbeat blueprint，停止其所有 tasks。
     name: blueprint 名称（装载时从 heartbeat.json 的 name 字段读取）。
+    如果卸载后无任何 blueprint，MCP Server 将自动退出。
     """
     mgr = _managers.get(name)
     if mgr is None:
@@ -126,7 +137,23 @@ async def heartbeat_unload_blueprint(name: str) -> str:
     await mgr.stop()
     del _managers[name]
     logger.info(f"Unloaded blueprint '{name}'")
-    return f"Unloaded '{name}' — all tasks stopped."
+
+    msg = f"Unloaded '{name}' — all tasks stopped."
+
+    # 无任何 blueprint → 延迟退出（让响应先发出去）
+    if not _managers:
+        logger.info("No blueprints remaining — scheduling server shutdown")
+        msg += " Server will shut down (no blueprints remaining)."
+
+        async def _delayed_shutdown():
+            await asyncio.sleep(1)  # 让 MCP 响应有时间发回客户端
+            _pid_file.unlink(missing_ok=True)
+            logger.info("Server exiting (empty)")
+            os.kill(os.getpid(), signal.SIGTERM)
+
+        asyncio.create_task(_delayed_shutdown())
+
+    return msg
 
 
 @mcp.tool()
