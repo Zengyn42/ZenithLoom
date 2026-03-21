@@ -10,6 +10,8 @@ from typing import Annotated, TypedDict
 
 from langchain_core.messages import BaseMessage
 
+from framework.schema.reducers import _merge_dict
+
 
 def _keep_last_2(existing: list, new) -> list:
     """只保留最近 2 条消息。对话历史交给 SDK session 管理。"""
@@ -28,8 +30,7 @@ class BaseAgentState(TypedDict):
     last_stable_commit: str  # git 快照 hash
     retry_count: int      # 当轮回退重试次数
     rollback_reason: str  # 触发回退的原因（非空 = 需要回退）
-    claude_session_id: str  # SDK resume 用的 session UUID（向后兼容，镜像 node_sessions["claude_main"]）
-    node_sessions: dict     # {"claude_main": uuid, ...} — 所有节点 session UUID
+    node_sessions: Annotated[dict, _merge_dict]  # {"claude_main": uuid, ...} — 所有节点 session UUID; merge reducer prevents parallel node writes from clobbering each other
     knowledge_vault: str    # 知识库根路径（Obsidian vault 或任意 .md 目录）；agent 用 Read/Glob/Grep 按需读取
     project_docs: str       # 当前子项目 /docs/ 路径（技术文档，随 repo 走）
     debate_conclusion: str  # 辩论子图最终结论（最后发言节点的输出，由 AgentRefNode 写入）
