@@ -68,7 +68,6 @@ class BaseAgentState(TypedDict):
     last_stable_commit: str                 # git snapshot hash
     retry_count:        int                 # rollback 重试计数
     rollback_reason:    str                 # 非空 = 触发 rollback
-    claude_session_id:  str                 # Claude SDK Session UUID（向后兼容）
     node_sessions:      dict                # {"claude_main": uuid, ...}
     knowledge_vault:    str                 # Obsidian vault 根路径
     project_docs:       str                 # 子项目 /docs/ 路径

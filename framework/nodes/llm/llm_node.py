@@ -377,9 +377,6 @@ class LlmNode:
                 "node_sessions": {self._session_key: new_session_id or session_id},
             }
 
-        # 向后兼容：claude_main 同步写 claude_session_id
-        if self._node_id == "claude_main":
-            result["claude_session_id"] = new_session_id or session_id
         return result
 
     # ── 框架层内部方法 ──────────────────────────────────────────────────────────
