@@ -1,8 +1,8 @@
 {
-  "name": "obsidian_manager",
+  "name": "knowledge_curator",
   "routing_hint": "当需要读写、搜索、管理 Obsidian Vault 中的笔记时使用。包括创建/修改笔记、搜索内容、查询链接关系、管理标签和 frontmatter 等操作。",
   "llm": "gemini",
-  "db_path": "obsidian_manager.db",
+  "db_path": "knowledge_curator.db",
   "sessions_file": "sessions.json",
   "max_retries": 0,
   "persona_files": [],
@@ -11,8 +11,8 @@
       {
         "id": "gemini_obsidian",
         "type": "GEMINI_CLI",
-        "model": "gemini-2.5-flash",
-        "session_key": "obsidian",
+        "model": "gemini-2.5-pro",
+        "session_key": "knowledge_curator",
         "tools": [],
         "permission_mode": "auto_edit",
         "timeout": 120,
