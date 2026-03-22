@@ -4,21 +4,60 @@
   "graph": {
     "nodes": [
       {
+        "id": "gemini_main",
+        "type": "GEMINI_CLI",
+        "model": "gemini-2.5-pro",
+        "session_key": "jei_main",
+        "enable_routing": true,
+        "permission_mode": "plan",
+        "timeout": 120,
+        "system_prompt": "你是知识策展官，负责管理和展现知识资产。\n\n## 可用执行助手\n\n1. **knowledge_shelf**：搜索、读取、创建、修改 Obsidian Vault 中的笔记。\n   路由信号：{\"route\": \"knowledge_shelf\", \"context\": \"具体任务描述\"}\n\n## 路由规则\n\n- 需要操作 Vault 笔记时，输出路由信号（JSON 独占第一行，之后不要写任何内容）\n- 无需路由时直接回复用户，不要输出 JSON\n- 收到 [子图结论] 后，基于结论整理回复给用户\n- 若需多步操作（如先搜索再修改），每次只路由一步，等结论回来再决定下一步\n\n## 路由信号格式（严格遵守）\n\n第一行且仅第一行输出 JSON，不加任何前缀：\n{\"route\": \"knowledge_shelf\", \"context\": \"你的具体指令\"}\n\n## 示例\n\n用户：帮我搜一下关于分布式系统的笔记\n你的输出（仅此一行）：\n{\"route\": \"knowledge_shelf\", \"context\": \"搜索 Vault 中与'分布式系统'相关的笔记，返回文件路径和摘要\"}"
+      },
+      {
+        "id": "validate",
+        "type": "VALIDATE"
+      },
+      {
         "id": "knowledge_shelf",
-        "type": "SUBGRAPH_NODE",
-        "agent_dir": "../../functional_graphs/knowledge_shelf"
+        "type": "SUBGRAPH_REF",
+        "agent_dir": "blueprints/functional_graphs/knowledge_shelf",
+        "max_retry": 2,
+        "state_in": {
+          "task": "routing_context",
+          "knowledge_vault": "knowledge_vault"
+        },
+        "state_out": {
+          "knowledge_result": "last_message"
+        }
       }
     ],
     "edges": [
       {
-        "id": "e_start",
+        "id": "e_start_2_gemini",
         "from": "__start__",
+        "to": "gemini_main"
+      },
+      {
+        "id": "e_gemini_2_validate",
+        "from": "gemini_main",
+        "to": "validate"
+      },
+      {
+        "id": "e_validate_2_shelf",
+        "type": "routing_to",
+        "from": "validate",
         "to": "knowledge_shelf"
       },
       {
-        "id": "e_end",
-        "from": "knowledge_shelf",
+        "id": "e_validate_2_end",
+        "type": "no_routing",
+        "from": "validate",
         "to": "__end__"
+      },
+      {
+        "id": "e_shelf_2_gemini",
+        "from": "knowledge_shelf",
+        "to": "gemini_main"
       }
     ]
   },

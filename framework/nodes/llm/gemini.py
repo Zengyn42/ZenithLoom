@@ -71,10 +71,13 @@ _JITTER_SCALE_LEN = 2000
 _JITTER_NOISE = 2.0
 
 
-def _jitter_secs(text_len: int) -> float:
+def _jitter_secs(text_len: int, multiplier: float = 1.0) -> float:
+    """计算 jitter 延迟秒数。multiplier=0 则返回 0（无延迟）。"""
+    if multiplier <= 0:
+        return 0.0
     t = min(max(text_len, 1) / _JITTER_SCALE_LEN, 1.0)
     base = _JITTER_MIN_S + t * (_JITTER_MAX_S - _JITTER_MIN_S)
-    return max(0.5, base + random.uniform(-_JITTER_NOISE, _JITTER_NOISE))
+    return max(0.5, (base + random.uniform(-_JITTER_NOISE, _JITTER_NOISE)) * multiplier)
 
 
 class GeminiQuotaError(RuntimeError):
@@ -97,8 +100,9 @@ class _CodeAssistClient:
     - 每次 generateContent 前强制 jitter sleep
     """
 
-    def __init__(self, model: str):
+    def __init__(self, model: str, jitter_multiplier: float = 1.0):
         self._model = model
+        self._jitter_multiplier = jitter_multiplier
         self._access_token: str = ""
         self._token_expiry: float = 0.0
         self._project_id: str = ""
@@ -181,11 +185,16 @@ class _CodeAssistClient:
         return self._project_id
 
     def _chat_sync(self, user_text: str, system: str = "") -> str:
-        delay = _jitter_secs(len(user_text))
-        logger.info(f"[gemini.client] model={self._model} jitter={delay:.1f}s (prompt_len={len(user_text)})")
-        if is_debug():
-            logger.debug(f"[gemini.client] prompt_preview={user_text[:100]!r}")
-        time.sleep(delay)
+        delay = _jitter_secs(len(user_text), self._jitter_multiplier)
+        if delay > 0:
+            logger.info(f"[gemini.client] model={self._model} jitter={delay:.1f}s (prompt_len={len(user_text)} mult={self._jitter_multiplier})")
+            if is_debug():
+                logger.debug(f"[gemini.client] prompt_preview={user_text[:100]!r}")
+            time.sleep(delay)
+        else:
+            logger.info(f"[gemini.client] model={self._model} jitter=OFF (prompt_len={len(user_text)})")
+            if is_debug():
+                logger.debug(f"[gemini.client] prompt_preview={user_text[:100]!r}")
 
         token = self._ensure_token()
         project_id = self._get_project_id(token)
@@ -259,13 +268,14 @@ class _GeminiSessionMixin:
             or node_config.get("gemini_model")
             or "gemini-2.5-pro"
         )
+        self._jitter_multiplier: float = float(node_config.get("jitter_multiplier", 1.0))
         self._clients: dict[str, _CodeAssistClient] = {}
         self._records: dict[str, ConversationRecord] = {}
-        logger.info(f"[gemini] default_model={self._default_model}")
+        logger.info(f"[gemini] default_model={self._default_model} jitter_mult={self._jitter_multiplier}")
 
     def _get_client(self, session_id: str) -> _CodeAssistClient:
         if session_id not in self._clients:
-            self._clients[session_id] = _CodeAssistClient(self._default_model)
+            self._clients[session_id] = _CodeAssistClient(self._default_model, self._jitter_multiplier)
         return self._clients[session_id]
 
     def _load_or_create(
@@ -333,10 +343,12 @@ class GeminiCodeAssistNode(_GeminiSessionMixin, AgentNode):
       - 读取 state["routing_context"] 作为提问
       - 清除 routing_target / routing_context
       - 增加 consult_count
+      - enable_routing=true 时，解析输出中的路由信号并写入 state
     """
 
     def __init__(self, config: AgentConfig, node_config: dict):
         AgentNode.__init__(self, config, node_config)
+        self._enable_routing: bool = bool(node_config.get("enable_routing", False))
         self._init_session_state(node_config)
         # node_config 中的 system_prompt 优先；否则使用框架默认
         base_prompt: str = node_config.get("system_prompt") or _GEMINI_SYSTEM
@@ -433,14 +445,32 @@ class GeminiCodeAssistNode(_GeminiSessionMixin, AgentNode):
                 "node_sessions": {self._session_key: session_id},
             }
 
-        logger.info(f"[{self._node_id}] done, consult_count→{state.get('consult_count', 0) + 1}")
+        logger.info(f"[{self._node_id}] done")
         if is_debug():
             log_node_thinking(node_id=self._node_id, output_text=reply)
+
+        # ── 路由信号检测（enable_routing=true 时）──
+        if self._enable_routing:
+            signal = self._signal_parser.parse(reply)
+            routing_target = signal.get("route", "") if signal else ""
+            routing_context = signal.get("context", "") if signal else ""
+            if routing_target:
+                logger.info(f"[{self._node_id}] routing signal: target={routing_target!r}")
+                return {
+                    "messages": [AIMessage(content=reply)],
+                    "routing_target": routing_target,
+                    "routing_context": routing_context,
+                    "consult_count": 0,
+                    "node_sessions": {self._session_key: new_session_id or session_id},
+                }
+
         return {
             "messages": [AIMessage(content=reply)],
-            "routing_target": "",     # 清除路由信号，让 validate 正常路由
+            "routing_target": "",
             "routing_context": "",
-            "consult_count": state.get("consult_count", 0) + 1,
+            "consult_count": 0,
+            "subgraph_call_counts": {},
+            "rollback_reason": "",
             "node_sessions": {self._session_key: new_session_id or session_id},
         }
 
@@ -513,11 +543,12 @@ class GeminiCLINode(AgentNode):
             or node_config.get("gemini_model")
             or "gemini-2.5-pro"
         )
+        self._enable_routing: bool = bool(node_config.get("enable_routing", False))
         base_prompt: str = node_config.get("system_prompt") or _GEMINI_SYSTEM
         skill_content = self._load_skill_content()
         self._system_prompt = f"{base_prompt}\n\n{skill_content}" if skill_content else base_prompt
         self._timeout: int = node_config.get("timeout") or self._DEFAULT_TIMEOUT
-        logger.info(f"[gemini-cli] node={self._node_id} model={self._model} timeout={self._timeout}s")
+        logger.info(f"[gemini-cli] node={self._node_id} model={self._model} timeout={self._timeout}s enable_routing={self._enable_routing}")
 
     def _build_fallback_chain(self) -> list[str]:
         """从配置的主模型开始，返回降级链（跳过已知不可用的模型）。"""
@@ -798,13 +829,31 @@ class GeminiCLINode(AgentNode):
                 "node_sessions": {self._session_key: session_id},
             }
 
-        logger.info(f"[{self._node_id}] done, consult_count→{state.get('consult_count', 0) + 1}")
+        logger.info(f"[{self._node_id}] done")
         if is_debug():
             log_node_thinking(node_id=self._node_id, output_text=reply)
+
+        # ── 路由信号检测（enable_routing=true 时）──
+        if self._enable_routing:
+            signal = self._signal_parser.parse(reply)
+            routing_target = signal.get("route", "") if signal else ""
+            routing_context = signal.get("context", "") if signal else ""
+            if routing_target:
+                logger.info(f"[{self._node_id}] routing signal: target={routing_target!r}")
+                return {
+                    "messages": [AIMessage(content=reply)],
+                    "routing_target": routing_target,
+                    "routing_context": routing_context,
+                    "consult_count": 0,
+                    "node_sessions": {self._session_key: new_session_id or session_id},
+                }
+
         return {
             "messages": [AIMessage(content=reply)],
             "routing_target": "",
             "routing_context": "",
-            "consult_count": state.get("consult_count", 0) + 1,
+            "consult_count": 0,
+            "subgraph_call_counts": {},
+            "rollback_reason": "",
             "node_sessions": {self._session_key: new_session_id or session_id},
         }
