@@ -1,0 +1,30 @@
+{
+  "llm": "gemini",
+  "channel_history_limit": 0,
+  "graph": {
+    "nodes": [
+      {
+        "id": "obsidian_manager",
+        "type": "SUBGRAPH_NODE",
+        "agent_dir": "blueprints/functional_graphs/obsidian_manager"
+      }
+    ],
+    "edges": [
+      {
+        "id": "e_start",
+        "from": "__start__",
+        "to": "obsidian_manager"
+      },
+      {
+        "id": "e_end",
+        "from": "obsidian_manager",
+        "to": "__end__"
+      }
+    ]
+  },
+  "max_retries": 2,
+  "persona_files": [
+    "ROLE.md",
+    "PROTOCOL.md"
+  ]
+}
