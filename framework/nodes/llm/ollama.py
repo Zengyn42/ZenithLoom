@@ -232,7 +232,8 @@ class OllamaNode(AgentNode):
                         "abort_reason": str(exc),
                     }
 
-            response = await self._stream_chat(messages, tools=tool_schemas)
+            has_tool_result = any(m.get("role") == "tool" for m in messages)
+            response = await self._stream_chat(messages, tools=None if has_tool_result else tool_schemas)
             last_msg = response.get("message", {})
             messages.append(last_msg)
 

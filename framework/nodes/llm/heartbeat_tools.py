@@ -83,8 +83,11 @@ class HeartbeatMCPProxy:
     MCP 客户端代理。连接 Heartbeat MCP Server，
     提供 call_tool() 方法供框架 tool loop 转发调用。
 
-    告警推送：
-      MCP Server 在 task 失败时通过 SSE 发送 LoggingMessageNotification。
+    事件推送：
+      MCP Server 在 task 执行完成后通过 SSE 发送 LoggingMessageNotification：
+        level="info"    — 正常执行报告
+        level="warning" — 阈值超标告警
+        level="error"   — 执行失败告警
       ClientSession 的 logging_callback 收到后，调用 _alert_callback。
       接口层通过 set_alert_callback() 注册具体处理函数。
 
@@ -106,22 +109,30 @@ class HeartbeatMCPProxy:
         self._alert_callback = None  # async callable(alert_dict) | None
 
     def set_alert_callback(self, callback) -> None:
-        """注册告警回调。callback 签名: async def(alert: dict) -> None。"""
+        """注册事件回调。callback 签名: async def(event: dict) -> None。event 含 level 字段。"""
         self._alert_callback = callback
 
     async def _on_log_message(self, params) -> None:
         """
         MCP LoggingMessageNotification 回调。
-        MCP Server 用 send_log_message(level="error", data=alert_dict) 推送告警。
+        MCP Server 推送事件：
+          level="error"   → 执行失败告警
+          level="warning" → 阈值超标告警
+          level="info"    → 正常执行报告
+        所有级别都转发给 _alert_callback（由上层根据 level 决定处理方式）。
         """
         if self._alert_callback is None:
             return
         # params.level: str, params.data: Any, params.logger: str | None
-        if params.level == "error" and isinstance(params.data, dict):
+        if isinstance(params.data, dict):
+            # 确保 event 里有 level 字段
+            event = params.data
+            if "level" not in event:
+                event["level"] = params.level
             try:
-                await self._alert_callback(params.data)
+                await self._alert_callback(event)
             except Exception as e:
-                logger.error(f"[heartbeat_proxy] alert callback error: {e}")
+                logger.error(f"[heartbeat_proxy] event callback error: {e}")
 
     def _create_session(self, read_stream, write_stream) -> ClientSession:
         """创建 ClientSession 并注入 logging_callback。"""

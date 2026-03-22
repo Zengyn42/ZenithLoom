@@ -75,6 +75,7 @@ _r("!setproject", "设置当前 session 的工作目录",            ALL,  "<路
 _r("!project",    "查看当前 session 的工作目录",            ALL)
 _r("!snapshots",  "查看历史 git 快照",                      ALL)
 _r("!rollback",   "回退到第 N 条 git 快照",                 ALL,  "<N> [原因]")
+_r("!heartbeat",  "查看 heartbeat 状态",                    ALL,  "[list|status <id>|run <id>|alerts]")
 
 # ── Discord 专属命令 ──────────────────────────────────────────────────────
 _r("!stop",       "停止当前频道正在运行的任务",              _DISCORD)

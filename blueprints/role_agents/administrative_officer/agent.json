@@ -1,6 +1,6 @@
 {
   "llm": "llama",
-  "channel_history_limit": 20,
+  "channel_history_limit": 0,
   "graph": {
     "nodes": [
       {
@@ -14,7 +14,7 @@
         "tool_rules": [],
         "options": {
           "num_gpu": 0,
-          "think": "high"
+          "think": "medium"
         }
       }
     ],
