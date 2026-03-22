@@ -423,8 +423,15 @@ class LlmNode:
         )
 
     def _format_user_msg(self, user_input: str, state: dict) -> str:
-        """用户消息前缀 + @Gemini 强制咨询检测。"""
+        """用户消息前缀（含接口标识）+ @Gemini 强制咨询检测。"""
         prefix = self._cfg.get("user_msg_prefix", "")
+        # 动态注入接口标识：「老板: 」→「老板(Discord): 」
+        connector = state.get("connector", "")
+        if connector and prefix:
+            sep = prefix.find(": ")
+            if sep >= 0:
+                label = connector.upper()
+                prefix = f"{prefix[:sep]}({label}): "
         if self._gemini_mention_re and self._gemini_mention_re.search(user_input):
             topic = self._gemini_mention_re.sub("", user_input).strip() or user_input
             logger.info(f"[{self._node_id}] @Gemini trigger: topic={topic!r}")

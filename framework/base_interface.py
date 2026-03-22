@@ -165,6 +165,8 @@ class BaseInterface:
         config = {"configurable": {"thread_id": thread_id}}
 
         init_state: dict = {"messages": [HumanMessage(content=user_input)]}
+        if self._connector is not None:
+            init_state["connector"] = self._connector.value
         if workspace:
             init_state["workspace"] = workspace
         if extra_state:
