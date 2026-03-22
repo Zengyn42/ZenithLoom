@@ -11,7 +11,7 @@
   - agent 专属字段（persona_files、tool_rules 等）由 agent 层自行从 agent.json 读取
 
 已移除字段（迁移说明）：
-  workspace          → SessionEnvelope.workspace（per-session）
+  workspace          → entity.json 定义默认值，session 可覆盖
   max_gemini_consults→ edge max_retry（agent.json graph edges）
   claude_model       → node_config["model"]（agent.json nodes）
   gemini_model       → node_config["model"]（agent.json nodes）
@@ -42,6 +42,7 @@ class AgentConfig:
     gchat_space: str = ""                 # GChat space name, e.g. "spaces/AAAA..."
     gchat_gcp_project: str = ""           # GCP project for Workspace Events API
     gchat_event_types: str = "google.workspace.chat.message.v1.created"
+    workspace: str = ""                   # entity 级默认工作目录（session workspace 可覆盖）
 
     @classmethod
     def from_json(cls, path, env_prefix: str | None = None) -> "AgentConfig":
@@ -146,6 +147,11 @@ class AgentConfig:
             inst_token = discord_cfg.get("token", "") or inst.get("discord_token", "")
             if inst_token and not cfg.discord_token:
                 cfg.discord_token = inst_token
+
+            # 合并 workspace — entity 级默认工作目录
+            inst_workspace = inst.get("workspace", "")
+            if inst_workspace:
+                cfg.workspace = inst_workspace
 
             # 合并 discord_allowed_users — 同上支持嵌套 discord.allowed_users
             if not cfg.discord_allowed_users:
