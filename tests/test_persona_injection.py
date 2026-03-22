@@ -431,8 +431,8 @@ class TestPersonaPassthrough:
             )
             assert graph is not None
 
-    def test_parent_with_own_llm_does_not_passthrough(self):
-        """If parent has its own LLM node (main), persona stays in parent."""
+    def test_parent_with_own_llm_also_passes_through(self):
+        """SUBGRAPH_NODE nodes = main graph nodes, always receive persona."""
         with tempfile.TemporaryDirectory() as tmp:
             tmp_path = Path(tmp)
             child_dir = _make_child_agent_dir(tmp_path, "child_graph")

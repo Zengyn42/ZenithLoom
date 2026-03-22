@@ -545,8 +545,8 @@ async def _build_declarative(
                     f"SUBGRAPH_NODE '{node_id}': agent_dir not found: {inner_dir}"
                 )
             inner_loader = EntityLoader(inner_dir)
-            # 当父图有 persona 但无 LLM 节点消费时，透传给子图
-            _pass_persona = system_prompt if (system_prompt and not persona_targets) else ""
+            # SUBGRAPH_NODE 的节点等同于主图节点，始终透传 persona
+            _pass_persona = system_prompt or ""
             inner_graph = await inner_loader.build_graph(
                 checkpointer=None, parent_persona=_pass_persona,
             )
