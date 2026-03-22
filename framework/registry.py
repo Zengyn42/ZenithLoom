@@ -46,10 +46,10 @@ def register_node(name: str):
     """
     装饰器：将工厂函数注册为节点类型。
 
-    @register_node("CLAUDE_CLI")
+    @register_node("CLAUDE_SDK")
     def _(config, node_config):
-        from framework.claude.node import ClaudeNode
-        return ClaudeNode(config, node_config)
+        from framework.nodes.llm.claude import ClaudeSDKNode
+        return ClaudeSDKNode(config, node_config)
     """
     def decorator(fn: NodeFactory) -> NodeFactory:
         _NODE_REGISTRY[name] = fn

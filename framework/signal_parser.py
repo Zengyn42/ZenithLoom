@@ -1,8 +1,8 @@
 """
 框架级信号解析器协议 — framework/signal_parser.py
 
-AgentNode 通过 SignalParser 检测 LLM 输出中的路由信号，
-避免在 agent_node.py 中硬编码特定格式的正则。
+LlmNode 通过 SignalParser 检测 LLM 输出中的路由信号，
+避免在 llm_node.py 中硬编码特定格式的正则。
 
 内置解析器：
   json_line   — 检测首行 JSON（Claude 格式，默认）
