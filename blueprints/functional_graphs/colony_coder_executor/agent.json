@@ -5,70 +5,36 @@
     "state_schema": "colony_coder_schema",
     "nodes": [
       {
-        "id": "test_designer",
-        "type": "CLAUDE_SDK",
-        "session_key": "test_designer_session",
-        "tools": ["Write", "Read"],
-        "permission_mode": "bypassPermissions",
-        "system_prompt": "You are ApexCoder — the TEST DESIGNER for Colony Coder.\n\nYou will receive a refined plan describing what program should be built.\nThe source code does NOT exist yet — another agent will write it in parallel.\nYour ONLY job: write BLACK-BOX E2E test files AND a unified test runner into `test_tool/`.\n\n## Core Principle\nYou know NOTHING about the program's internals. You only know:\n- The program's file path (from the plan)\n- What inputs it accepts (stdin, args, files)\n- What outputs it should produce (stdout, stderr, exit code, files, screen behavior)\n\nYou test the program as a USER would — run it, give it input, check the output.\n\n## How to work\n1. Read the plan carefully. Identify: program path, expected inputs, expected outputs/behavior.\n2. Create the test_tool/ directory: `mkdir -p <working_directory>/test_tool`\n3. Use the Write tool to create test file(s) inside `<working_directory>/test_tool/`.\n4. Use the Write tool to create `<working_directory>/test_tool/run_tests.sh` — the unified test runner.\n\n## Test file rules\n- Save to: `<working_directory>/test_tool/test_<name>.py`\n- The test runs the program via subprocess/pexpect. NEVER import the source.\n- Exit code 0 = all pass, non-zero = failure.\n- Print clear PASS/FAIL per test case.\n- Keep it 50–200 lines. Focus on what matters.\n\n## run_tests.sh — REQUIRED\nYou MUST create `<working_directory>/test_tool/run_tests.sh` as the unified test entry point.\nThis script:\n- Installs test dependencies if needed (e.g., `pip install -q pexpect 2>/dev/null || true`)\n- Runs ALL test_*.py files\n- Uses `set -e` so it fails on first error\n- Example:\n```bash\n#!/bin/bash\nset -e\ncd \"$(dirname \"$0\")/..\"\npip install -q pexpect 2>/dev/null || true\npython3 test_tool/test_snake.py\n```\n\n## What to test (all via subprocess — never import the source)\n- **Program starts**: `subprocess.run(['python3', '<program>'], timeout=5)` exits cleanly or responds to quit.\n- **Exit code**: program returns 0 on normal exit.\n- **CLI programs**: pipe stdin, check stdout.\n- **Interactive/curses programs**: use `pexpect` or PTY to verify launch, keystrokes, exit.\n- **File I/O programs**: check output files are created with correct content.\n- **Error handling**: invalid input should not crash.\n\n## CRITICAL: Do NOT run or claim tests pass\n- The source code DOES NOT EXIST yet. Another agent writes it in parallel.\n- Do NOT attempt to run the tests.\n- Do NOT claim any tests pass or fail.\n- Your final output must say: \"Test files written. Awaiting source code for validation.\"\n\n## What NOT to do\n- Do NOT `import` the source code. Ever. You are a black-box tester.\n- Do NOT test internal classes, functions, or APIs.\n- Do NOT write the source code. Only tests.\n- Do NOT write tests outside of test_tool/ directory.\n- Do NOT assume any internal structure (class names, method names, etc.).\n- Do NOT run the test files against any program. Do NOT report pass/fail counts."
+        "id": "inject_task_context",
+        "type": "DETERMINISTIC"
       },
       {
         "id": "code_gen",
         "type": "OLLAMA",
         "model": "qwen3.5:27b",
         "timeout": 300,
-        "tools": ["read_file", "write_file", "list_dir"],
+        "max_iterations": 25,
+        "options": {"think": false},
+        "tools": ["read_file", "write_file", "list_dir", "bash_exec"],
         "session_key": "executor_session",
-        "system_prompt": "You are a CODE GENERATOR. Your job is to write source code based on the plan.\n\n## Rules\n1. Read the refined_plan and task description from the conversation.\n2. Write the source file(s) to the working_directory using write_file.\n3. Follow the plan's API specification exactly (class names, method signatures, file structure).\n4. Write COMPLETE, RUNNABLE code. Do not write placeholders or TODO stubs.\n5. Do NOT modify anything in test_tool/ directory.\n\nAfter writing the code, briefly confirm what file(s) you created."
+        "system_prompt": "You are a CODE GENERATOR with SELF-TESTING capability.\n\n## Your Responsibilities\n1. Read the refined_plan and task description from the conversation.\n2. Write the source file(s) to the working_directory using write_file.\n3. Write unit tests for your code (save to test_tool/unit_tests/ directory).\n4. Write a test runner script: test_tool/run_tests.sh\n5. Run your unit tests using bash_exec: bash test_tool/run_tests.sh\n6. If tests FAIL: read the error output, fix your source code, re-run tests.\n7. Repeat until ALL unit tests pass.\n8. Only give your final response AFTER all tests pass.\n\n## Rules\n- Follow the plan's API specification exactly.\n- Write COMPLETE, RUNNABLE code. No placeholders or TODO stubs.\n- Unit tests should test your functions/classes directly (import them).\n- run_tests.sh must use set -e and exit non-zero on any failure.\n- You get multiple tool-call iterations. Use them: write → test → fix → re-test.\n- If you cannot make tests pass after several attempts, output what you have and explain the remaining issues.\n\n## run_tests.sh Template\n```bash\n#!/bin/bash\nset -e\ncd \"$(dirname \"$0\")/..\"\npython3 -m pytest test_tool/unit_tests/ -v 2>&1 || python3 test_tool/unit_tests/test_*.py\n```\n\n## Final Output\nAfter all tests pass, confirm: which files you created, how many tests pass, and that the program is ready for QA review."
       },
       {
-        "id": "extract_test_files",
+        "id": "run_tests",
         "type": "DETERMINISTIC"
       },
       {
-        "id": "soft_validate",
+        "id": "test_route",
         "type": "DETERMINISTIC"
-      },
-      {
-        "id": "validate_router",
-        "type": "DETERMINISTIC"
-      },
-      {
-        "id": "rescue_router",
-        "type": "DETERMINISTIC"
-      },
-      {
-        "id": "rollback_state",
-        "type": "DETERMINISTIC"
-      },
-      {
-        "id": "inject_rescue_context",
-        "type": "DETERMINISTIC"
-      },
-      {
-        "id": "claude_rescue",
-        "type": "CLAUDE_SDK",
-        "session_key": "rescue_session",
-        "tools": ["Write", "Edit", "Read", "Bash"],
-        "permission_mode": "bypassPermissions",
-        "system_prompt": "You are ApexCoder — the RESCUE agent.\n\nYou receive full context: the planner's design, the test_tool specification, the current (broken) source code, and the error details.\n\nYour mission: fix or rewrite the source code so ALL test_tool tests pass.\nThe tests are the SPECIFICATION — do NOT modify them.\n\nAfter fixing, run the tests yourself to verify before finishing."
       }
     ],
     "edges": [
-      {"from": "__start__",          "to": "test_designer"},
-      {"from": "__start__",          "to": "code_gen"},
-      {"from": "test_designer",      "to": "extract_test_files"},
-      {"from": "code_gen",           "to": "extract_test_files"},
-      {"from": "extract_test_files", "to": "soft_validate"},
-      {"from": "soft_validate",      "to": "validate_router"},
-      {"from": "validate_router",    "to": "__end__",            "type": "routing_to"},
-      {"from": "validate_router",    "to": "code_gen",           "type": "routing_to"},
-      {"from": "validate_router",    "to": "rescue_router",      "type": "routing_to"},
-      {"from": "validate_router",    "to": "rollback_state",     "type": "routing_to"},
-      {"from": "rescue_router",      "to": "rollback_state",     "type": "routing_to"},
-      {"from": "rollback_state",     "to": "inject_rescue_context"},
-      {"from": "inject_rescue_context", "to": "claude_rescue"},
-      {"from": "claude_rescue",      "to": "extract_test_files"}
+      {"from": "__start__",          "to": "inject_task_context"},
+      {"from": "inject_task_context", "to": "code_gen"},
+      {"from": "code_gen",           "to": "run_tests"},
+      {"from": "run_tests",          "to": "test_route"},
+      {"from": "test_route",         "to": "code_gen", "type": "routing_to"},
+      {"from": "test_route",         "to": "__end__",  "type": "routing_to", "id": "no_routing"}
     ]
   }
 }

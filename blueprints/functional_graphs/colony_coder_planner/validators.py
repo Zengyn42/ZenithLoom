@@ -67,6 +67,11 @@ def decomposition_validator(state: dict) -> dict:
     """
     retry_count = state.get("retry_count", 0)
 
+    logger.info(
+        f"[decomposition_validator] entry: retry_count={retry_count}/{RETRY_CAP} "
+        f"messages={len(state.get('messages') or [])}"
+    )
+
     # ── Step 1: Parse JSON from last message ──
     messages = state.get("messages") or []
     last_content = ""
@@ -89,6 +94,11 @@ def decomposition_validator(state: dict) -> dict:
             parsed_updates["refined_plan"] = parsed["refined_plan"]
         if "working_directory" in parsed and isinstance(parsed["working_directory"], str):
             parsed_updates["working_directory"] = parsed["working_directory"]
+        if "qa_plan" in parsed and isinstance(parsed["qa_plan"], str):
+            parsed_updates["qa_plan"] = parsed["qa_plan"]
+        if "e2e_plan" in parsed and isinstance(parsed["e2e_plan"], dict):
+            parsed_updates["e2e_plan"] = parsed["e2e_plan"]
+            logger.info(f"[decomposition_validator] e2e_plan keys: {list(parsed['e2e_plan'].keys())}")
     else:
         logger.warning(f"[decomposition_validator] Failed to parse JSON from last message ({len(last_content)} chars)")
 

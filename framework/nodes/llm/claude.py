@@ -119,6 +119,10 @@ class ClaudeSDKNode(AgentNode):
             else:
                 _allowed = self.config.tools
 
+            # max_buffer_size: node_config 可配置, 默认 10MB (SDK 默认仅 1MB,
+            # ColonyCoder QA/rescue 注入大量源码+测试输出时容易超限)
+            _max_buf = self.node_config.get("max_buffer_size", 10 * 1024 * 1024)
+
             return ClaudeAgentOptions(
                 system_prompt=sp,
                 cwd=cwd or None,
@@ -134,6 +138,7 @@ class ClaudeSDKNode(AgentNode):
                 include_partial_messages=True,
                 thinking=_thinking_cfg,
                 add_dirs=self._add_dirs,
+                max_buffer_size=_max_buf,
             )
 
         async def _run_once(sid: str, msg_text: str) -> tuple[str, str, bool]:

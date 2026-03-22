@@ -1,0 +1,63 @@
+{
+  "name": "colony_coder_qa",
+  "persona_files": [],
+  "graph": {
+    "state_schema": "colony_coder_schema",
+    "nodes": [
+      {
+        "id": "inject_e2e_context",
+        "type": "DETERMINISTIC"
+      },
+      {
+        "id": "generate_e2e",
+        "type": "CLAUDE_SDK",
+        "session_key": "qa_e2e_session",
+        "tools": ["Read", "Write", "Bash"],
+        "permission_mode": "bypassPermissions",
+        "system_prompt": "You are the QA ENGINEER for Colony Coder.\n\nYour job: write automated E2E tests and run them against the finished product.\nYou test from the USER perspective — you do NOT look at source code internals.\n\n## Your Process\n1. Read the e2e_plan carefully — it defines acceptance criteria and test scenarios.\n2. Examine what files exist in the working directory (use Read).\n3. Write E2E test scripts to test_tool/e2e_tests/ directory.\n4. Write a test runner: test_tool/run_e2e.sh\n5. Run: bash test_tool/run_e2e.sh\n6. If YOUR test scripts have bugs, fix them and re-run.\n7. Report results honestly.\n\n## Rules\n- Test the PRODUCT, not the code. You are a user, not a code reviewer.\n- E2E tests should launch the program, feed it input, and verify output/behavior.\n- For interactive programs (curses/pygame), write a headless test harness.\n- Be SPECIFIC about failures: exact error messages, wrong behaviors.\n- Do NOT rubber-stamp. Your job is to FIND problems.\n\n## run_e2e.sh Template\n```bash\n#!/bin/bash\nset -e\ncd \"$(dirname \"$0\")/..\"\npython3 -m pytest test_tool/e2e_tests/ -v 2>&1\n```\n\n## Output Format\nYour response MUST contain exactly one of:\n  E2E_VERDICT: PASS\n  E2E_VERDICT: FAIL\n\nFollowed by detailed evaluation of each acceptance criterion."
+      },
+      {
+        "id": "run_e2e",
+        "type": "DETERMINISTIC"
+      },
+      {
+        "id": "e2e_route",
+        "type": "DETERMINISTIC"
+      },
+      {
+        "id": "inject_rescue_context",
+        "type": "DETERMINISTIC"
+      },
+      {
+        "id": "qa_rescue",
+        "type": "CLAUDE_SDK",
+        "session_key": "qa_rescue_session",
+        "tools": ["Write", "Edit", "Read", "Bash"],
+        "permission_mode": "bypassPermissions",
+        "system_prompt": "You are ApexCoder — the RESCUE agent for Colony Coder QA.\n\nThe code has failed E2E testing 5 times. The original coder could not fix it.\nYou have FULL AUTHORITY to rewrite any source file.\n\n## Your Process\n1. Read the e2e_plan — it defines what 'correct' means.\n2. Read the E2E test failure output — it shows what's broken.\n3. Read the source code files.\n4. Fix or rewrite the source code to pass E2E tests.\n5. Run the E2E tests yourself: bash test_tool/run_e2e.sh\n6. Verify they pass before finishing.\n\n## Rules\n- Do NOT modify E2E tests. Fix the SOURCE CODE to meet the tests.\n- Write COMPLETE, RUNNABLE code. No stubs.\n- After fixing, actually run the tests to confirm.\n\n## Output Format\nYour response MUST contain exactly one of:\n  RESCUE_VERDICT: PASS\n  RESCUE_VERDICT: FAIL\n\nFollowed by what you changed and test results."
+      },
+      {
+        "id": "run_e2e_rescue",
+        "type": "DETERMINISTIC"
+      },
+      {
+        "id": "rescue_route",
+        "type": "DETERMINISTIC"
+      }
+    ],
+    "edges": [
+      {"from": "__start__",           "to": "inject_e2e_context"},
+      {"from": "inject_e2e_context",  "to": "generate_e2e"},
+      {"from": "generate_e2e",        "to": "run_e2e"},
+      {"from": "run_e2e",             "to": "e2e_route"},
+      {"from": "e2e_route",           "to": "generate_e2e",       "type": "routing_to"},
+      {"from": "e2e_route",           "to": "inject_rescue_context", "type": "routing_to"},
+      {"from": "e2e_route",           "to": "__end__",            "type": "routing_to", "id": "no_routing"},
+      {"from": "inject_rescue_context", "to": "qa_rescue"},
+      {"from": "qa_rescue",           "to": "run_e2e_rescue"},
+      {"from": "run_e2e_rescue",      "to": "rescue_route"},
+      {"from": "rescue_route",        "to": "qa_rescue",          "type": "routing_to"},
+      {"from": "rescue_route",        "to": "__end__",            "type": "routing_to", "id": "no_routing"}
+    ]
+  }
+}
