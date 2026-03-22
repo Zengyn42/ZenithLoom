@@ -183,6 +183,9 @@ class LlmNode:
             Path(d) for d in node_config.get("add_dirs", [])
         ]
 
+        # skill_files：显式声明的 skill 文件路径列表（相对于 blueprint_dir 或绝对路径）
+        self._skill_files: list[str] = node_config.get("skill_files", [])
+
     @property
     def is_plan_mode(self) -> bool:
         """当前节点是否处于 plan（只读/规划）模式。"""
@@ -202,18 +205,32 @@ class LlmNode:
 
     def _load_skill_content(self) -> str:
         """
-        扫描 add_dirs 中的 .claude/skills/*/SKILL.md，拼接内容。
+        加载 skill 内容，两种来源合并：
+        1. skill_files：显式声明的文件路径（相对于 blueprint_dir 或绝对路径）
+        2. add_dirs：扫描 .claude/skills/*/SKILL.md（Claude 原生机制）
 
         供非 Claude 节点（Gemini、Ollama）在 __init__ 中调用，
         将 skill 内容追加到 system_prompt 末尾。
         Claude 节点通过 ClaudeAgentOptions(add_dirs=...) 原生加载，无需调用此方法。
         """
         parts = []
+
+        # 1. 显式 skill_files（相对路径基于 process cwd 解析）
+        for sf in self._skill_files:
+            p = Path(sf)
+            if p.exists():
+                parts.append(p.read_text(encoding="utf-8").strip())
+                logger.info(f"[{self._node_id}] loaded skill: {p}")
+            else:
+                logger.warning(f"[{self._node_id}] skill file not found: {p}")
+
+        # 2. add_dirs 扫描
         for d in self._add_dirs:
             skills_dir = d / ".claude" / "skills"
             if skills_dir.exists():
                 for skill_md in sorted(skills_dir.rglob("SKILL.md")):
                     parts.append(skill_md.read_text(encoding="utf-8").strip())
+
         return "\n\n---\n\n".join(parts)
 
     @abstractmethod
