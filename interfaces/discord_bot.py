@@ -561,22 +561,36 @@ def _register_discord_alert_callback():
 async def _discord_handle_alert(alert: dict):
     """
     SSE 推送触发的 Discord 告警处理。
-    MCP Server 失败时通过 SSE LoggingMessageNotification 推送到这里。
+    level=info/warning → 任务完成报告；level=error → 失败告警。
     """
     channel = _find_alert_channel()
     if channel is None:
         logger.warning(f"[discord_alert] no channel to send alert: {alert}")
         return
 
-    consecutive = alert.get("consecutive_failures", 1)
+    level   = alert.get("level", "error")
     task_id = alert.get("task_id", "?")
-    error = alert.get("error", "?")
-    time_ = alert.get("time", "?")
+    time_   = alert.get("time", "?")
+    next_run = alert.get("next_run", "")
 
-    alert_text = f"[{task_id}] FAILED (×{consecutive}) at {time_}: {error}"
+    # ── 完成报告（info / warning）────────────────────────────────────────
+    if level in ("info", "warning"):
+        icon = "✅" if level == "info" else "⚠️"
+        content = alert.get("content", "")
+        next_line = f" | 下次: `{next_run}`" if next_run else ""
+        msg = f"{icon} `{task_id}` | 时间: `{time_}`{next_line}"
+        if content:
+            msg += f"\n> {content[:200]}"
+        await channel.send(msg)
+        return
+
+    # ── 失败告警（error）─────────────────────────────────────────────────
+    consecutive = alert.get("consecutive_failures", 1)
+    error       = alert.get("error", "?")
+    next_line   = f" → 下次: {next_run}" if next_run else ""
+    alert_text  = f"[{task_id}] FAILED (×{consecutive}) at {time_}: {error}{next_line}"
 
     if consecutive >= _CRITICAL_THRESHOLD and _controller:
-        # 严重告警 → 唤醒 Agent 分析
         agent_name = _loader.name if _loader else "Agent"
         prompt = (
             f"[SYSTEM ALERT — Heartbeat 失败告警]\n\n{alert_text}\n\n"

@@ -610,6 +610,8 @@ async def _build_declarative(
     if checkpointer is _DEFAULT:
         db_path = os.path.abspath(config.db_path)
         conn = await aiosqlite.connect(db_path)
+        await conn.execute("PRAGMA journal_mode=WAL")
+        await conn.execute("PRAGMA busy_timeout=10000")
         checkpointer = AsyncSqliteSaver(conn)
         await checkpointer.setup()
 

@@ -10,7 +10,7 @@ import asyncio
 import json
 import logging
 from dataclasses import dataclass, field
-from datetime import datetime
+from datetime import datetime, timedelta
 from pathlib import Path
 
 logger = logging.getLogger(__name__)
@@ -51,10 +51,13 @@ class HeartbeatManager:
     """
 
     def __init__(self, blueprint_path: Path, state_path: Path,
-                 on_failure=None, task_overrides: dict | None = None):
+                 on_failure=None, on_complete=None,
+                 task_overrides: dict | None = None):
         """
-        on_failure: async callable(alert_dict) — 失败时立即回调。
-                    由 MCP Server 设置为 send_log_message 推送。
+        on_failure:  async callable(event_dict) — 失败时立即回调（level=error）。
+        on_complete: async callable(event_dict) — 每次执行完成后回调（含成功/告警）。
+                     event_dict 含 level 字段：info / warning / error。
+                     由 MCP Server 设置为 send_log_message 推送。
         task_overrides: {task_id: {key: value}} — entity 级参数覆写。
                         支持 interval_hours, timeout 等任意字段。
         """
@@ -63,7 +66,8 @@ class HeartbeatManager:
         self._tasks: dict[str, TaskEntry] = {}
         self._loops: dict[str, asyncio.Task] = {}
         self._alerts: list[dict] = []  # 未确认的失败告警（兜底，供 heartbeat_alerts 工具拉取）
-        self._on_failure = on_failure  # async callable(alert_dict) | None
+        self._on_failure = on_failure  # async callable(event_dict) | None
+        self._on_complete = on_complete  # async callable(event_dict) | None
         self._task_overrides = task_overrides or {}  # entity 级参数覆写
 
     # ── 生命周期 ──────────────────────────────────────────────────────────
@@ -188,6 +192,7 @@ class HeartbeatManager:
             return f"Task {task_id!r} is already running."
 
         async with entry._lock:
+            failed_exc = None
             try:
                 entry.status = "running"
                 result = await entry.node(state={})
@@ -199,9 +204,42 @@ class HeartbeatManager:
                 entry.status = f"FAILED: {e}"
                 entry.last_result = str(e)
                 content = f"FAILED: {e}"
+                failed_exc = e
             finally:
                 entry.last_run = datetime.now()
                 self._save_state()
+
+        next_dt = datetime.now() + timedelta(hours=entry.interval_hours)
+        next_run_str = next_dt.isoformat(timespec="seconds")
+        if failed_exc is not None:
+            alert = {
+                "task_id": task_id,
+                "type": entry.type,
+                "level": "error",
+                "error": str(failed_exc),
+                "consecutive_failures": 1,
+                "time": datetime.now().isoformat(timespec="seconds"),
+                "next_run": next_run_str,
+            }
+            if self._on_failure:
+                try:
+                    await self._on_failure(alert)
+                except Exception as cb_err:
+                    logger.warning(f"[heartbeat] run_now on_failure callback error: {cb_err}")
+        else:
+            event = {
+                "task_id": task_id,
+                "type": entry.type,
+                "level": "info",
+                "content": content,
+                "time": datetime.now().isoformat(timespec="seconds"),
+                "next_run": next_run_str,
+            }
+            if self._on_complete:
+                try:
+                    await self._on_complete(event)
+                except Exception as cb_err:
+                    logger.warning(f"[heartbeat] run_now on_complete callback error: {cb_err}")
 
         return content
 
@@ -256,6 +294,30 @@ class HeartbeatManager:
                     entry.status = "OK"
                     entry.last_result = content
                     consecutive_failures = 0
+
+                    # 判定完成事件级别（节点可在输出中标注 level=warning）
+                    if "level=warning" in content:
+                        level = "warning"
+                    else:
+                        level = "info"
+
+                    # 构建完成事件
+                    next_dt = datetime.now() + timedelta(hours=entry.interval_hours)
+                    event = {
+                        "task_id": task_id,
+                        "type": entry.type,
+                        "level": level,
+                        "content": content,
+                        "time": datetime.now().isoformat(timespec="seconds"),
+                        "next_run": next_dt.isoformat(timespec="seconds"),
+                    }
+                    # 推送完成回调（SSE push to Agent）
+                    if self._on_complete:
+                        try:
+                            await self._on_complete(event)
+                        except Exception as cb_err:
+                            logger.warning(f"[heartbeat] on_complete callback error: {cb_err}")
+
                 except asyncio.CancelledError:
                     raise  # 让 cancel 正常传播
                 except Exception as e:
@@ -267,12 +329,16 @@ class HeartbeatManager:
                         f"(consecutive={consecutive_failures}): {e}"
                     )
                     # 构建告警
+                    next_hours = min(entry.interval_hours * 2, 48) if consecutive_failures >= 3 else entry.interval_hours
+                    next_dt = datetime.now() + timedelta(hours=next_hours)
                     alert = {
                         "task_id": task_id,
                         "type": entry.type,
+                        "level": "error",
                         "error": str(e),
                         "consecutive_failures": consecutive_failures,
                         "time": datetime.now().isoformat(timespec="seconds"),
+                        "next_run": next_dt.isoformat(timespec="seconds"),
                     }
                     # 告警入队（兜底，供 heartbeat_alerts 工具拉取）
                     self._alerts.append(alert)

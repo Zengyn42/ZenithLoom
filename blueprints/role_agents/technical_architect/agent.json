@@ -137,18 +137,6 @@
         "state_out": {
           "apex_conclusion": "last_message"
         }
-      },
-      {
-        "id": "obsidian_manager",
-        "type": "SUBGRAPH_REF",
-        "agent_dir": "blueprints/functional_graphs/obsidian_manager",
-        "max_retry": 1,
-        "state_in": {
-          "task": "routing_context"
-        },
-        "state_out": {
-          "obsidian_result": "last_message"
-        }
       }
     ],
     "edges": [
@@ -239,17 +227,6 @@
         "from": "apex_coder",
         "to": "claude_main"
       },
-      {
-        "id": "e_validate_2_obsidian",
-        "type": "routing_to",
-        "from": "validate",
-        "to": "obsidian_manager"
-      },
-      {
-        "id": "e_obsidian_2_claude",
-        "from": "obsidian_manager",
-        "to": "claude_main"
-      }
     ]
   },
   "max_retries": 2,

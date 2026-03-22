@@ -62,15 +62,25 @@ def _capture_session():
 
 async def _broadcast_alert(alert: dict):
     """
-    向所有已连接的 Agent 推送告警（通过 SSE LoggingMessageNotification）。
+    向所有已连接的 Agent 推送失败告警（通过 SSE LoggingMessageNotification）。
     HeartbeatManager.on_failure 回调指向这里。
     """
+    await _broadcast_event(alert, level="error")
+
+
+async def _broadcast_event(event: dict, level: str | None = None):
+    """
+    向所有已连接的 Agent 推送事件（通过 SSE LoggingMessageNotification）。
+    level 从 event["level"] 读取，或由参数强制指定。
+    支持: info（正常报告）/ warning（阈值告警）/ error（执行失败）。
+    """
+    log_level = level or event.get("level", "info")
     dead_sessions = set()
     for session in _active_sessions:
         try:
             await session.send_log_message(
-                level="error",
-                data=alert,
+                level=log_level,
+                data=event,
                 logger="heartbeat",
             )
         except Exception:
@@ -158,6 +168,7 @@ async def heartbeat_load_blueprint(blueprint_path: str, overrides: str = "") -> 
     _capture_session()
 
     mgr = HeartbeatManager(path, state_path, on_failure=_broadcast_alert,
+                           on_complete=_broadcast_event,
                            task_overrides=task_overrides)
     await mgr.start()
     _managers[name] = mgr
