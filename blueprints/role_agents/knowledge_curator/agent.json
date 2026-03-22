@@ -6,7 +6,7 @@
       {
         "id": "obsidian_manager",
         "type": "SUBGRAPH_NODE",
-        "agent_dir": "blueprints/functional_graphs/obsidian_manager"
+        "agent_dir": "../../functional_graphs/obsidian_manager"
       }
     ],
     "edges": [
@@ -23,8 +23,5 @@
     ]
   },
   "max_retries": 2,
-  "persona_files": [
-    "ROLE.md",
-    "PROTOCOL.md"
-  ]
+  "persona_files": []
 }
