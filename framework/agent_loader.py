@@ -165,9 +165,14 @@ class EntityLoader:
             self._session_mgr = SessionManager(cfg.sessions_file, cfg.db_path)
         return self._session_mgr
 
-    async def build_graph(self, checkpointer=_DEFAULT):
+    async def build_graph(self, checkpointer=_DEFAULT, parent_persona: str = ""):
         """
         构建并返回编译好的 LangGraph 状态机。
+
+        Args:
+            checkpointer: LangGraph checkpointer（None=无，_DEFAULT=自动创建 SQLite）
+            parent_persona: 父图透传的 persona（仅 SUBGRAPH_NODE 使用）。
+                           会追加到子图自身 system_prompt 之后。
 
         优先级：
           1. agent 目录下的 graph.py（定义 build_graph(loader, checkpointer)）
@@ -189,6 +194,16 @@ class EntityLoader:
 
         config = self.load_config()
         system_prompt = self.load_system_prompt()
+        # 合并父图透传的 persona（SUBGRAPH_NODE 场景）
+        if parent_persona:
+            if system_prompt:
+                system_prompt = system_prompt + "\n\n" + parent_persona
+            else:
+                system_prompt = parent_persona
+            logger.info(
+                f"[agent_loader] {self.name!r}: merged parent persona "
+                f"({len(parent_persona)} chars) into system_prompt"
+            )
         graph_dict = dict(self._json.get("graph") or {})
 
         # Priority 2: 声明式图
@@ -530,7 +545,11 @@ async def _build_declarative(
                     f"SUBGRAPH_NODE '{node_id}': agent_dir not found: {inner_dir}"
                 )
             inner_loader = EntityLoader(inner_dir)
-            inner_graph = await inner_loader.build_graph(checkpointer=None)
+            # 当父图有 persona 但无 LLM 节点消费时，透传给子图
+            _pass_persona = system_prompt if (system_prompt and not persona_targets) else ""
+            inner_graph = await inner_loader.build_graph(
+                checkpointer=None, parent_persona=_pass_persona,
+            )
             # Add as native subgraph (LangGraph handles state passthrough)
             builder.add_node(node_id, inner_graph)
 
