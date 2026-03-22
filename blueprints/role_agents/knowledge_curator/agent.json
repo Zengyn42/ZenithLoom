@@ -4,20 +4,20 @@
   "graph": {
     "nodes": [
       {
-        "id": "knowledge_curator",
+        "id": "knowledge_shelf",
         "type": "SUBGRAPH_NODE",
-        "agent_dir": "../../functional_graphs/knowledge_curator"
+        "agent_dir": "../../functional_graphs/knowledge_shelf"
       }
     ],
     "edges": [
       {
         "id": "e_start",
         "from": "__start__",
-        "to": "knowledge_curator"
+        "to": "knowledge_shelf"
       },
       {
         "id": "e_end",
-        "from": "knowledge_curator",
+        "from": "knowledge_shelf",
         "to": "__end__"
       }
     ]
