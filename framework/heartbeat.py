@@ -31,6 +31,7 @@ class TaskEntry:
     interval_hours: float             # 当前频率（可被用户修改）
     status: str = "idle"              # "idle" | "running" | "OK" | "FAILED: xxx"
     last_run: datetime | None = None
+    next_run: datetime | None = None  # 下次计划运行时间（由 _task_loop/run_now 维护）
     last_result: str = ""             # 最近一次执行的返回内容
     _lock: asyncio.Lock = field(default_factory=asyncio.Lock)
 
@@ -207,9 +208,10 @@ class HeartbeatManager:
                 failed_exc = e
             finally:
                 entry.last_run = datetime.now()
+                entry.next_run = entry.last_run + timedelta(hours=entry.interval_hours)
                 self._save_state()
 
-        next_dt = datetime.now() + timedelta(hours=entry.interval_hours)
+        next_dt = entry.next_run
         next_run_str = next_dt.isoformat(timespec="seconds")
         if failed_exc is not None:
             alert = {
@@ -350,6 +352,8 @@ class HeartbeatManager:
                             logger.warning(f"[heartbeat] on_failure callback error: {cb_err}")
                 finally:
                     entry.last_run = datetime.now()
+                    next_hours = min(entry.interval_hours * 2, 48) if consecutive_failures >= 3 else entry.interval_hours
+                    entry.next_run = entry.last_run + timedelta(hours=next_hours)
                     self._save_state()
 
             if consecutive_failures >= 3:
