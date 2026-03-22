@@ -4,20 +4,20 @@
   "graph": {
     "nodes": [
       {
-        "id": "obsidian_manager",
+        "id": "knowledge_curator",
         "type": "SUBGRAPH_NODE",
-        "agent_dir": "../../functional_graphs/obsidian_manager"
+        "agent_dir": "../../functional_graphs/knowledge_curator"
       }
     ],
     "edges": [
       {
         "id": "e_start",
         "from": "__start__",
-        "to": "obsidian_manager"
+        "to": "knowledge_curator"
       },
       {
         "id": "e_end",
-        "from": "obsidian_manager",
+        "from": "knowledge_curator",
         "to": "__end__"
       }
     ]
