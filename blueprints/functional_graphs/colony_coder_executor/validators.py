@@ -1,81 +1,97 @@
 """Deterministic validator nodes for colony_coder_executor.
 
 Nodes (each function = one DETERMINISTIC node):
-  extract_test_files      — scan test_tool/ for test files + syntax check
-  soft_validate           — run test_tool/run_tests.sh, collect results (no LLM)
-  validate_router         — single router: pass/code_gen retry/rescue/abort
-  rescue_router           — cross-task issues: dual-write to cross_task_issues
-  rollback_state          — cascade-rollback affected tasks
-  inject_rescue_context   — inject test_tool + plan context for claude_rescue
-
-Helper (not a node):
-  cascade_rollback   — transitively find all tasks dependent on affected_task_ids
+  inject_task_context  — build prompt with task info + qa_analysis feedback (if any)
+  run_tests            — mechanically run test_tool/run_tests.sh
+  test_route           — route pass/fail, retry up to TEST_RETRY_CAP
 """
 
 import logging
+import os
+import subprocess
 
 logger = logging.getLogger(__name__)
 
+TEST_RETRY_CAP = 5
 
-def extract_test_files(state: dict) -> dict:
-    """Scan working_directory/test_tool/ for test_*.py files + verify syntax.
 
-    test_designer writes files to {working_directory}/test_tool/.
-    This node scans that subfolder, verifies syntax with ast.parse(),
-    and populates state["test_files"].
+def inject_task_context(state: dict) -> dict:
+    """Build a HumanMessage with task context for code_gen.
+
+    On first entry: injects refined_plan + task descriptions.
+    On re-entry from QA: also injects qa_analysis feedback.
+    On re-entry from test_route: injects test failure output.
     """
-    import ast
-    import glob
-    import os
+    from langchain_core.messages import HumanMessage
 
+    refined_plan = state.get("refined_plan", "")
+    tasks = state.get("tasks") or []
+    execution_order = state.get("execution_order") or []
     working_dir = state.get("working_directory", "")
-    test_files = []
-    syntax_errors = []
+    qa_analysis = state.get("qa_analysis", "")
+    qa_fail_count = state.get("qa_fail_count", 0)
 
-    if working_dir:
-        test_tool_dir = os.path.join(working_dir, "test_tool")
-        found = sorted(glob.glob(f"{test_tool_dir}/test_*.py"))
-        for f in found:
-            rel = f"test_tool/{os.path.basename(f)}"
-            try:
-                with open(f, "r", encoding="utf-8") as fh:
-                    ast.parse(fh.read(), filename=f)
-                test_files.append(rel)
-            except SyntaxError as e:
-                syntax_errors.append(f"{rel}: {e}")
-                logger.error(f"[extract_test_files] syntax error in {rel}: {e}")
+    logger.info(
+        f"[inject_task_context] working_dir={working_dir!r} "
+        f"tasks={len(tasks)} qa_fail_count={qa_fail_count} "
+        f"has_qa_analysis={bool(qa_analysis)}"
+    )
 
-    if test_files:
-        logger.info(f"[extract_test_files] found: {test_files}")
-    else:
-        logger.warning(f"[extract_test_files] no valid test_*.py in {working_dir}/test_tool/")
+    lines = ["## Coding Task\n"]
+    lines.append(f"**Working directory**: `{working_dir}`\n")
 
-    if syntax_errors:
-        logger.warning(f"[extract_test_files] syntax errors: {syntax_errors}")
+    # QA feedback from previous cycle (if any)
+    if qa_analysis:
+        logger.info(
+            f"[inject_task_context] injecting QA feedback "
+            f"({len(qa_analysis)} chars, qa_fail_count={qa_fail_count})"
+        )
+        lines.append("### ⚠️ QA Feedback (from previous attempt)")
+        lines.append("The QA engineer tested your code and found issues:")
+        lines.append(f"```\n{qa_analysis[-3000:]}\n```\n")
+        lines.append("Fix these issues in your implementation.\n")
 
-    return {"test_files": test_files}
+    # Plan
+    if refined_plan:
+        lines.append("### Design Plan")
+        lines.append(f"```\n{refined_plan[:2000]}\n```\n")
+
+    # Tasks
+    if tasks:
+        lines.append("### Tasks to Implement")
+        for tid in execution_order:
+            task = next((t for t in tasks if t.get("id") == tid), None)
+            if task:
+                deps = task.get("dependencies") or []
+                dep_str = f" (depends on: {', '.join(deps)})" if deps else ""
+                lines.append(f"- **{tid}**: {task.get('description', '')}{dep_str}")
+
+    lines.append(f"\n### Instructions")
+    lines.append("1. Create all source files in the working directory.")
+    lines.append("2. Write unit tests in test_tool/unit_tests/.")
+    lines.append("3. Write test_tool/run_tests.sh to run all tests.")
+    lines.append("4. Run tests and fix until all pass.")
+
+    return {
+        "messages": [HumanMessage(content="\n".join(lines))],
+        "retry_count": 0,  # reset executor-internal retry count
+    }
 
 
-def soft_validate(state: dict) -> dict:
-    """Run test_tool/run_tests.sh and collect results. Pure code, no LLM.
-
-    Protocol:
-      - run_tests.sh is the unified test entry point created by test_designer
-      - exit code 0 = all tests pass
-      - exit code non-zero = failure (stdout+stderr = error details)
-    """
-    import os
-    import subprocess
-
+def run_tests(state: dict) -> dict:
+    """Run test_tool/run_tests.sh mechanically. No LLM involved."""
     working_dir = state.get("working_directory", "")
     runner = os.path.join(working_dir, "test_tool", "run_tests.sh")
 
+    logger.info(f"[run_tests] runner={runner} exists={os.path.isfile(runner)}")
+
     if not os.path.isfile(runner):
-        return {"validation_output": {
-            "status": "fail",
-            "category": "missing_runner",
-            "rationale": f"test_tool/run_tests.sh not found in {working_dir}",
-        }}
+        logger.warning(f"[run_tests] runner not found: {runner}")
+        return {
+            "execution_stdout": "",
+            "execution_stderr": f"test_tool/run_tests.sh not found in {working_dir}",
+            "execution_returncode": 1,
+        }
 
     try:
         r = subprocess.run(
@@ -85,252 +101,75 @@ def soft_validate(state: dict) -> dict:
             text=True,
             timeout=120,
         )
-        if r.returncode == 0:
-            return {"validation_output": {
-                "status": "pass",
-                "category": "all_tests_pass",
-                "rationale": r.stdout[-2000:] if r.stdout else "All tests passed",
-            }}
-
-        # Combine stdout + stderr for maximum error context
-        output = (r.stdout + "\n" + r.stderr)[-3000:]
-        return {"validation_output": {
-            "status": "fail",
-            "category": "test_failure",
-            "rationale": output,
-        }}
+        logger.info(
+            f"[run_tests] exit_code={r.returncode} "
+            f"stdout_len={len(r.stdout)} stderr_len={len(r.stderr)}"
+        )
+        if r.returncode != 0:
+            logger.debug(f"[run_tests] stderr={r.stderr[-500:]}")
+        return {
+            "execution_stdout": r.stdout[-3000:] if r.stdout else "",
+            "execution_stderr": r.stderr[-3000:] if r.stderr else "",
+            "execution_returncode": r.returncode,
+        }
     except subprocess.TimeoutExpired:
-        return {"validation_output": {
-            "status": "fail",
-            "category": "timeout",
-            "rationale": "run_tests.sh exceeded 120s timeout",
-        }}
+        logger.error("[run_tests] TIMEOUT (120s)")
+        return {
+            "execution_stdout": "",
+            "execution_stderr": "run_tests.sh exceeded 120s timeout",
+            "execution_returncode": -1,
+        }
     except OSError as e:
-        return {"validation_output": {
-            "status": "fail",
-            "category": "execution_error",
-            "rationale": str(e),
-        }}
-
-
-SELF_FIX_CAP = 5
-CROSS_TASK_CATEGORIES = {"cross_task", "interface_mismatch", "dependency_break"}
-
-
-def validate_router(state: dict) -> dict:
-    """Single router: read validation_output, decide next step.
-
-    pass                    → __end__ (success)
-    abort                   → __end__ (fail)
-    fail + ≤5 retries       → code_gen (same session, inject error context)
-    fail + 5 retries used:
-      cross_task category   → rescue_router → rollback → claude_rescue
-      other category        → rollback_state → inject_rescue_context → claude_rescue
-    """
-    vo = state.get("validation_output") or {}
-    status = vo.get("status", "fail")
-    category = vo.get("category", "unknown")
-    self_fix_count = state.get("transient_retry_count", 0)
-
-    # pass → done
-    if status == "pass":
-        return {"routing_target": "__end__", "success": True}
-
-    # abort → give up
-    if status == "abort":
+        logger.error(f"[run_tests] OSError: {e}")
         return {
-            "routing_target": "__end__",
-            "success": False,
-            "abort_reason": vo.get("rationale", "validate_router_abort"),
+            "execution_stdout": "",
+            "execution_stderr": str(e),
+            "execution_returncode": -1,
         }
 
-    # any failure + under cap → code_gen (inject error context as message)
-    if self_fix_count < SELF_FIX_CAP:
-        from langchain_core.messages import HumanMessage
 
-        working_dir = state.get("working_directory", "")
-        test_files = state.get("test_files") or []
-
-        lines = [f"## Validation FAILED (attempt {self_fix_count + 1}/{SELF_FIX_CAP})\n"]
-        lines.append(f"**Working directory**: `{working_dir}`")
-        lines.append(f"**Category**: `{category}`\n")
-        lines.append("### Test Output (from run_tests.sh)")
-        lines.append(f"```\n{vo.get('rationale', 'no output captured')}\n```\n")
-
-        if test_files:
-            lines.append("### Test files (these are the SPEC — do NOT modify)")
-            for tf in test_files:
-                lines.append(f"- `{working_dir}/{tf}`")
-
-        lines.append("\n### Your task")
-        lines.append("1. Read the error output above carefully.")
-        lines.append("2. Read the failing source file(s) using read_file.")
-        lines.append("3. Fix the SOURCE CODE only. Tests are the specification.")
-        lines.append("4. Write the fixed file back to the same path using write_file.")
-
-        return {
-            "routing_target": "code_gen",
-            "transient_retry_count": self_fix_count + 1,
-            "messages": [HumanMessage(content="\n".join(lines))],
-        }
-
-    # 5 retries exhausted → rollback → claude_rescue
-    if category in CROSS_TASK_CATEGORIES:
-        return {"routing_target": "rescue_router"}
-
-    return {"routing_target": "rollback_state"}
-
-
-def rescue_router(state: dict) -> dict:
-    """Handle cross-task failures.
-
-    Dual-write: appends to cross_task_issues (accumulator) AND sets routing_target.
-    """
-    vo = state.get("validation_output") or {}
-    cross_task_issues = list(state.get("cross_task_issues") or [])
-    current_task_id = state.get("current_task_id", "")
-
-    issue_record = {
-        "task_id": current_task_id,
-        "category": vo.get("category"),
-        "severity": vo.get("severity"),
-        "rationale": vo.get("rationale"),
-        "affected_scope": vo.get("affected_scope", ""),
-    }
-    cross_task_issues.append(issue_record)
-
-    raw_scope = vo.get("affected_scope", "")
-    affected_task_ids = [s.strip() for s in raw_scope.split(",") if s.strip()]
-
-    return {
-        "routing_target": "rollback_state",
-        "cross_task_issues": cross_task_issues,
-        "affected_task_ids": affected_task_ids,
-        "rescue_scope": "cross_task",
-        "rescue_rationale": vo.get("rationale", ""),
-    }
-
-
-def cascade_rollback(tasks: list, affected_task_ids: list) -> set:
-    """Helper (not a graph node): transitively find all tasks dependent on affected_task_ids."""
-    affected = set(affected_task_ids)
-    changed = True
-    while changed:
-        changed = False
-        for task in tasks:
-            tid = task.get("id")
-            deps = task.get("dependencies") or []
-            if tid not in affected and any(d in affected for d in deps):
-                affected.add(tid)
-                changed = True
-    return affected
-
-
-def rollback_state(state: dict) -> dict:
-    """Mark affected tasks for re-execution; route to inject_rescue_context."""
-    tasks = state.get("tasks") or []
-    affected_task_ids = state.get("affected_task_ids") or []
-    all_affected = cascade_rollback(tasks, affected_task_ids)
-    completed_tasks = [t for t in (state.get("completed_tasks") or []) if t not in all_affected]
-    return {
-        "completed_tasks": completed_tasks,
-        "current_task_index": 0,
-    }
-
-
-def inject_rescue_context(state: dict) -> dict:
-    """Build a HumanMessage with full context for claude_rescue.
-
-    claude_rescue runs in a separate Claude SDK session, has no access to
-    the Ollama executor_session history. This node injects everything it needs:
-      - working_directory and file layout
-      - test_tool files (paths + contents)
-      - planner's refined_plan
-      - validation errors and error_history
-      - what code_gen attempted (retry count)
-    """
-    import os
-
-    working_dir = state.get("working_directory", "")
-    test_files = state.get("test_files") or []
-    refined_plan = state.get("refined_plan", "")
-    vo = state.get("validation_output") or {}
-    error_history = state.get("error_history") or []
-    retry_count = state.get("transient_retry_count", 0)
-    cross_task_issues = state.get("cross_task_issues") or []
-
-    lines = ["## Rescue Mission — Full Context\n"]
-    lines.append(f"**Working directory**: `{working_dir}`")
-    lines.append(f"**code_gen attempts exhausted**: {retry_count} retries failed\n")
-
-    # Planner context
-    if refined_plan:
-        lines.append("### Planner's Design")
-        lines.append(f"```\n{refined_plan[:1000]}\n```\n")
-
-    # Test tool files — read contents so claude_rescue knows the spec
-    if test_files:
-        lines.append("### Test Tool Files (these are the SPECIFICATION — do NOT modify)")
-        for tf in test_files:
-            full_path = os.path.join(working_dir, tf)
-            try:
-                with open(full_path, "r", encoding="utf-8") as f:
-                    content = f.read()
-                lines.append(f"\n**`{tf}`** ({len(content.splitlines())} lines):")
-                lines.append(f"```python\n{content}\n```")
-            except OSError:
-                lines.append(f"\n**`{tf}`**: ⚠️ could not read file")
-
-    # run_tests.sh
-    runner_path = os.path.join(working_dir, "test_tool", "run_tests.sh")
-    if os.path.isfile(runner_path):
-        try:
-            with open(runner_path, "r", encoding="utf-8") as f:
-                runner_content = f.read()
-            lines.append(f"\n**`test_tool/run_tests.sh`**:")
-            lines.append(f"```bash\n{runner_content}\n```")
-        except OSError:
-            pass
-
-    # Source files — read current state
-    if working_dir and os.path.isdir(working_dir):
-        source_files = [
-            f for f in os.listdir(working_dir)
-            if f.endswith(".py") and not f.startswith("test_") and f != "__init__.py"
-        ]
-        if source_files:
-            lines.append("\n### Current Source Files (these need fixing)")
-            for sf in sorted(source_files):
-                full_path = os.path.join(working_dir, sf)
-                try:
-                    with open(full_path, "r", encoding="utf-8") as f:
-                        content = f.read()
-                    lines.append(f"\n**`{sf}`** ({len(content.splitlines())} lines):")
-                    lines.append(f"```python\n{content}\n```")
-                except OSError:
-                    lines.append(f"\n**`{sf}`**: ⚠️ could not read file")
-
-    # Error details
-    lines.append("\n### Latest Validation Error")
-    lines.append(f"- status: `{vo.get('status', 'unknown')}`")
-    lines.append(f"- category: `{vo.get('category', 'unknown')}`")
-    lines.append(f"- rationale: {vo.get('rationale', 'N/A')}")
-
-    if error_history:
-        lines.append(f"\n### Error History ({len(error_history)} entries)")
-        for i, err in enumerate(error_history[-5:], 1):
-            lines.append(f"{i}. {err}")
-
-    if cross_task_issues:
-        lines.append(f"\n### Cross-task Issues")
-        for issue in cross_task_issues:
-            lines.append(f"- task `{issue.get('task_id')}`: {issue.get('rationale', '')}")
-
-    lines.append("\n### Your Mission")
-    lines.append("1. Read the test files in test_tool/ — they are the SPECIFICATION.")
-    lines.append("2. Fix or rewrite the source code so ALL tests pass.")
-    lines.append(f"3. Run: `cd {working_dir} && bash test_tool/run_tests.sh` to verify.")
-    lines.append("4. Do NOT modify test_tool/ files.")
-
+def test_route(state: dict) -> dict:
+    """Route based on test results. Pass → __end__, Fail → code_gen (retry)."""
     from langchain_core.messages import HumanMessage
-    return {"messages": [HumanMessage(content="\n".join(lines))]}
+
+    rc = state.get("execution_returncode")
+    retry_count = state.get("retry_count", 0)
+
+    if rc == 0:
+        logger.info("[test_route] ✅ tests PASSED → __end__")
+        return {"routing_target": "__end__"}
+
+    logger.info(
+        f"[test_route] ❌ tests FAILED rc={rc} "
+        f"(attempt {retry_count + 1}/{TEST_RETRY_CAP})"
+    )
+
+    if retry_count >= TEST_RETRY_CAP:
+        logger.warning(
+            f"[test_route] retry cap ({TEST_RETRY_CAP}) exhausted → __end__ "
+            f"(QA will catch remaining issues)"
+        )
+        return {"routing_target": "__end__"}
+
+    logger.info(f"[test_route] → code_gen (retry {retry_count + 1})")
+
+    # Inject failure details back to code_gen
+    stdout = state.get("execution_stdout", "")
+    stderr = state.get("execution_stderr", "")
+    output = (stdout + "\n" + stderr).strip()
+
+    lines = [f"## Tests FAILED (attempt {retry_count + 1}/{TEST_RETRY_CAP})\n"]
+    lines.append("### Test Output")
+    lines.append(f"```\n{output[-3000:]}\n```\n")
+    lines.append("### Your Task")
+    lines.append("1. Read the test output above.")
+    lines.append("2. Read your source files using read_file.")
+    lines.append("3. Fix the issues.")
+    lines.append("4. Write the fixed files back using write_file.")
+    lines.append("5. The tests will be re-run automatically after you finish.")
+
+    return {
+        "routing_target": "code_gen",
+        "retry_count": retry_count + 1,
+        "messages": [HumanMessage(content="\n".join(lines))],
+    }
