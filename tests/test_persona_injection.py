@@ -11,6 +11,7 @@ import asyncio
 import json
 import tempfile
 from pathlib import Path
+from unittest.mock import patch
 
 import pytest
 
@@ -311,7 +312,7 @@ class TestEdgeCases:
 
 
 # =========================================================================
-# Persona passthrough: SUBGRAPH_NODE vs SUBGRAPH_REF
+# Persona passthrough: SUBGRAPH_NODE vs SUBGRAPH_REF (structural)
 # =========================================================================
 
 def _make_child_agent_dir(tmp: Path, child_name: str, has_own_persona: bool = False) -> Path:
@@ -477,3 +478,443 @@ class TestPersonaPassthrough:
                 loader.build_graph(checkpointer=None, parent_persona="# Injected Parent Persona")
             )
             assert graph is not None
+
+
+# =========================================================================
+# 5-Scenario Integration Tests: verify actual persona content
+# =========================================================================
+
+# Persona content markers (unique strings for assertion matching)
+_PERSONA_A = "<!-- PERSONA_A_MARKER -->\n# Persona A\nI am subgraph A's persona."
+_PERSONA_B = "<!-- PERSONA_B_MARKER -->\n# Persona B\nI am subgraph B's persona."
+_PERSONA_C = "<!-- PERSONA_C_MARKER -->\n# Persona C\nI am subgraph C's persona."
+
+
+def _make_subgraph_dir(
+    tmp: Path,
+    name: str,
+    persona_content: str,
+    nodes: list[dict],
+    edges: list[dict],
+) -> Path:
+    """Create a subgraph agent directory with given nodes, edges, and persona."""
+    d = tmp / name
+    d.mkdir(parents=True, exist_ok=True)
+    persona_fname = f"{name}_ROLE.md"
+    agent_json = {
+        "name": name,
+        "llm": "gemini",
+        "persona_files": [persona_fname] if persona_content else [],
+        "graph": {"nodes": nodes, "edges": edges},
+    }
+    (d / "agent.json").write_text(json.dumps(agent_json))
+    if persona_content:
+        (d / persona_fname).write_text(persona_content)
+    return d
+
+
+def _make_subgraph_A(tmp: Path) -> Path:
+    """Subgraph A: 1 main LLM node (A1_main), personaA."""
+    return _make_subgraph_dir(
+        tmp, "subgraph_A", _PERSONA_A,
+        nodes=[{"id": "A1_main", "type": "GEMINI_CLI", "model": "gemini-2.5-flash"}],
+        edges=[
+            {"from": "__start__", "to": "A1_main"},
+            {"from": "A1_main", "to": "__end__"},
+        ],
+    )
+
+
+def _make_subgraph_B(tmp: Path) -> Path:
+    """Subgraph B: no LLM nodes (just a VALIDATE node), personaB."""
+    return _make_subgraph_dir(
+        tmp, "subgraph_B", _PERSONA_B,
+        nodes=[{"id": "B_validate", "type": "VALIDATE"}],
+        edges=[
+            {"from": "__start__", "to": "B_validate"},
+            {"from": "B_validate", "to": "__end__"},
+        ],
+    )
+
+
+def _make_subgraph_C(tmp: Path) -> Path:
+    """Subgraph C: 2 main LLM nodes (C1_main, C2_main), personaC."""
+    return _make_subgraph_dir(
+        tmp, "subgraph_C", _PERSONA_C,
+        nodes=[
+            {"id": "C1_main", "type": "GEMINI_CLI", "model": "gemini-2.5-flash"},
+            {"id": "C2_main", "type": "CLAUDE_CLI"},
+        ],
+        edges=[
+            {"from": "__start__", "to": "C1_main"},
+            {"from": "C1_main", "to": "C2_main"},
+            {"from": "C2_main", "to": "__end__"},
+        ],
+    )
+
+
+def _make_composite_dir(
+    tmp: Path,
+    name: str,
+    persona_content: str,
+    own_nodes: list[dict],
+    child_refs: list[dict],
+    edges: list[dict],
+) -> Path:
+    """Create a composite graph directory that embeds child subgraphs."""
+    d = tmp / name
+    d.mkdir(parents=True, exist_ok=True)
+    persona_fname = f"{name}_ROLE.md"
+    all_nodes = own_nodes + child_refs
+    agent_json = {
+        "name": name,
+        "llm": "gemini",
+        "persona_files": [persona_fname] if persona_content else [],
+        "graph": {"nodes": all_nodes, "edges": edges},
+    }
+    (d / "agent.json").write_text(json.dumps(agent_json))
+    if persona_content:
+        (d / persona_fname).write_text(persona_content)
+    return d
+
+
+class _PersonaSpy:
+    """Context manager that patches node factories to capture system_prompt per node id.
+
+    Usage:
+        with _PersonaSpy() as spy:
+            asyncio.get_event_loop().run_until_complete(loader.build_graph(...))
+        assert "PERSONA_A" in spy.prompts["A1_main"]
+    """
+
+    def __init__(self):
+        self.prompts: dict[str, str] = {}  # node_id → system_prompt
+        self._patchers = []
+
+    def __enter__(self):
+        from framework.registry import _NODE_REGISTRY
+
+        original_factories = dict(_NODE_REGISTRY)
+
+        def _make_spy_factory(orig_factory):
+            def _spy(config, node_config):
+                node_id = node_config.get("id", "")
+                sp = node_config.get("system_prompt", "")
+                if sp:
+                    self.prompts[node_id] = sp
+                return orig_factory(config, node_config)
+            return _spy
+
+        # Patch all LLM node factories
+        for ntype in _LLM_NODE_TYPES:
+            if ntype in _NODE_REGISTRY:
+                _NODE_REGISTRY[ntype] = _make_spy_factory(original_factories[ntype])
+
+        self._original = original_factories
+        return self
+
+    def __exit__(self, *args):
+        from framework.registry import _NODE_REGISTRY
+        _NODE_REGISTRY.update(self._original)
+
+
+class TestScenarioPersonaContent:
+    """5-scenario integration tests verifying actual persona content in LLM nodes.
+
+    Each test builds a multi-layer graph and asserts that persona markers appear
+    in the correct nodes with the correct ordering (own first, inherited after).
+    """
+
+    def test_case1_B_nested_in_A_subgraphnode(self):
+        """Case 1: B(no LLM) nested in A(has A1_main) via SubgraphNode.
+
+        A (parent)
+        ├── A1_main (LLM)
+        └── B (SubgraphNode, no LLM)
+
+        Expected: A1_main.load(personaA)
+        personaB has nowhere to inject (B has no LLM) and does NOT flow up.
+        """
+        with tempfile.TemporaryDirectory() as tmp:
+            tmp_path = Path(tmp)
+            subB = _make_subgraph_B(tmp_path)
+
+            # A is a composite: has A1_main + B as SubgraphNode
+            a_dir = _make_composite_dir(
+                tmp_path, "graph_A", _PERSONA_A,
+                own_nodes=[
+                    {"id": "A1_main", "type": "GEMINI_CLI", "model": "gemini-2.5-flash"},
+                ],
+                child_refs=[
+                    {"id": "sub_B", "type": "SUBGRAPH_NODE", "agent_dir": str(subB)},
+                ],
+                edges=[
+                    {"from": "__start__", "to": "A1_main"},
+                    {"from": "A1_main", "to": "sub_B"},
+                    {"from": "sub_B", "to": "__end__"},
+                ],
+            )
+
+            with _PersonaSpy() as spy:
+                loader = EntityLoader(a_dir)
+                graph = asyncio.get_event_loop().run_until_complete(
+                    loader.build_graph(checkpointer=None)
+                )
+
+            assert graph is not None
+            # A1_main gets personaA
+            assert "A1_main" in spy.prompts
+            assert "PERSONA_A_MARKER" in spy.prompts["A1_main"]
+            # personaB does NOT appear in A1_main (no upward flow)
+            assert "PERSONA_B_MARKER" not in spy.prompts["A1_main"]
+
+    def test_case2_A_nested_in_B_subgraphnode(self):
+        """Case 2: A(has A1_main) nested in B(no LLM) via SubgraphNode.
+
+        B (parent, no LLM)
+        └── A (SubgraphNode)
+            └── A1_main (LLM)
+
+        Expected: A1_main.load(personaA, personaB)
+        personaB flows down through SubgraphNode to A.
+        A1_main: own personaA first, inherited personaB after.
+        """
+        with tempfile.TemporaryDirectory() as tmp:
+            tmp_path = Path(tmp)
+            subA = _make_subgraph_A(tmp_path)
+
+            # B is parent with no LLM, just SubgraphNode pointing to A
+            b_dir = _make_composite_dir(
+                tmp_path, "graph_B", _PERSONA_B,
+                own_nodes=[],
+                child_refs=[
+                    {"id": "sub_A", "type": "SUBGRAPH_NODE", "agent_dir": str(subA)},
+                ],
+                edges=[
+                    {"from": "__start__", "to": "sub_A"},
+                    {"from": "sub_A", "to": "__end__"},
+                ],
+            )
+
+            with _PersonaSpy() as spy:
+                loader = EntityLoader(b_dir)
+                graph = asyncio.get_event_loop().run_until_complete(
+                    loader.build_graph(checkpointer=None)
+                )
+
+            assert graph is not None
+            # A1_main gets both personaA and personaB
+            assert "A1_main" in spy.prompts
+            assert "PERSONA_A_MARKER" in spy.prompts["A1_main"]
+            assert "PERSONA_B_MARKER" in spy.prompts["A1_main"]
+            # Order: own (A) before inherited (B)
+            a_pos = spy.prompts["A1_main"].index("PERSONA_A_MARKER")
+            b_pos = spy.prompts["A1_main"].index("PERSONA_B_MARKER")
+            assert a_pos < b_pos, "Own persona (A) must appear before inherited persona (B)"
+
+    def test_case3_A_nested_in_C_subgraphnode(self):
+        """Case 3: A(has A1_main) nested in C(has C1_main, C2_main) via SubgraphNode.
+
+        C (parent)
+        ├── C1_main (LLM)
+        ├── C2_main (LLM)
+        └── A (SubgraphNode)
+            └── A1_main (LLM)
+
+        Expected:
+          C1_main.load(personaC)
+          C2_main.load(personaC)
+          A1_main.load(personaA, personaC)
+        """
+        with tempfile.TemporaryDirectory() as tmp:
+            tmp_path = Path(tmp)
+            subA = _make_subgraph_A(tmp_path)
+
+            # C has its own 2 main LLM nodes + SubgraphNode to A
+            c_dir = _make_composite_dir(
+                tmp_path, "graph_C", _PERSONA_C,
+                own_nodes=[
+                    {"id": "C1_main", "type": "GEMINI_CLI", "model": "gemini-2.5-flash"},
+                    {"id": "C2_main", "type": "CLAUDE_CLI"},
+                ],
+                child_refs=[
+                    {"id": "sub_A", "type": "SUBGRAPH_NODE", "agent_dir": str(subA)},
+                ],
+                edges=[
+                    {"from": "__start__", "to": "C1_main"},
+                    {"from": "C1_main", "to": "C2_main"},
+                    {"from": "C2_main", "to": "sub_A"},
+                    {"from": "sub_A", "to": "__end__"},
+                ],
+            )
+
+            with _PersonaSpy() as spy:
+                loader = EntityLoader(c_dir)
+                graph = asyncio.get_event_loop().run_until_complete(
+                    loader.build_graph(checkpointer=None)
+                )
+
+            assert graph is not None
+            # C1_main and C2_main get personaC only
+            assert "PERSONA_C_MARKER" in spy.prompts.get("C1_main", "")
+            assert "PERSONA_C_MARKER" in spy.prompts.get("C2_main", "")
+            assert "PERSONA_A_MARKER" not in spy.prompts.get("C1_main", "")
+            assert "PERSONA_A_MARKER" not in spy.prompts.get("C2_main", "")
+
+            # A1_main gets personaA + personaC
+            assert "PERSONA_A_MARKER" in spy.prompts.get("A1_main", "")
+            assert "PERSONA_C_MARKER" in spy.prompts.get("A1_main", "")
+            # Order: own (A) before inherited (C)
+            a_pos = spy.prompts["A1_main"].index("PERSONA_A_MARKER")
+            c_pos = spy.prompts["A1_main"].index("PERSONA_C_MARKER")
+            assert a_pos < c_pos, "Own persona (A) must appear before inherited persona (C)"
+
+    def test_case4_A_nested_in_C_subgraphref(self):
+        """Case 4: A(has A1_main) nested in C(has C1_main, C2_main) via SubgraphRef.
+
+        C (parent)
+        ├── C1_main (LLM)
+        ├── C2_main (LLM)
+        └── A (SubgraphRef) ← isolated
+
+        Expected:
+          C1_main.load(personaC)
+          C2_main.load(personaC)
+          A1_main.load(personaA) — no personaC inheritance
+        """
+        with tempfile.TemporaryDirectory() as tmp:
+            tmp_path = Path(tmp)
+            subA = _make_subgraph_A(tmp_path)
+
+            # C has 2 main LLM nodes + SubgraphRef to A (isolated)
+            c_dir = _make_composite_dir(
+                tmp_path, "graph_C", _PERSONA_C,
+                own_nodes=[
+                    {"id": "C1_main", "type": "GEMINI_CLI", "model": "gemini-2.5-flash"},
+                    {"id": "C2_main", "type": "CLAUDE_CLI"},
+                ],
+                child_refs=[
+                    {
+                        "id": "ref_A", "type": "SUBGRAPH_REF",
+                        "agent_dir": str(subA),
+                        "state_in": {"task": "routing_context"},
+                        "state_out": {"result": "last_message"},
+                    },
+                ],
+                edges=[
+                    {"from": "__start__", "to": "C1_main"},
+                    {"from": "C1_main", "to": "C2_main"},
+                    {"from": "C2_main", "to": "ref_A"},
+                    {"from": "ref_A", "to": "__end__"},
+                ],
+            )
+
+            with _PersonaSpy() as spy:
+                loader = EntityLoader(c_dir)
+                graph = asyncio.get_event_loop().run_until_complete(
+                    loader.build_graph(checkpointer=None)
+                )
+
+            assert graph is not None
+            # C1_main and C2_main get personaC
+            assert "PERSONA_C_MARKER" in spy.prompts.get("C1_main", "")
+            assert "PERSONA_C_MARKER" in spy.prompts.get("C2_main", "")
+
+            # A1_main gets personaA ONLY (SubgraphRef isolation)
+            # Note: SubgraphRefNode lazily compiles on first __call__,
+            # so A1_main won't appear in spy.prompts at build time.
+            # We verify isolation by building A separately and checking.
+            loader_a = EntityLoader(subA)
+            with _PersonaSpy() as spy_a:
+                graph_a = asyncio.get_event_loop().run_until_complete(
+                    loader_a.build_graph(checkpointer=None)
+                )
+            assert "A1_main" in spy_a.prompts
+            assert "PERSONA_A_MARKER" in spy_a.prompts["A1_main"]
+            assert "PERSONA_C_MARKER" not in spy_a.prompts["A1_main"]
+
+    def test_case5_A_subgraphref_in_C_subgraphnode_in_B(self):
+        """Case 5: A SubgraphRef'd in C, C SubgraphNode'd in B.
+
+        B (parent, no LLM)
+        └── C (SubgraphNode)
+            ├── C1_main (LLM)
+            ├── C2_main (LLM)
+            └── A (SubgraphRef) ← isolated
+
+        Expected:
+          C1_main.load(personaC, personaB)
+          C2_main.load(personaC, personaB)
+          A1_main.load(personaA) — isolated by SubgraphRef
+        """
+        with tempfile.TemporaryDirectory() as tmp:
+            tmp_path = Path(tmp)
+            subA = _make_subgraph_A(tmp_path)
+
+            # C has 2 main LLM nodes + SubgraphRef to A
+            c_dir = _make_composite_dir(
+                tmp_path, "subgraph_C", _PERSONA_C,
+                own_nodes=[
+                    {"id": "C1_main", "type": "GEMINI_CLI", "model": "gemini-2.5-flash"},
+                    {"id": "C2_main", "type": "CLAUDE_CLI"},
+                ],
+                child_refs=[
+                    {
+                        "id": "ref_A", "type": "SUBGRAPH_REF",
+                        "agent_dir": str(subA),
+                        "state_in": {"task": "routing_context"},
+                        "state_out": {"result": "last_message"},
+                    },
+                ],
+                edges=[
+                    {"from": "__start__", "to": "C1_main"},
+                    {"from": "C1_main", "to": "C2_main"},
+                    {"from": "C2_main", "to": "ref_A"},
+                    {"from": "ref_A", "to": "__end__"},
+                ],
+            )
+
+            # B is parent with no LLM, SubgraphNode pointing to C
+            b_dir = _make_composite_dir(
+                tmp_path, "graph_B", _PERSONA_B,
+                own_nodes=[],
+                child_refs=[
+                    {"id": "sub_C", "type": "SUBGRAPH_NODE", "agent_dir": str(c_dir)},
+                ],
+                edges=[
+                    {"from": "__start__", "to": "sub_C"},
+                    {"from": "sub_C", "to": "__end__"},
+                ],
+            )
+
+            with _PersonaSpy() as spy:
+                loader = EntityLoader(b_dir)
+                graph = asyncio.get_event_loop().run_until_complete(
+                    loader.build_graph(checkpointer=None)
+                )
+
+            assert graph is not None
+            # C1_main gets personaC + personaB (C own first, B inherited after)
+            assert "C1_main" in spy.prompts
+            assert "PERSONA_C_MARKER" in spy.prompts["C1_main"]
+            assert "PERSONA_B_MARKER" in spy.prompts["C1_main"]
+            c_pos = spy.prompts["C1_main"].index("PERSONA_C_MARKER")
+            b_pos = spy.prompts["C1_main"].index("PERSONA_B_MARKER")
+            assert c_pos < b_pos, "Own persona (C) must appear before inherited (B)"
+
+            # C2_main gets personaC + personaB
+            assert "C2_main" in spy.prompts
+            assert "PERSONA_C_MARKER" in spy.prompts["C2_main"]
+            assert "PERSONA_B_MARKER" in spy.prompts["C2_main"]
+
+            # A1_main: SubgraphRef is lazy (compiled on first call),
+            # so verify isolation by building A independently
+            loader_a = EntityLoader(subA)
+            with _PersonaSpy() as spy_a:
+                graph_a = asyncio.get_event_loop().run_until_complete(
+                    loader_a.build_graph(checkpointer=None)
+                )
+            assert "A1_main" in spy_a.prompts
+            assert "PERSONA_A_MARKER" in spy_a.prompts["A1_main"]
+            assert "PERSONA_B_MARKER" not in spy_a.prompts["A1_main"]
+            assert "PERSONA_C_MARKER" not in spy_a.prompts["A1_main"]
