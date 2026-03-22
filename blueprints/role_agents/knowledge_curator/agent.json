@@ -23,5 +23,8 @@
     ]
   },
   "max_retries": 2,
-  "persona_files": []
+  "persona_files": [
+    "ROLE.md",
+    "PROTOCOL.md"
+  ]
 }

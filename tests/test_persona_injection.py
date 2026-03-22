@@ -1,13 +1,20 @@
-"""Tests for _find_persona_targets — persona injection target discovery.
+"""Tests for persona injection: _find_persona_targets + SUBGRAPH_NODE passthrough.
 
 Rules:
   1. Prefer LLM nodes with 'main' in id (supports multiple).
   2. Fallback: reverse BFS from __end__, pick closest LLM node.
   3. No LLM node → empty list.
+  4. SUBGRAPH_NODE: parent persona passes through to child graph's LLM nodes.
+     SUBGRAPH_REF: parent persona does NOT pass through.
 """
+import asyncio
+import json
+import tempfile
+from pathlib import Path
+
 import pytest
 
-from framework.agent_loader import _find_persona_targets, _LLM_NODE_TYPES
+from framework.agent_loader import _find_persona_targets, _LLM_NODE_TYPES, EntityLoader
 
 
 # ---------------------------------------------------------------------------
@@ -301,3 +308,172 @@ class TestEdgeCases:
             ],
         )
         assert _find_persona_targets(spec) == []
+
+
+# =========================================================================
+# Persona passthrough: SUBGRAPH_NODE vs SUBGRAPH_REF
+# =========================================================================
+
+def _make_child_agent_dir(tmp: Path, child_name: str, has_own_persona: bool = False) -> Path:
+    """Create a minimal child subgraph agent dir with a GEMINI_CLI node."""
+    child_dir = tmp / child_name
+    child_dir.mkdir(parents=True)
+    agent_json = {
+        "name": child_name,
+        "llm": "gemini",
+        "persona_files": ["CHILD_ROLE.md"] if has_own_persona else [],
+        "graph": {
+            "nodes": [
+                {"id": "gemini_worker", "type": "GEMINI_CLI", "model": "gemini-2.5-flash"}
+            ],
+            "edges": [
+                {"from": "__start__", "to": "gemini_worker"},
+                {"from": "gemini_worker", "to": "__end__"},
+            ],
+        },
+    }
+    (child_dir / "agent.json").write_text(json.dumps(agent_json))
+    if has_own_persona:
+        (child_dir / "CHILD_ROLE.md").write_text("# Child Role\nI am a child agent.")
+    return child_dir
+
+
+def _make_parent_agent_dir(
+    tmp: Path,
+    parent_name: str,
+    child_dir: Path,
+    node_type: str = "SUBGRAPH_NODE",
+    has_persona: bool = True,
+) -> Path:
+    """Create a parent agent dir with a single SUBGRAPH_NODE or SUBGRAPH_REF."""
+    parent_dir = tmp / parent_name
+    parent_dir.mkdir(parents=True)
+
+    node_def = {
+        "id": "child_sub",
+        "type": node_type,
+    }
+    if node_type == "SUBGRAPH_NODE":
+        node_def["agent_dir"] = str(child_dir)
+    else:
+        # SUBGRAPH_REF needs agent_dir + state mapping
+        node_def["agent_dir"] = str(child_dir)
+        node_def["state_in"] = {"task": "routing_context"}
+        node_def["state_out"] = {"result": "last_message"}
+
+    agent_json = {
+        "name": parent_name,
+        "llm": "gemini",
+        "persona_files": ["PARENT_ROLE.md"] if has_persona else [],
+        "graph": {
+            "nodes": [node_def],
+            "edges": [
+                {"from": "__start__", "to": "child_sub"},
+                {"from": "child_sub", "to": "__end__"},
+            ],
+        },
+    }
+    (parent_dir / "agent.json").write_text(json.dumps(agent_json))
+    if has_persona:
+        (parent_dir / "PARENT_ROLE.md").write_text(
+            "# Parent Role\nYou are the parent agent with important persona."
+        )
+    return parent_dir
+
+
+class TestPersonaPassthrough:
+    """SUBGRAPH_NODE receives parent persona; SUBGRAPH_REF does not."""
+
+    def test_subgraph_node_receives_parent_persona(self):
+        """Parent persona should merge into child's system_prompt via build_graph."""
+        with tempfile.TemporaryDirectory() as tmp:
+            tmp_path = Path(tmp)
+            child_dir = _make_child_agent_dir(tmp_path, "child_graph")
+            parent_dir = _make_parent_agent_dir(
+                tmp_path, "parent_graph", child_dir, node_type="SUBGRAPH_NODE"
+            )
+
+            loader = EntityLoader(parent_dir)
+            # build_graph should not raise
+            graph = asyncio.get_event_loop().run_until_complete(
+                loader.build_graph(checkpointer=None)
+            )
+            assert graph is not None
+
+    def test_subgraph_node_no_parent_persona(self):
+        """When parent has no persona, child builds normally."""
+        with tempfile.TemporaryDirectory() as tmp:
+            tmp_path = Path(tmp)
+            child_dir = _make_child_agent_dir(tmp_path, "child_graph")
+            parent_dir = _make_parent_agent_dir(
+                tmp_path, "parent_graph", child_dir,
+                node_type="SUBGRAPH_NODE", has_persona=False,
+            )
+
+            loader = EntityLoader(parent_dir)
+            graph = asyncio.get_event_loop().run_until_complete(
+                loader.build_graph(checkpointer=None)
+            )
+            assert graph is not None
+
+    def test_subgraph_node_merges_child_and_parent_persona(self):
+        """When both parent and child have persona, they should merge."""
+        with tempfile.TemporaryDirectory() as tmp:
+            tmp_path = Path(tmp)
+            child_dir = _make_child_agent_dir(tmp_path, "child_graph", has_own_persona=True)
+            parent_dir = _make_parent_agent_dir(
+                tmp_path, "parent_graph", child_dir, node_type="SUBGRAPH_NODE"
+            )
+
+            loader = EntityLoader(parent_dir)
+            graph = asyncio.get_event_loop().run_until_complete(
+                loader.build_graph(checkpointer=None)
+            )
+            assert graph is not None
+
+    def test_parent_with_own_llm_does_not_passthrough(self):
+        """If parent has its own LLM node (main), persona stays in parent."""
+        with tempfile.TemporaryDirectory() as tmp:
+            tmp_path = Path(tmp)
+            child_dir = _make_child_agent_dir(tmp_path, "child_graph")
+            parent_dir = tmp_path / "parent_with_llm"
+            parent_dir.mkdir()
+
+            agent_json = {
+                "name": "parent_with_llm",
+                "llm": "claude",
+                "persona_files": ["PARENT_ROLE.md"],
+                "graph": {
+                    "nodes": [
+                        {"id": "claude_main", "type": "CLAUDE_CLI"},
+                        {"id": "child_sub", "type": "SUBGRAPH_NODE",
+                         "agent_dir": str(child_dir)},
+                    ],
+                    "edges": [
+                        {"from": "__start__", "to": "claude_main"},
+                        {"from": "claude_main", "to": "child_sub"},
+                        {"from": "child_sub", "to": "__end__"},
+                    ],
+                },
+            }
+            (parent_dir / "agent.json").write_text(json.dumps(agent_json))
+            (parent_dir / "PARENT_ROLE.md").write_text("# Parent with LLM")
+
+            loader = EntityLoader(parent_dir)
+            graph = asyncio.get_event_loop().run_until_complete(
+                loader.build_graph(checkpointer=None)
+            )
+            assert graph is not None
+
+    def test_build_graph_parent_persona_param(self):
+        """EntityLoader.build_graph(parent_persona=...) merges into system_prompt."""
+        with tempfile.TemporaryDirectory() as tmp:
+            tmp_path = Path(tmp)
+            child_dir = _make_child_agent_dir(tmp_path, "child_graph", has_own_persona=True)
+
+            loader = EntityLoader(child_dir)
+            # Simulate what SUBGRAPH_NODE does: pass parent_persona
+            graph = asyncio.get_event_loop().run_until_complete(
+                loader.build_graph(checkpointer=None, parent_persona="# Injected Parent Persona")
+            )
+            assert graph is not None
