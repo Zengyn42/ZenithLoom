@@ -230,14 +230,15 @@ def heartbeat_list() -> str:
     if not _managers:
         return "No blueprints loaded."
 
-    lines = ["Blueprint | Task ID | Type | Status | Last Run | Interval(h)"]
-    lines.append("----------|---------|------|--------|----------|------------")
+    lines = ["Blueprint | Task ID | Type | Status | Last Run | Next Run | Interval(h)"]
+    lines.append("----------|---------|------|--------|----------|----------|------------")
     for bp_name, mgr in _managers.items():
         for entry in mgr._tasks.values():
             last = entry.last_run.strftime("%Y-%m-%d %H:%M") if entry.last_run else "never"
+            nxt  = entry.next_run.strftime("%Y-%m-%d %H:%M") if entry.next_run else "?"
             lines.append(
                 f"{bp_name} | {entry.id} | {entry.type} | "
-                f"{entry.status} | {last} | {entry.interval_hours}"
+                f"{entry.status} | {last} | {nxt} | {entry.interval_hours}"
             )
     return "\n".join(lines)
 
@@ -260,7 +261,11 @@ async def heartbeat_run(task_id: str) -> str:
     """立即执行指定 task（不等下次 interval）。"""
     for mgr in _managers.values():
         if task_id in mgr._tasks:
-            return await mgr.run_now(task_id)
+            result = await mgr.run_now(task_id)
+            entry = mgr._tasks[task_id]
+            last = entry.last_run.strftime("%Y-%m-%d %H:%M:%S") if entry.last_run else "?"
+            nxt  = entry.next_run.strftime("%Y-%m-%d %H:%M:%S") if entry.next_run else "?"
+            return f"{result}\n上次运行：{last} | 下次计划：{nxt}"
     known = []
     for mgr in _managers.values():
         known.extend(mgr._tasks.keys())
