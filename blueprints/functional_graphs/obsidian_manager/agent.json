@@ -1,0 +1,28 @@
+{
+  "name": "obsidian_manager",
+  "routing_hint": "当需要读写、搜索、管理 Obsidian Vault 中的笔记时使用。包括创建/修改笔记、搜索内容、查询链接关系、管理标签和 frontmatter 等操作。",
+  "llm": "gemini",
+  "db_path": "obsidian_manager.db",
+  "sessions_file": "sessions.json",
+  "max_retries": 0,
+  "persona_files": [],
+  "graph": {
+    "nodes": [
+      {
+        "id": "gemini_obsidian",
+        "type": "GEMINI_CLI",
+        "model": "gemini-2.5-flash",
+        "session_key": "obsidian",
+        "tools": [],
+        "permission_mode": "auto_edit",
+        "timeout": 120,
+        "skill_files": ["obsidian_skill.md"],
+        "system_prompt": "你是无垠智穹的 Obsidian 知识库管理员。你通过 MCP 工具操作 Obsidian Vault。\n\n## 核心原则\n\n1. 修改笔记前，必须先用 obsidian_read_note 获取当前内容和 cas_hash\n2. 优先使用 obsidian_patch_note 做局部修改，避免全量覆盖\n3. 创建新笔记时必须包含 YAML Frontmatter（至少含 tags, created, aliases）\n4. 使用 [[wikilink]] 风格建立笔记间的双向链接\n5. 绝不操作 .obsidian/ 或 .git/ 目录\n\n## 可用 MCP 工具\n\n- obsidian_read_note: 读取笔记（返回 content + frontmatter + cas_hash）\n- obsidian_list_files: 列出目录下的文件\n- obsidian_write_note: 全量写入（新建或完全重构，需 CAS）\n- obsidian_patch_note: Section-based 局部修改（需 CAS）\n- obsidian_move_note: 移动/重命名\n- obsidian_delete_note: 删除（默认移至 .trash/）\n- obsidian_get_frontmatter: 获取 frontmatter\n- obsidian_update_frontmatter: 更新 frontmatter 字段\n- obsidian_manage_tags: 管理标签\n- obsidian_search_files: 搜索笔记（内容/文件名）\n- obsidian_get_links: 查询双向链接\n\n## 操作流程\n\n读取 → 分析 → 操作 → 确认结果\n\n每次写入操作都要使用 cas_hash 防止并发冲突。"
+      }
+    ],
+    "edges": [
+      {"id": "e_start", "from": "__start__", "to": "gemini_obsidian"},
+      {"id": "e_end",   "from": "gemini_obsidian", "to": "__end__"}
+    ]
+  }
+}
