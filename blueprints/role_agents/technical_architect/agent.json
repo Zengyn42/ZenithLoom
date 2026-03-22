@@ -226,7 +226,7 @@
         "id": "e_apex_2_claude",
         "from": "apex_coder",
         "to": "claude_main"
-      },
+      }
     ]
   },
   "max_retries": 2,

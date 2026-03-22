@@ -479,8 +479,13 @@ async def _build_declarative(
     all_ids = _collect_all_ids(graph_spec)
     _check_edge_refs(graph_spec, all_ids)
     _check_reachable(graph_spec, all_ids)
-    if system_prompt:  # 仅有 persona 需要注入时才要求恰好一个主节点
-        _check_single_main(graph_spec)
+    persona_targets: list[str] = []
+    if system_prompt:
+        persona_targets = _find_persona_targets(graph_spec)
+        if persona_targets:
+            logger.info(f"[agent_loader] persona injection targets: {persona_targets}")
+        else:
+            logger.warning("[agent_loader] system_prompt provided but no LLM node found for injection")
 
     # ── Step 2: 构建图节点 ────────────────────────────────────────────────
     import framework.schema  # noqa: F401 — 确保内置 schema 已注册
@@ -531,10 +536,10 @@ async def _build_declarative(
 
         else:
             factory = get_node_factory(node_type)
-            # 仅主节点（ID 含 "main"）注入 system_prompt；其他节点忽略
+            # persona 注入目标节点
             _base = (
                 {**node_def, "system_prompt": system_prompt}
-                if system_prompt and "main" in node_id
+                if system_prompt and node_id in persona_targets
                 else dict(node_def)
             )
             if node_type == "DETERMINISTIC" and blueprint_dir:
@@ -744,18 +749,61 @@ def _check_reachable(graph_spec: dict, all_ids: set) -> None:
         raise ValueError(f"Unreachable nodes from __start__: {unreachable}")
 
 
-def _check_single_main(graph_spec: dict) -> None:
-    """验证图中恰好存在一个 ID 含 'main' 的主节点（persona 注入点，不可多于一个）。"""
-    main_ids = [
-        node_def["id"]
-        for node_def in graph_spec.get("nodes", [])
-        if "main" in node_def.get("id", "")
-    ]
-    if len(main_ids) != 1:
-        raise ValueError(
-            f"Graph must have exactly 1 main agent node (id containing 'main'), "
-            f"found {len(main_ids)}: {main_ids}"
-        )
+_LLM_NODE_TYPES = frozenset({
+    "CLAUDE_CLI", "CLAUDE_SDK", "GEMINI_CLI", "GEMINI_API",
+    "OLLAMA", "LOCAL_VLLM",
+})
+
+
+def _find_persona_targets(graph_spec: dict) -> list[str]:
+    """找到 persona/system_prompt 应注入的 LLM 节点 ID 列表。
+
+    规则：
+      1. 优先选取所有 id 含 'main' 的 LLM 节点（可多个）。
+      2. 若无 'main' 节点，遍历图拓扑，选取离 __end__ 最近的 LLM 节点。
+      3. 若图中无任何 LLM 节点，返回空列表（不注入）。
+    """
+    nodes = graph_spec.get("nodes", [])
+    edges = graph_spec.get("edges", [])
+
+    # 所有 LLM 节点
+    llm_ids = {
+        n["id"] for n in nodes
+        if n.get("type", "") in _LLM_NODE_TYPES
+    }
+    if not llm_ids:
+        return []
+
+    # 规则 1：含 'main' 的 LLM 节点
+    main_ids = [nid for nid in llm_ids if "main" in nid]
+    if main_ids:
+        return main_ids
+
+    # 规则 2：拓扑排序，取离 __end__ 最近的 LLM 节点
+    # 构建反向邻接表（从 __end__ 反向 BFS）
+    reverse_adj: dict[str, list[str]] = defaultdict(list)
+    for edge in edges:
+        src = edge["from"]
+        dst = edge["to"]
+        reverse_adj[dst].append(src)
+
+    # 从 __end__ 反向 BFS，找到第一个 LLM 节点
+    from collections import deque
+    queue = deque(["__end__"])
+    visited: set[str] = set()
+    while queue:
+        current = queue.popleft()
+        if current in visited:
+            continue
+        visited.add(current)
+        if current in llm_ids:
+            return [current]
+        for pred in reverse_adj.get(current, []):
+            if pred not in visited:
+                queue.append(pred)
+
+    # 兜底：无法从 __end__ 回溯到 LLM 节点，取任意一个
+    return [next(iter(llm_ids))]
 
 
 # ---------------------------------------------------------------------------
