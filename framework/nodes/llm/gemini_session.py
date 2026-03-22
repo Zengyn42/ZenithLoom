@@ -1,5 +1,5 @@
 """
-Gemini CLI 兼容 Session 存储 — framework/gemini/session.py
+Gemini CLI 兼容 Session 存储 — framework/nodes/llm/gemini_session.py
 
 与 Gemini CLI (google-gemini/gemini-cli) 的 ConversationRecord 格式完全兼容。
 存储路径：~/.gemini/tmp/{project_id}/chats/session-{YYYY-MM-DD-HH-MM}-{uuid[:8]}.json

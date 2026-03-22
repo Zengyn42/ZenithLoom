@@ -9,7 +9,7 @@ Tools:
 
 TOOL_REGISTRY   dict[name → async callable]
 TOOL_SCHEMAS    dict[name → OpenAI-style function schema]
-build_tool_schemas(names) → list of schemas for use in /api/chat payload
+build_tool_schemas(names) → list of schemas for use in /v1/chat/completions payload
 """
 
 import asyncio
