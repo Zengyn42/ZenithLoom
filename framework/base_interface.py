@@ -45,9 +45,10 @@ class BaseInterface:
         self._last_stream_chunk_count: int = 0
 
     async def setup(self) -> None:
-        """初始化 controller 和 session_mgr（所有子类应在 run() 开头调用）。"""
+        """初始化 controller、session_mgr 和 config（所有子类应在 run() 开头调用）。"""
         self._controller = await self._loader.get_controller()
         self._session_mgr = self._controller.session_mgr
+        self._config = self._loader.load_config()
 
     # ------------------------------------------------------------------
     # Heartbeat 告警回调（SSE 推送驱动，非轮询）
@@ -130,12 +131,14 @@ class BaseInterface:
         return self._session_mgr.find_name_by_thread_id(self._resolve_thread_id())
 
     def _resolve_workspace(self) -> str:
-        """当前 session 的工作目录。"""
+        """当前工作目录。session workspace 优先，fallback 到 entity workspace。"""
         name = self._resolve_session_name()
-        if not name:
-            return ""
-        env = self._session_mgr.get_envelope(name)
-        return env.workspace if env else ""
+        if name:
+            env = self._session_mgr.get_envelope(name)
+            if env and env.workspace:
+                return env.workspace
+        # fallback: entity 级默认 workspace
+        return self._config.workspace
 
     # ------------------------------------------------------------------
     # Connector 专属 hook（子类可覆写）
