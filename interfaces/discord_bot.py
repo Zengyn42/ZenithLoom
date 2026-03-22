@@ -304,6 +304,7 @@ class _DiscordInterface(BaseInterface):
         super().__init__(loader)
         self._controller  = _controller
         self._session_mgr = _session_mgr
+        self._config      = loader.load_config()
         self._channel_id  = channel_id
         self._streaming   = _discord_streaming
         self._event_queue: asyncio.Queue = asyncio.Queue()
