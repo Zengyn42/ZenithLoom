@@ -4,22 +4,24 @@
 OllamaNode 继承 LlmNode，实现 call_llm() 接口：
   call_llm(prompt, session_id, tools, cwd) → (text, session_id)
 
-通过 Ollama HTTP API 调用本地模型（llama、qwen 等）。
-Ollama 无持久 session，返回传入的 session_id 不变。
+通过 Ollama OpenAI 兼容端点 /v1/chat/completions 调用本地模型。
+该端点支持 thinking + tool_calls + streaming 同时工作。
 keep_alive=-1 确保模型常驻 RAM（防止 5 分钟后自动卸载）。
 
 agent.json 配置：
-  node_config["model"]:    "llama3.2:3b"              # 模型名
-  node_config["endpoint"]: "http://localhost:11434"    # Ollama endpoint（默认）
-  node_config["timeout"]:  120                         # 超时秒数（默认）
+  node_config["model"]:    "qwen3.5:27b"               # 模型名
+  node_config["endpoint"]: "http://localhost:11434"      # Ollama endpoint（默认）
+  node_config["timeout"]:  120                           # 超时秒数（默认）
+  node_config["max_iterations"]: 10                      # tool-call 循环上限（默认）
+  node_config["options"]:  {}                            # 额外参数，如 temperature 等
 
 permission_mode 实现：
   Ollama 无原生权限控制机制，通过两层软限制模拟：
     plan 模式：
-      1. system_prompt 末尾注入禁写指令（_PLAN_MODE_SUFFIX），明确禁止文件操作和命令执行
-      2. _call_with_tools() 中过滤掉 _WRITE_TOOLS 中的工具 schema，使模型无法调用写入工具
+      1. system_prompt 末尾注入禁写指令（_PLAN_MODE_SUFFIX）
+      2. _call_with_tools() 中过滤掉 _WRITE_TOOLS
     其他模式（default / acceptEdits / bypassPermissions）：
-      行为相同，正常调用。Ollama 无法区分这三种模式。
+      行为相同，正常调用。
 """
 
 import json
@@ -39,7 +41,7 @@ class OllamaNode(AgentNode):
     """
     Ollama LLM 节点，继承 AgentNode。
 
-    通过 Ollama /api/chat 端点调用本地模型。
+    通过 Ollama /v1/chat/completions 端点（OpenAI 兼容）调用本地模型。
     基类 AgentNode.__call__() 处理所有图协议逻辑。
     """
 
@@ -48,13 +50,15 @@ class OllamaNode(AgentNode):
         self._model = node_config.get("model", "llama3")
         self._endpoint = node_config.get("endpoint", "http://localhost:11434")
         self._timeout = node_config.get("timeout", 120)
+        self._max_iterations = node_config.get("max_iterations", 10)
         base_prompt: str = node_config.get("system_prompt", "")
         skill_content = self._load_skill_content()
         self._system_prompt = f"{base_prompt}\n\n{skill_content}" if skill_content else base_prompt
         self._options = node_config.get("options", {})
         self._tools: list = node_config.get("tools", [])
-        self._node_config = node_config  # used by _call_with_tools for session_key/id lookup
-        logger.info(f"[ollama] model={self._model} endpoint={self._endpoint} options={self._options}")
+        self._node_config = node_config
+        logger.info(f"[ollama] model={self._model} endpoint={self._endpoint} "
+                     f"max_iter={self._max_iterations} options={self._options}")
 
     async def __call__(self, state: dict) -> dict:
         if self._tools or self._has_dynamic_tools():
@@ -67,21 +71,20 @@ class OllamaNode(AgentNode):
         from framework.nodes.llm.tools import TOOL_REGISTRY
         return any(k.startswith("heartbeat_") for k in TOOL_REGISTRY)
 
-    async def _stream_chat(self, messages: list, tools: list | None = None) -> dict:
-        """
-        流式 POST to /api/chat，支持 thinking stream + tool_calls。
+    # ── /v1/chat/completions 流式调用 ────────────────────────────────
 
-        返回与非流式 _post_chat 相同格式的 response dict：
-          {"message": {"role": "assistant", "content": "...", "tool_calls": [...]}}
+    async def _chat_completions(
+        self, messages: list, tools: list | None = None
+    ) -> dict:
+        """流式 POST to /v1/chat/completions（OpenAI 兼容端点）。
 
-        Ollama 流式 + tools 行为：
-          - thinking/content 逐 chunk 流式返回
-          - tool_calls 出现在 done=true 的最终 chunk 中
-          - 通过 stream callback 实时推送 thinking/text
+        返回格式：
+          {"role": "assistant", "content": "...", "tool_calls": [...]}
+
+        优势：thinking（reasoning）+ tool_calls + streaming 同时工作。
         """
         from framework.nodes.llm.llm_node import get_stream_callback
 
-        opts = {k: v for k, v in self._options.items() if k != "think"}
         payload: dict = {
             "model": self._model,
             "messages": messages,
@@ -90,73 +93,86 @@ class OllamaNode(AgentNode):
         }
         if tools:
             payload["tools"] = tools
-        if opts:
-            payload["options"] = opts
-        if "think" in self._options:
-            payload["think"] = self._options["think"]
+
+        # 额外 options 映射到 OpenAI 格式的顶层字段
+        if "temperature" in self._options:
+            payload["temperature"] = self._options["temperature"]
+        if "num_predict" in self._options:
+            payload["max_tokens"] = self._options["num_predict"]
 
         stream_cb = get_stream_callback()
         full_content = ""
-        tool_calls = []
+        tool_calls_map: dict[int, dict] = {}  # index → {id, function: {name, arguments}}
 
-        async with httpx.AsyncClient(timeout=self._timeout) as client:
+        timeout_cfg = httpx.Timeout(self._timeout, connect=30)
+        async with httpx.AsyncClient(timeout=timeout_cfg) as client:
             async with client.stream(
                 "POST",
-                f"{self._endpoint}/api/chat",
+                f"{self._endpoint}/v1/chat/completions",
                 json=payload,
             ) as response:
                 if response.status_code != 200:
                     body = await response.aread()
-                    try:
-                        error = json.loads(body).get("error", f"HTTP {response.status_code}")
-                    except Exception:
-                        error = f"HTTP {response.status_code}"
                     raise httpx.HTTPStatusError(
-                        error, request=response.request, response=response
+                        f"HTTP {response.status_code}: {body.decode()[:500]}",
+                        request=response.request,
+                        response=response,
                     )
 
                 async for line in response.aiter_lines():
-                    if not line:
+                    if not line.startswith("data: "):
                         continue
+                    data = line[6:]
+                    if data == "[DONE]":
+                        break
                     try:
-                        chunk = json.loads(line)
+                        chunk = json.loads(data)
                     except json.JSONDecodeError:
                         continue
 
-                    msg_obj = chunk.get("message", {})
+                    delta = chunk.get("choices", [{}])[0].get("delta", {})
 
-                    # 流式 thinking
-                    thinking = msg_obj.get("thinking", "")
-                    if thinking and stream_cb is not None:
-                        stream_cb(thinking, True)
+                    # Reasoning (thinking) — stream to callback
+                    reasoning = delta.get("reasoning", "")
+                    if reasoning and stream_cb is not None:
+                        stream_cb(reasoning, True)
 
-                    # 流式 content
-                    token = msg_obj.get("content", "")
+                    # Content
+                    token = delta.get("content", "")
                     if token:
                         full_content += token
                         if stream_cb is not None:
                             stream_cb(token, False)
 
-                    # tool_calls（通常在 done=true 的 chunk 中）
-                    tc = msg_obj.get("tool_calls")
-                    if tc:
-                        tool_calls.extend(tc)
+                    # Tool calls — streamed incrementally by index
+                    for tc in delta.get("tool_calls", []):
+                        idx = tc.get("index", 0)
+                        if idx not in tool_calls_map:
+                            tool_calls_map[idx] = {
+                                "id": tc.get("id", f"call_{idx}"),
+                                "type": "function",
+                                "function": {"name": "", "arguments": ""},
+                            }
+                        fn = tc.get("function", {})
+                        if fn.get("name"):
+                            tool_calls_map[idx]["function"]["name"] = fn["name"]
+                        if fn.get("arguments"):
+                            tool_calls_map[idx]["function"]["arguments"] += fn["arguments"]
 
-                    if chunk.get("done"):
-                        break
+        # Assemble result
+        result: dict = {"role": "assistant", "content": full_content}
+        if tool_calls_map:
+            result["tool_calls"] = [tool_calls_map[i] for i in sorted(tool_calls_map)]
+        return result
 
-        # 组装为与非流式相同的返回格式
-        assembled_msg: dict = {"role": "assistant", "content": full_content}
-        if tool_calls:
-            assembled_msg["tool_calls"] = tool_calls
-        return {"message": assembled_msg}
+    # ── Multi-turn tool-calling loop ─────────────────────────────────
 
     async def _call_with_tools(self, state: dict) -> dict:
-        """Multi-turn Ollama tool-calling loop.
+        """Multi-turn Ollama tool-calling loop via /v1/chat/completions.
 
         Session management:
-          - ollama_sessions: dict[uuid → messages list] (merged into state, not overwritten)
-          - node_sessions:   dict[session_key → uuid]   (maps logical key to session uuid)
+          - ollama_sessions: dict[uuid → messages list]
+          - node_sessions:   dict[session_key → uuid]
           - Max 200 messages per session (prune oldest non-system messages).
         """
         import uuid as _uuid
@@ -165,7 +181,7 @@ class OllamaNode(AgentNode):
         # plan 模式：从工具列表中剔除写入/执行类工具
         effective_tools = list(self._tools)
 
-        # 自动发现动态注册的工具（heartbeat_* 等），无需 blueprint 声明
+        # 自动发现动态注册的工具（heartbeat_* 等）
         dynamic = [k for k in TOOL_REGISTRY if k.startswith("heartbeat_") and k not in effective_tools]
         if dynamic:
             effective_tools.extend(dynamic)
@@ -200,11 +216,10 @@ class OllamaNode(AgentNode):
                 messages.append({"role": "user", "content": content})
 
         MAX_MESSAGES = 200
-        MAX_ITERATIONS = 10
         terminal_result = None
         last_msg = {}
 
-        # ── Token 安全阀（每轮迭代前检查）──
+        # ── Token 安全阀（首轮检查）──
         try:
             check_before_llm(messages=messages, node_id=self._node_id, limit=self._token_limit)
         except TokenLimitExceeded as exc:
@@ -217,8 +232,7 @@ class OllamaNode(AgentNode):
                 "abort_reason": str(exc),
             }
 
-        for iteration in range(MAX_ITERATIONS):
-            # 每轮迭代前重新检查（工具调用会追加消息）
+        for iteration in range(self._max_iterations):
             if iteration > 0:
                 try:
                     check_before_llm(messages=messages, node_id=self._node_id, limit=self._token_limit)
@@ -232,9 +246,11 @@ class OllamaNode(AgentNode):
                         "abort_reason": str(exc),
                     }
 
-            has_tool_result = any(m.get("role") == "tool" for m in messages)
-            response = await self._stream_chat(messages, tools=None if has_tool_result else tool_schemas)
-            last_msg = response.get("message", {})
+            logger.info(f"[ollama] iteration {iteration + 1}/{self._max_iterations} "
+                        f"msgs={len(messages)}")
+
+            # 始终传 tools — /v1/ 端点支持 tool result + tools 同传
+            last_msg = await self._chat_completions(messages, tools=tool_schemas)
             messages.append(last_msg)
 
             tool_calls = last_msg.get("tool_calls") or []
@@ -245,13 +261,24 @@ class OllamaNode(AgentNode):
                 fn_name = tc["function"]["name"]
                 fn_args = tc["function"].get("arguments", {})
                 if isinstance(fn_args, str):
-                    import json as _json
-                    fn_args = _json.loads(fn_args)
+                    try:
+                        fn_args = json.loads(fn_args)
+                    except json.JSONDecodeError:
+                        fn_args = {"raw": fn_args}
 
+                logger.info(f"[ollama] tool call: {fn_name}({list(fn_args.keys())})")
                 tool_fn = TOOL_REGISTRY.get(fn_name)
-                tool_result = await tool_fn(**fn_args) if tool_fn else {"error": f"unknown tool: {fn_name}"}
+                if tool_fn:
+                    tool_result = await tool_fn(**fn_args)
+                else:
+                    tool_result = {"error": f"unknown tool: {fn_name}"}
 
-                messages.append({"role": "tool", "content": str(tool_result)})
+                # /v1/ 端点需要 tool_call_id 来关联 tool response
+                messages.append({
+                    "role": "tool",
+                    "tool_call_id": tc.get("id", ""),
+                    "content": str(tool_result),
+                })
 
                 if tool_result.get("_terminal"):
                     terminal_result = {k: v for k, v in tool_result.items() if k != "_terminal"}
@@ -303,16 +330,15 @@ class OllamaNode(AgentNode):
         history: list | None = None,
     ) -> tuple[str, str]:
         """
-        调用 Ollama /api/chat（流式）。返回 (text, session_id)。
+        调用 Ollama /v1/chat/completions。返回 (text, session_id)。
 
         session_id 语义：Ollama 无持久 session，返回传入值不变。
         history: 完整 LangGraph 消息历史，用于重建多轮对话上下文。
-          历史中最后一条 HumanMessage 即当前 prompt，跳过以免重复。
-        tools/cwd：忽略（Ollama 工具调用留待后续实现）。
         keep_alive=-1：模型常驻 RAM，防止 5 分钟后自动卸载。
         """
         if is_debug():
-            logger.debug(f"[ollama] model={self._model} prompt_len={len(prompt)} history_len={len(history) if history else 0}")
+            logger.debug(f"[ollama] model={self._model} prompt_len={len(prompt)} "
+                         f"history_len={len(history) if history else 0}")
 
         messages = []
         # plan 模式：system_prompt 追加禁写指令
@@ -339,8 +365,8 @@ class OllamaNode(AgentNode):
         check_before_llm(messages=messages, node_id=self._node_id, limit=self._token_limit)
 
         try:
-            resp = await self._stream_chat(messages)
-            full_text = resp.get("message", {}).get("content", "")
+            resp = await self._chat_completions(messages)
+            full_text = resp.get("content", "")
         except httpx.ConnectError as e:
             full_text = (
                 f"[Ollama 连接失败] 无法连接到 {self._endpoint}，"
