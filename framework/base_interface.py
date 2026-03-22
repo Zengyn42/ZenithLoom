@@ -362,16 +362,25 @@ class BaseInterface:
         if cmd == "!setproject":
             if not arg:
                 workspace = self._resolve_workspace() or "（未设置）"
-                return f"当前项目目录：{workspace}\n用法：!setproject <路径>"
-            path = os.path.expanduser(arg.strip())
-            if not os.path.isdir(path):
-                return f"路径不存在：{path}"
+                return f"当前项目目录：{workspace}\n用法：!setproject <路径>  （传 clear 可清空，回退到 entity 默认值）"
             name = self._resolve_session_name()
             if not name:
                 return "❌ 当前没有活跃的命名 session"
             env = session_mgr.get_envelope(name)
             if not env:
                 return "❌ Session envelope 不存在"
+            stripped = arg.strip()
+            if stripped.lower() == "clear":
+                env.workspace = ""
+                env.updated_at = datetime.now(timezone.utc).isoformat()
+                session_mgr._save()
+                fallback = self._config.workspace if self._config else ""
+                if fallback:
+                    return f"Session 工作目录已清空，回退到 entity 默认值：{fallback}"
+                return "Session 工作目录已清空（entity 也未设置默认值）"
+            path = os.path.expanduser(stripped)
+            if not os.path.isdir(path):
+                return f"路径不存在：{path}"
             env.workspace = path
             env.updated_at = datetime.now(timezone.utc).isoformat()
             session_mgr._save()
