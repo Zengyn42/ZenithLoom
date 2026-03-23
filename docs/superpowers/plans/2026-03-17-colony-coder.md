@@ -1,10 +1,21 @@
 # Colony Coder Implementation Plan
 
+> **⚠️ SUPERSEDED (2026-03-22)**
+> 本文档是历史规划文档，记录了 Colony Coder 的原始设计。实际实现已做重大调整：
+> - Executor 从 10 节点简化为 4 节点 (inject_task_context/code_gen/run_tests/test_route)
+> - Master 第三阶段从 `integrate` 改为 `qa` (独立 QA 子图)
+> - Master 节点类型从 AGENT_REF 改为 SUBGRAPH_NODE
+> - Schema 名称从 `colony_executor` 改为 `colony_coder_schema`
+> - 配置文件从 `agent.json` 改为 `entity.json`
+> - `_post_chat` 方法已被 `_chat_completions` 替代
+>
+> **当前架构请参阅: `docs/vault/architecture/colony-coder.md`**
+
 > **For agentic workers:** REQUIRED: Use superpowers:subagent-driven-development (if subagents available) or superpowers:executing-plans to implement this plan. Steps use checkbox (`- [ ]`) syntax for tracking.
 
 **Goal:** Build Colony Coder — a 17-node collaborative coding subgraph using Qwen3.5-27B (Ollama) for local code execution and ApexCoder (Claude SDK) for planning/rescue, organized as three independent LangGraph subgraphs.
 
-**Architecture:** Phase 1 adds four framework primitives (DeterministicNode, ExternalToolNode code_execution backend, OllamaNode tool registry, OllamaNode tool loop). Phases 2–6 build the three subgraphs (planner/executor/integrator) plus a thin master wrapper. Subgraphs are tested standalone before integration.
+**Architecture:** Phase 1 adds four framework primitives (DeterministicNode, ExternalToolNode code_execution backend, OllamaNode tool registry, OllamaNode tool loop). Phases 2-6 build the three subgraphs (planner/executor/integrator) plus a thin master wrapper. Subgraphs are tested standalone before integration.
 
 **Tech Stack:** LangGraph 0.2+, Ollama `/api/chat` (Qwen3.5-27B), Claude SDK (ApexCoder), httpx, pytest-asyncio, Python 3.11+
 
@@ -18,15 +29,15 @@
 |------|----------------|
 | `framework/nodes/deterministic_node.py` | Pure-Python validator/router node; loads `validators.py` from blueprint dir by convention |
 | `framework/nodes/llm/tools.py` | Tool registry + schemas for OllamaNode (read_file, write_file, bash_exec, list_dir, submit_validation) |
-| `blueprints/functional_graphs/colony_coder/agent.json` | Master: 3 AGENT_REF nodes (plan → execute → integrate) |
-| `blueprints/functional_graphs/colony_coder_planner/agent.json` | Planner: 5 nodes (plan, design_debate, claude_swarm, task_decompose, decomposition_validator) |
+| `blueprints/functional_graphs/colony_coder/entity.json` | Master: 3 AGENT_REF nodes (plan → execute → integrate) |
+| `blueprints/functional_graphs/colony_coder_planner/entity.json` | Planner: 5 nodes (plan, design_debate, claude_swarm, task_decompose, decomposition_validator) |
 | `blueprints/functional_graphs/colony_coder_planner/validators.py` | `decomposition_validator(state)` |
 | `blueprints/functional_graphs/colony_coder_planner/system_prompt.md` | Shared planner system prompt (stub) |
-| `blueprints/functional_graphs/colony_coder_executor/agent.json` | Executor: 9 nodes |
+| `blueprints/functional_graphs/colony_coder_executor/entity.json` | Executor: 9 nodes |
 | `blueprints/functional_graphs/colony_coder_executor/state.py` | `ColonyCoderExecutorState` with merge-dict ollama_sessions |
 | `blueprints/functional_graphs/colony_coder_executor/validators.py` | hard_validate, error_classifier, rescue_router, rollback_state |
 | `blueprints/functional_graphs/colony_coder_executor/system_prompt.md` | Code gen system prompt (stub) |
-| `blueprints/functional_graphs/colony_coder_integrator/agent.json` | Integrator: 4 nodes |
+| `blueprints/functional_graphs/colony_coder_integrator/entity.json` | Integrator: 4 nodes |
 | `blueprints/functional_graphs/colony_coder_integrator/validators.py` | `integration_route(state)` |
 | `blueprints/functional_graphs/colony_coder_integrator/system_prompt.md` | Integration test system prompt (stub) |
 | `test_colony_coder.py` | Unit tests: framework components + validators |
@@ -106,7 +117,7 @@ Expected: `ModuleNotFoundError: No module named 'framework.nodes.deterministic_n
 """DeterministicNode — DETERMINISTIC node type.
 
 Wraps a pure Python function from {blueprint_dir}/validators.py as a LangGraph node.
-Convention: the function name must match the node's id in agent.json.
+Convention: the function name must match the node's id in entity.json.
 
 node_config fields (injected by _build_declarative):
   id          str  required  Node id — used to look up function in validators.py
@@ -1048,7 +1059,7 @@ git commit -m "feat: add ColonyCoderExecutorState with merge-dict ollama_session
 **Files:**
 - Create: `blueprints/functional_graphs/colony_coder_planner/__init__.py`
 - Create: `blueprints/functional_graphs/colony_coder_planner/validators.py`
-- Create: `blueprints/functional_graphs/colony_coder_planner/agent.json`
+- Create: `blueprints/functional_graphs/colony_coder_planner/entity.json`
 - Create: `blueprints/functional_graphs/colony_coder_planner/system_prompt.md`
 - Test: `test_colony_coder.py`
 
@@ -1153,7 +1164,7 @@ def decomposition_validator(state: dict) -> dict:
     return {"routing_target": "task_decompose", "retry_count": retry_count + 1}
 ```
 
-- [ ] **Step 5: Create `blueprints/functional_graphs/colony_coder_planner/agent.json`**
+- [ ] **Step 5: Create `blueprints/functional_graphs/colony_coder_planner/entity.json`**
 
 Note: Uses `"colony_executor"` schema so internal nodes can write `tasks`, `execution_order`,
 `refined_plan`, `working_directory`, and `retry_count` into state. `BaseAgentState` lacks these
@@ -1232,7 +1243,7 @@ Expected: 3 PASSED
 ```bash
 pytest test_colony_coder.py::test_planner_graph_compiles -v
 ```
-Expected: PASS. If it fails with routing edge error, check agent.json edge type — the `"routing_to"` edge needs a matching node in the graph. Adjust if needed.
+Expected: PASS. If it fails with routing edge error, check entity.json edge type — the `"routing_to"` edge needs a matching node in the graph. Adjust if needed.
 
 - [ ] **Step 9: Commit**
 
@@ -1248,7 +1259,7 @@ git commit -m "feat: add colony_coder_planner subgraph"
 ### Task 7: Executor Skeleton (OLLAMA + EXTERNAL_TOOL nodes)
 
 **Files:**
-- Create: `blueprints/functional_graphs/colony_coder_executor/agent.json`
+- Create: `blueprints/functional_graphs/colony_coder_executor/entity.json`
 - Create: `blueprints/functional_graphs/colony_coder_executor/system_prompt.md`
 
 Note: validators.py and claude_rescue come in Task 8. This task creates the skeleton.
@@ -1262,7 +1273,7 @@ You are a code generation agent. For the current task, write clean, working code
 Use the provided tools to read context, write files, and run validation.
 ```
 
-- [ ] **Step 2: Create `blueprints/functional_graphs/colony_coder_executor/agent.json`**
+- [ ] **Step 2: Create `blueprints/functional_graphs/colony_coder_executor/entity.json`**
 
 ```json
 {
@@ -1352,7 +1363,7 @@ Use the provided tools to read context, write files, and run validation.
 
 ```bash
 git add blueprints/functional_graphs/colony_coder_executor/
-git commit -m "feat: add colony_coder_executor agent.json skeleton"
+git commit -m "feat: add colony_coder_executor entity.json skeleton"
 ```
 
 ---
@@ -1624,7 +1635,7 @@ git commit -m "feat: add colony_coder_executor validators + compile test"
 **Files:**
 - Create: `blueprints/functional_graphs/colony_coder_integrator/__init__.py`
 - Create: `blueprints/functional_graphs/colony_coder_integrator/validators.py`
-- Create: `blueprints/functional_graphs/colony_coder_integrator/agent.json`
+- Create: `blueprints/functional_graphs/colony_coder_integrator/entity.json`
 - Create: `blueprints/functional_graphs/colony_coder_integrator/system_prompt.md`
 - Test: `test_colony_coder.py`
 
@@ -1707,7 +1718,7 @@ def integration_route(state: dict) -> dict:
     return {"routing_target": "integration_rescue", "retry_count": retry_count + 1}
 ```
 
-- [ ] **Step 5: Create `blueprints/functional_graphs/colony_coder_integrator/agent.json`**
+- [ ] **Step 5: Create `blueprints/functional_graphs/colony_coder_integrator/entity.json`**
 
 Note: Uses `"colony_executor"` schema so `integration_test` can write `validation_output` and
 `integration_route` can write `success`/`abort_reason` into state. Import
@@ -1790,7 +1801,7 @@ git commit -m "feat: add colony_coder_integrator subgraph"
 
 **Files:**
 - Create: `blueprints/functional_graphs/colony_coder/__init__.py`
-- Create: `blueprints/functional_graphs/colony_coder/agent.json`
+- Create: `blueprints/functional_graphs/colony_coder/entity.json`
 - Test: `test_colony_coder.py`
 
 - [ ] **Step 1: Write the failing test**
@@ -1820,7 +1831,7 @@ Expected: Error — blueprint dir missing
 
 Empty file.
 
-- [ ] **Step 4: Create `blueprints/functional_graphs/colony_coder/agent.json`**
+- [ ] **Step 4: Create `blueprints/functional_graphs/colony_coder/entity.json`**
 
 Note: Uses `"colony_executor"` state schema because the master graph passes inter-subgraph fields
 (`tasks`, `execution_order`, `completed_tasks`, `final_files`, etc.) that are not in `BaseAgentState`.
