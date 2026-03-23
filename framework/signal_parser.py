@@ -52,10 +52,7 @@ class JsonLineParser:
 
     def parse(self, text: str) -> dict | None:
         lines = [l.strip() for l in text.splitlines() if l.strip()]
-        candidates = {0: lines[0]} if lines else {}
-        if len(lines) > 1:
-            candidates[-1] = lines[-1]
-        for line in candidates.values():
+        for line in lines:
             if not line.startswith("{"):
                 continue
             try:
