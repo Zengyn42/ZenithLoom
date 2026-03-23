@@ -36,6 +36,7 @@ class BaseAgentState(TypedDict):
     debate_conclusion: str  # 辩论子图最终结论（最后发言节点的输出，由 AgentRefNode 写入）
     apex_conclusion: str    # ApexCoder 子图执行结论（由 AgentRefNode 写入，claude_main 读取）
     knowledge_result: str   # knowledge_shelf 子图结论（由 SubgraphRefNode 写入，gemini_main 读取）
+    discovery_report: str   # tool_discovery 子图结论（由 SubgraphRefNode 写入，claude_main 读取）
     subgraph_call_counts: dict  # {"debate_brainstorm": 2, ...} — 按子图 ID 计数，用于 max_retry 限速
     connector: str              # 接口类型标识（"cli" / "discord"），由 BaseInterface 注入，LlmNode 用于动态调整 user_msg_prefix
 

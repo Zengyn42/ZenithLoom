@@ -433,6 +433,16 @@ class BaseInterface:
             else:
                 return f"❌ {result['msg']}"
 
+        # ── 工具发现 ─────────────────────────────────────────────────────
+        if cmd == "!discover":
+            if not arg:
+                return "用法：!discover <需求描述>  例如：!discover 找一个能写 Google Slides 的 AI 工具"
+            # 转化为普通消息，由 Claude 自动路由到 tool_discovery 子图
+            return await self.invoke_agent(
+                f"请帮我搜索和评估开源工具：{arg}",
+                extra_state={"routing_target": "tool_discovery", "routing_context": arg},
+            )
+
         return None  # 未识别 → 子类处理
 
     # ------------------------------------------------------------------
