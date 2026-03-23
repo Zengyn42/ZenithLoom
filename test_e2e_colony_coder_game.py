@@ -1,19 +1,18 @@
 # test_e2e_colony_coder_game.py
-"""E2E test: Colony Coder full chain (Planner → Executor → Integrator)
+"""E2E test: Colony Coder full chain (Planner → Executor → QA)
 builds a CLI number guessing game.
 
 Strategy:
-  - Planner subgraph runs for real (ClaudeSDKNode.__call__ mocked).
-  - Executor and Integrator mocked at the AGENT_REF level
-    to avoid the hard_validate→execute loop (execute node doesn't
-    reset validation_output, so hard_validate re-routes to execute
-    infinitely in the current design).
-  - Real file I/O: guess_game.py is created via pathlib in the executor mock
-    (simulates the write_file tool that code_gen would invoke).
+  - Master graph uses SUBGRAPH_NODE (native LangGraph subgraphs).
+  - Mock at leaf node level: ClaudeSDKNode, OllamaNode, SubgraphRefNode.
+  - DETERMINISTIC nodes run for real (validators, run_tests, e2e_route, etc).
+  - Real file I/O: game code + test scripts written by mocks.
 """
 
 import json
 import logging
+import os
+import stat
 import sys
 from pathlib import Path
 from unittest.mock import patch
@@ -30,6 +29,7 @@ import blueprints.functional_graphs.colony_coder.state  # noqa: F401
 
 from framework.agent_loader import AgentLoader
 from framework.nodes.llm.claude import ClaudeSDKNode
+from framework.nodes.llm.ollama import OllamaNode
 from framework.nodes.subgraph.subgraph_ref_node import SubgraphRefNode
 from langchain_core.messages import AIMessage, HumanMessage
 
@@ -131,55 +131,97 @@ def _base_return(state: dict, content: str, **extra) -> dict:
     return result
 
 
+def _make_test_scripts(tmpdir: str) -> None:
+    """Create test scripts that pass (unit tests + run_tests.sh)."""
+    test_dir = Path(tmpdir) / "test_tool" / "unit_tests"
+    test_dir.mkdir(parents=True, exist_ok=True)
+    (test_dir / "test_basic.py").write_text(
+        "def test_import():\n"
+        "    import importlib.util\n"
+        f"    spec = importlib.util.spec_from_file_location('game', '{tmpdir}/guess_game.py')\n"
+        "    assert spec is not None\n"
+    )
+    runner = Path(tmpdir) / "test_tool" / "run_tests.sh"
+    runner.write_text(
+        "#!/bin/bash\nset -e\n"
+        f"cd '{tmpdir}'\n"
+        "python3 -m pytest test_tool/unit_tests/ -v 2>&1\n"
+    )
+    runner.chmod(runner.stat().st_mode | stat.S_IEXEC)
+
+
+def _make_e2e_scripts(tmpdir: str) -> None:
+    """Create E2E test scripts that pass."""
+    e2e_dir = Path(tmpdir) / "test_tool" / "e2e_tests"
+    e2e_dir.mkdir(parents=True, exist_ok=True)
+    (e2e_dir / "test_game_e2e.py").write_text(
+        "import os\n\n"
+        "def test_game_file_exists():\n"
+        f"    assert os.path.isfile('{tmpdir}/guess_game.py')\n\n"
+        "def test_game_has_main():\n"
+        f"    with open('{tmpdir}/guess_game.py') as f:\n"
+        "        content = f.read()\n"
+        "    assert 'def main' in content\n"
+        "    assert 'play_game' in content\n"
+    )
+    runner = Path(tmpdir) / "test_tool" / "run_e2e.sh"
+    runner.write_text(
+        "#!/bin/bash\nset -e\n"
+        f"cd '{tmpdir}'\n"
+        "python3 -m pytest test_tool/e2e_tests/ -v 2>&1\n"
+    )
+    runner.chmod(runner.stat().st_mode | stat.S_IEXEC)
+
+
 # ---------------------------------------------------------------------------
-# Test
+# Tests
 # ---------------------------------------------------------------------------
 
 @pytest.mark.asyncio
 async def test_e2e_colony_coder_game(tmp_path):
-    """Full-chain E2E: master graph drives Planner → Executor → Integrator."""
+    """Full-chain E2E: master graph (SUBGRAPH_NODE) drives Planner → Executor → QA.
 
+    Mocking strategy (leaf-node level):
+      - ClaudeSDKNode.__call__ → planner's claude_swarm, task_decompose; QA's generate_e2e
+      - OllamaNode.__call__   → executor's code_gen (writes game file + test scripts)
+      - SubgraphRefNode.__call__ → planner's design_debate (SUBGRAPH_REF)
+      - DETERMINISTIC nodes run for real (validators, run_tests, e2e_route, etc.)
+    """
     tmpdir = str(tmp_path)
 
-    # ── 1. ClaudeSDKNode mock (planner's 4 CLAUDE_SDK nodes) ─────────────
-    claude_call_count = 0
-
+    # ── 1. ClaudeSDKNode mock (dispatched by node_id) ─────────────────────
     async def _mock_claude_call(self, state):
-        nonlocal claude_call_count
-        claude_call_count += 1
-        idx = claude_call_count
+        node_id = self._node_id
 
-        if idx == 1:  # plan
+        if node_id == "claude_swarm":
             return _base_return(
                 state,
-                "High-level plan: Build a CLI number guessing game with "
-                "random number generation, input handling, scoring, and replay.",
+                "Multi-perspective review: approved. Proceed with implementation.",
             )
-        elif idx == 2:  # design_debate
-            return _base_return(
-                state,
-                "Risk analysis: Input validation needed. Random range "
-                "[1,100] is standard. Edge cases: non-integer input, "
-                "immediate correct guess.",
-            )
-        elif idx == 3:  # claude_swarm
-            return _base_return(
-                state,
-                "Multi-perspective review: Code is simple, maintainable, "
-                "and testable. All three reviewers approve. Proceed.",
-            )
-        elif idx == 4:  # task_decompose
+
+        elif node_id == "task_decompose":
             decomposition = {
                 "tasks": TASKS,
                 "execution_order": EXECUTION_ORDER,
                 "refined_plan": "Build a CLI number guessing game",
                 "working_directory": tmpdir,
+                "e2e_plan": {
+                    "acceptance_criteria": [
+                        "Game generates random number 1-100",
+                        "User gets higher/lower hints",
+                        "Score displayed after correct guess",
+                    ],
+                    "test_scenarios": [
+                        "Game file exists and is valid Python",
+                        "Game has main() and play_game() functions",
+                    ],
+                    "run_command": f"python3 {tmpdir}/guess_game.py",
+                    "headless_notes": "Pipe input via stdin",
+                },
             }
             return _base_return(
                 state,
                 json.dumps(decomposition, indent=2),
-                # Write parsed fields directly into state so
-                # decomposition_validator can read them.
                 tasks=TASKS,
                 execution_order=EXECUTION_ORDER,
                 refined_plan=(
@@ -187,65 +229,59 @@ async def test_e2e_colony_coder_game(tmp_path):
                     "generation, input loop, hints, scoring, and replay."
                 ),
                 working_directory=tmpdir,
+                e2e_plan=decomposition["e2e_plan"],
             )
+
+        elif node_id == "generate_e2e":
+            # QA: write E2E test scripts that will pass
+            _make_e2e_scripts(tmpdir)
+            return _base_return(state, "E2E_VERDICT: PASS\nAll acceptance criteria met.")
+
+        elif node_id in ("qa_rescue", "integration_rescue"):
+            return _base_return(state, "RESCUE_VERDICT: PASS")
+
         else:
-            # claude_rescue / integration_rescue — should not be reached
-            # in the happy-path test.
-            return _base_return(state, "Rescue response (unexpected)")
+            # Catch-all for any unexpected CLAUDE_SDK node
+            return _base_return(state, f"Mock response for {node_id}")
 
-    # ── 2. SubgraphRefNode mock (planner real, executor/integrator mocked) ──
-    _original_subgraph_call = SubgraphRefNode.__call__
+    # ── 2. OllamaNode mock (executor's code_gen) ─────────────────────────
+    async def _mock_ollama_call(self, state):
+        # Write game source file
+        game_path = Path(tmpdir) / "guess_game.py"
+        game_path.write_text(GAME_CODE, encoding="utf-8")
 
-    async def _mock_subgraph_call(self, state):
-        name = self._loader.name
+        # Write unit test scripts that pass
+        _make_test_scripts(tmpdir)
 
-        if name == "colony_coder_planner":
-            # Delegate to real implementation — ClaudeSDKNode.__call__
-            # is class-patched so the planner subgraph gets our mocks.
-            return await _original_subgraph_call(self, state)
+        return {
+            "messages": [_ai(
+                "All code written. guess_game.py created with play_game(), "
+                "main(), random number generation, hints, scoring, and replay. "
+                "Unit tests created and passing."
+            )],
+        }
 
-        # ── Shared bookkeeping (mirrors SubgraphRefNode internals) ────
-        call_counts = dict(state.get("subgraph_call_counts") or {})
-        my_count = call_counts.get(self._node_id, 0)
-        call_counts[self._node_id] = my_count + 1
+    # ── 3. SubgraphRefNode mock (planner's design_debate SUBGRAPH_REF) ───
+    async def _mock_subgraph_ref_call(self, state):
+        return {
+            "messages": [_ai(
+                "Design debate conclusion: Build a simple CLI number guessing "
+                "game. Single file approach. Random 1-100, binary search hints, "
+                "attempt counter, replay loop."
+            )],
+            "refined_plan": (
+                "Build a CLI number guessing game: random number 1-100, "
+                "higher/lower hints, attempt counting, score display, replay."
+            ),
+            "subgraph_call_counts": dict(state.get("subgraph_call_counts") or {}),
+            "consult_count": state.get("consult_count", 0) + 1,
+        }
 
-        if name == "colony_coder_executor":
-            # Simulate code_gen writing the game file.
-            game_path = Path(tmpdir) / "guess_game.py"
-            game_path.write_text(GAME_CODE, encoding="utf-8")
-
-            return {
-                "completed_tasks": list(EXECUTION_ORDER),
-                "final_files": ["guess_game.py"],
-                "success": True,
-                "abort_reason": None,
-                "messages": [_ai(
-                    "All 3 tasks executed successfully. "
-                    "guess_game.py written to working directory."
-                )],
-                "subgraph_call_counts": call_counts,
-                "consult_count": state.get("consult_count", 0) + 1,
-            }
-
-        if name == "colony_coder_integrator":
-            return {
-                "success": True,
-                "abort_reason": None,
-                "messages": [_ai(
-                    "Integration tests passed. guess_game.py imports "
-                    "cleanly, all functions defined, replay loop works."
-                )],
-                "subgraph_call_counts": call_counts,
-                "consult_count": state.get("consult_count", 0) + 1,
-            }
-
-        # Unknown subgraph — fall through to original
-        return await _original_subgraph_call(self, state)
-
-    # ── 3. Build & run master graph ──────────────────────────────────────
+    # ── 4. Build & run master graph ──────────────────────────────────────
     with (
         patch.object(ClaudeSDKNode, "__call__", _mock_claude_call),
-        patch.object(SubgraphRefNode, "__call__", _mock_subgraph_call),
+        patch.object(OllamaNode, "__call__", _mock_ollama_call),
+        patch.object(SubgraphRefNode, "__call__", _mock_subgraph_ref_call),
     ):
         loader = AgentLoader(Path("blueprints/functional_graphs/colony_coder"))
         graph = await loader.build_graph(checkpointer=None)
@@ -263,11 +299,12 @@ async def test_e2e_colony_coder_game(tmp_path):
                 if node_id not in ("__start__", "__end__"):
                     result.update(update)
 
-    # ── 4. Assertions ────────────────────────────────────────────────────
+    # ── 5. Assertions ────────────────────────────────────────────────────
 
     # Success flag
     assert result.get("success") is True, (
-        f"Expected success=True, got {result.get('success')!r}"
+        f"Expected success=True, got {result.get('success')!r}. "
+        f"abort_reason={result.get('abort_reason')!r}"
     )
 
     # File exists and has expected content
@@ -282,15 +319,6 @@ async def test_e2e_colony_coder_game(tmp_path):
     # No abort
     abort = result.get("abort_reason")
     assert not abort, f"Expected no abort_reason, got {abort!r}"
-
-    # Planner was fully exercised (4 Claude SDK calls)
-    assert claude_call_count == 4, (
-        f"Expected 4 planner Claude calls, got {claude_call_count}"
-    )
-
-    # Tasks propagated correctly through state mapping
-    assert result.get("completed_tasks") == EXECUTION_ORDER
-    assert result.get("final_files") == ["guess_game.py"]
 
 
 @pytest.mark.asyncio
@@ -327,38 +355,32 @@ async def test_planner_decomposition_validator_accepts_valid():
 
 
 @pytest.mark.asyncio
-async def test_executor_happy_path_validators():
-    """Executor validators: pass → execute, fail → error routes."""
+async def test_executor_new_validators():
+    """Executor validators: inject_task_context, test_route."""
     from blueprints.functional_graphs.colony_coder_executor.validators import (
-        hard_validate,
-        error_classifier,
+        inject_task_context, test_route,
     )
+    ctx = inject_task_context({
+        "refined_plan": "Build a game",
+        "tasks": TASKS,
+        "execution_order": EXECUTION_ORDER,
+        "working_directory": "/tmp/test",
+        "qa_analysis": "",
+        "qa_fail_count": 0,
+    })
+    assert "messages" in ctx
 
-    # Pass → execute
-    hv = hard_validate({
-        "validation_output": {"status": "pass"},
-        "retry_count": 0,
-    })
-    assert hv["routing_target"] == "execute"
+    # Pass
+    tr = test_route({"execution_returncode": 0, "retry_count": 0})
+    assert tr["routing_target"] == "__end__"
 
-    # Fail (transient) → self_fix
-    hv = hard_validate({
-        "validation_output": {"status": "fail", "category": "syntax_error", "severity": "low"},
-        "retry_count": 0,
+    # Fail retry
+    tr = test_route({
+        "execution_returncode": 1, "retry_count": 2,
+        "execution_stdout": "FAIL", "execution_stderr": "",
     })
-    assert hv["routing_target"] == "error_classifier"
-    ec = error_classifier({
-        "validation_output": {"status": "fail", "category": "syntax_error", "severity": "low"},
-        "transient_retry_count": 0,
-    })
-    assert ec["routing_target"] == "self_fix"
-
-    # Fail (cross_task) → rescue_router
-    ec = error_classifier({
-        "validation_output": {"status": "fail", "category": "cross_task", "severity": "high"},
-        "transient_retry_count": 0,
-    })
-    assert ec["routing_target"] == "rescue_router"
+    assert tr["routing_target"] == "code_gen"
+    assert tr["retry_count"] == 3
 
 
 @pytest.mark.asyncio
@@ -401,7 +423,7 @@ async def test_game_file_is_syntactically_valid(tmp_path):
 
 @pytest.mark.asyncio
 async def test_master_graph_node_wiring():
-    """Master graph has plan → execute → integrate wiring."""
+    """Master graph has plan → execute → qa wiring."""
     loader = AgentLoader(Path("blueprints/functional_graphs/colony_coder"))
     graph = await loader.build_graph(checkpointer=None)
-    assert set(graph.nodes) - {"__start__"} >= {"plan", "execute", "integrate"}
+    assert set(graph.nodes) - {"__start__"} >= {"plan", "execute", "qa"}

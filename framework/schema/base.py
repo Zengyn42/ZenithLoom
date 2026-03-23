@@ -3,7 +3,7 @@ base_schema — 框架默认 state schema
 
 BaseAgentState: 对话历史由 Claude SDK session 管理，LangGraph state 只保留最近 2 条消息。
 主图（Hani）、ApexCoder 等不需要自定义字段的图默认使用此 schema。
-agent.json 中不声明 state_schema 时自动使用。
+entity.json 中不声明 state_schema 时自动使用。
 """
 
 from typing import Annotated, TypedDict

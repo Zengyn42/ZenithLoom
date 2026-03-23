@@ -1,7 +1,7 @@
 """DeterministicNode — DETERMINISTIC node type.
 
 Wraps a pure Python function from {blueprint_dir}/validators.py as a LangGraph node.
-Convention: the function name must match the node's id in agent.json.
+Convention: the function name must match the node's id in entity.json.
 
 node_config fields (injected by _build_declarative):
   id          str  required  Node id — used to look up function in validators.py

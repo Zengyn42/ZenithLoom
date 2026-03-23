@@ -1,20 +1,20 @@
 """
 框架级实体加载器 — framework/agent_loader.py
 
-EntityLoader(blueprint_dir, data_dir) 从 blueprint 目录的 agent.json 加载角色定义，
-从 data_dir 的 entity.json 加载实例专属配置，
+EntityLoader(blueprint_dir, data_dir) 从 blueprint 目录的 entity.json 加载角色定义，
+从 data_dir 的 identity.json 加载实例专属配置，
 提供完整的图构建和控制器管理能力。
 
 任何新 Agent 只需：
   1. 创建 blueprints/role_agents/<name>/ 目录
-  2. 编写 agent.json（含 llm、persona_files、tool_rules 等）
+  2. 编写 entity.json（含 llm、persona_files、tool_rules 等）
   3. 放置 persona .md 文件
   4. 可选：编写 graph.py（完全自定义图）
 
 图构建优先级：
   Priority 1: agent 目录下的 graph.py（定义 build_graph(loader, checkpointer)）
-  Priority 2: agent.json["graph"] 含 "nodes" 和 "edges" → 声明式图
-  Priority 3: agent.json["graph"] 含 GraphSpec 标志 → 框架默认图
+  Priority 2: entity.json["graph"] 含 "nodes" 和 "edges" → 声明式图
+  Priority 3: entity.json["graph"] 含 GraphSpec 标志 → 框架默认图
 
 声明式图（Priority 2）支持完整节点/边/条件路由定义，
 以及 SUBGRAPH 内联子图（递归构建，共享 checkpointer）。
@@ -57,7 +57,7 @@ class EntityLoader:
         self._data_dir = Path(data_dir).resolve() if data_dir else self._dir
         self._env_prefix = self._resolve_env_prefix()
         self._json: dict = json.loads(
-            (self._dir / "agent.json").read_text(encoding="utf-8")
+            (self._dir / "entity.json").read_text(encoding="utf-8")
         )
         self._config: AgentConfig | None = None
         self._engine = None
@@ -71,8 +71,8 @@ class EntityLoader:
             )
 
     def _resolve_env_prefix(self) -> str:
-        """Derive env prefix from entity.json["name"] if available, else dir name."""
-        entity_path = self._data_dir / "entity.json"
+        """Derive env prefix from identity.json["name"] if available, else dir name."""
+        entity_path = self._data_dir / "identity.json"
         if entity_path.exists():
             try:
                 inst = json.loads(entity_path.read_text(encoding="utf-8"))
@@ -92,8 +92,8 @@ class EntityLoader:
         # If config already loaded, use entity name (most specific)
         if self._config is not None and self._config.name:
             return self._config.name
-        # Try entity.json directly (instance-specific name)
-        entity_path = self._data_dir / "entity.json"
+        # Try identity.json directly (instance-specific name)
+        entity_path = self._data_dir / "identity.json"
         if entity_path.exists():
             try:
                 import json as _json_mod
@@ -108,8 +108,8 @@ class EntityLoader:
     def load_config(self) -> AgentConfig:
         """加载 AgentConfig，相对路径解析到 data_dir（不是项目根）。"""
         if self._config is None:
-            blueprint_path = self._dir / "agent.json"
-            entity_path = self._data_dir / "entity.json"
+            blueprint_path = self._dir / "entity.json"
+            entity_path = self._data_dir / "identity.json"
             cfg = AgentConfig.from_blueprint_and_instance(
                 blueprint_path,
                 entity_path if entity_path.exists() else None,
@@ -176,7 +176,7 @@ class EntityLoader:
 
         优先级：
           1. agent 目录下的 graph.py（定义 build_graph(loader, checkpointer)）
-          2. agent.json["graph"] 含 "nodes" + "edges" → 声明式图
+          2. entity.json["graph"] 含 "nodes" + "edges" → 声明式图
           3. 否则使用框架默认图（GraphSpec 标志驱动）
         """
         # Priority 1: 自定义 graph.py
@@ -223,7 +223,7 @@ class EntityLoader:
             graph_dict["use_vram_flush"] = bool(self._json.get("vram_flush", False))
         spec = GraphSpec.from_dict(graph_dict)
 
-        # ClaudeSDKNode — model 从 agent.json 顶层 claude_model 字段读（向后兼容）
+        # ClaudeSDKNode — model 从 entity.json 顶层 claude_model 字段读（向后兼容）
         claude_node_config = {**self._json}
         agent_node = ClaudeSDKNode(config, node_config=claude_node_config, system_prompt=system_prompt)
 
@@ -276,15 +276,15 @@ class EntityLoader:
         """
         from framework.nodes.llm.heartbeat_tools import HeartbeatMCPProxy
 
-        entity_path = self._data_dir / "entity.json"
+        entity_path = self._data_dir / "identity.json"
         if not entity_path.exists():
-            logger.debug(f"[agent_loader] {self.name!r}: no entity.json, skip heartbeat")
+            logger.debug(f"[agent_loader] {self.name!r}: no identity.json, skip heartbeat")
             return None
 
         try:
             entity = json.loads(entity_path.read_text(encoding="utf-8"))
         except Exception as e:
-            logger.warning(f"[agent_loader] failed to read entity.json: {e}")
+            logger.warning(f"[agent_loader] failed to read identity.json: {e}")
             return None
 
         hb_ref = entity.get("heartbeat")
@@ -368,7 +368,7 @@ class EntityLoader:
 
     def build_topology_mermaid(self) -> str:
         """
-        从 agent.json 构建 Mermaid 拓扑图，正确展开 SUBGRAPH_REF / AGENT_REF 子图。
+        从 entity.json 构建 Mermaid 拓扑图，正确展开 SUBGRAPH_REF / AGENT_REF 子图。
 
         弥补 LangGraph get_graph(xray=True) 无法展开 AgentRefNode 的缺陷：
         AgentRefNode 是普通 callable，xray 只展开 native CompiledStateGraph 节点。
@@ -405,7 +405,7 @@ def _maybe_limit(fn, max_retry):
 
 def _collect_routing_hints(graph_spec: dict) -> str:
     """
-    遍历 graph_spec 中所有 SUBGRAPH_REF / AGENT_REF 节点，读取其 agent.json 的 routing_hint 字段，
+    遍历 graph_spec 中所有 SUBGRAPH_REF / AGENT_REF 节点，读取其 entity.json 的 routing_hint 字段，
     构建路由说明字符串，用于注入主节点 system_prompt。
     """
     hints: list[str] = []
@@ -416,14 +416,14 @@ def _collect_routing_hints(graph_spec: dict) -> str:
         agent_dir = node_def.get("agent_dir", "")
         if not agent_dir:
             continue
-        agent_json_path = Path(agent_dir) / "agent.json"
+        agent_json_path = Path(agent_dir) / "entity.json"
         if not agent_json_path.exists():
             continue
         try:
             sub_json = json.loads(agent_json_path.read_text(encoding="utf-8"))
             hint = sub_json.get("routing_hint", "")
             if hint:
-                hints.append(f'  - "{node_id}": {hint} <!-- [auto-injected from {agent_dir}/agent.json:routing_hint] -->')
+                hints.append(f'  - "{node_id}": {hint} <!-- [auto-injected from {agent_dir}/entity.json:routing_hint] -->')
         except Exception:
             continue
 
@@ -471,7 +471,7 @@ async def _build_declarative(
     blueprint_dir: str = "",
 ) -> object:
     """
-    从 agent.json["graph"]（含 nodes + edges）构建 LangGraph 状态机。
+    从 entity.json["graph"]（含 nodes + edges）构建 LangGraph 状态机。
 
     执行三步验证后再构建图，任意失败直接抛 ValueError。
     """
@@ -903,7 +903,7 @@ def _mermaid_agent_ref(
     node_def: dict, lines: list, indent: str, full_id: str, raw: str
 ) -> None:
     """
-    将 SUBGRAPH_REF / AGENT_REF 节点展开为 Mermaid subgraph，递归加载外部 agent.json。
+    将 SUBGRAPH_REF / AGENT_REF 节点展开为 Mermaid subgraph，递归加载外部 entity.json。
     agent_dir 路径相对于进程 CWD（与 AgentRefNode 运行时行为一致）。
     """
     agent_dir_str = node_def.get("agent_dir", "")
@@ -913,7 +913,7 @@ def _mermaid_agent_ref(
         lines.append(f'{indent}end')
         return
 
-    sub_json_path = Path(agent_dir_str) / "agent.json"
+    sub_json_path = Path(agent_dir_str) / "entity.json"
     if not sub_json_path.exists():
         lines.append(f'{indent}subgraph {full_id}["{raw}\\n⚠ not found"]')
         lines.append(f'{indent}  {full_id}_err["⚠ {agent_dir_str}"]')

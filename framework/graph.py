@@ -3,7 +3,7 @@
 
 build_agent_graph() 构建可配置的 LangGraph 状态机（Priority 3 默认图）。
 
-GraphSpec（agent.json["graph"] 字段）：
+GraphSpec（entity.json["graph"] 字段）：
   use_git      bool  git_snapshot + git_rollback（默认 true）
   use_validate bool  validate 节点（默认 true）
   use_vram_flush bool GPU 清洗节点（默认 false）
@@ -14,7 +14,7 @@ GraphSpec（agent.json["graph"] 字段）：
     空   → 结束（END）
     有错误 → git_rollback
 
-推荐使用 Priority 2（agent.json 声明式图）替代此模块。
+推荐使用 Priority 2（entity.json 声明式图）替代此模块。
 Priority 1（graph.py）和 Priority 2（"nodes"+"edges"）均绕过本模块。
 """
 
@@ -37,13 +37,13 @@ logger = logging.getLogger(__name__)
 
 
 # ---------------------------------------------------------------------------
-# GraphSpec — agent.json["graph"] 驱动的拓扑配置
+# GraphSpec — entity.json["graph"] 驱动的拓扑配置
 # ---------------------------------------------------------------------------
 
 @dataclass
 class GraphSpec:
     """
-    声明式图拓扑配置，从 agent.json["graph"] 加载。
+    声明式图拓扑配置，从 entity.json["graph"] 加载。
 
     use_git=True  → 插入 git_snapshot（入口）和 git_rollback（错误恢复）
     use_validate  → 插入 validate 节点，验证失败触发 rollback

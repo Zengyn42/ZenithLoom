@@ -8,7 +8,7 @@ gws 的两种角色（均通过此模块体现接口层那一侧）：
 用法：
   由 main.py 注入 AgentLoader 后调用 run_gchat(loader)。
 
-agent.json 配置：
+entity.json 配置：
   "gchat_space":       "spaces/AAAA..."
   "gchat_gcp_project": "my-gcp-project"
   "gchat_event_types": "google.workspace.chat.message.v1.created"  # 可选，有默认值
@@ -69,7 +69,7 @@ class GChatInterface(BaseInterface):
         if not config.gchat_space:
             raise RuntimeError(
                 "GChatInterface: gchat_space 未配置。"
-                "请在 agent.json 中设置 gchat_space。"
+                "请在 entity.json 中设置 gchat_space。"
             )
 
         logger.info(

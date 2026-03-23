@@ -8,7 +8,7 @@ OllamaNode 继承 LlmNode，实现 call_llm() 接口：
 该端点支持 thinking + tool_calls + streaming 同时工作。
 keep_alive=-1 确保模型常驻 RAM（防止 5 分钟后自动卸载）。
 
-agent.json 配置：
+entity.json 配置：
   node_config["model"]:    "qwen3.5:27b"               # 模型名
   node_config["endpoint"]: "http://localhost:11434"      # Ollama endpoint（默认）
   node_config["timeout"]:  120                           # 超时秒数（默认）

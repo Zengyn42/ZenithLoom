@@ -1,20 +1,20 @@
 """
 框架级通用配置 — AgentConfig dataclass
 
-所有 Agent 共用此配置结构。从 agent.json 加载：
-  AgentConfig.from_json(path, prefix) — 从 agent.json 加载（推荐）
+所有 Agent 共用此配置结构。从 entity.json 加载：
+  AgentConfig.from_json(path, prefix) — 从 entity.json 加载（推荐）
 
 策略：
   - API 密钥（ANTHROPIC_API_KEY、GOOGLE_API_KEY）只放 .env
   - Discord 密钥（DISCORD_BOT_TOKEN、DISCORD_ALLOWED_USERS）放 .env 或 shell
-  - 所有行为配置（model、tools、permission_mode 等）只放 agent.json
-  - agent 专属字段（persona_files、tool_rules 等）由 agent 层自行从 agent.json 读取
+  - 所有行为配置（model、tools、permission_mode 等）只放 entity.json
+  - agent 专属字段（persona_files、tool_rules 等）由 agent 层自行从 entity.json 读取
 
 已移除字段（迁移说明）：
-  workspace          → entity.json 定义默认值，session 可覆盖
-  max_gemini_consults→ edge max_retry（agent.json graph edges）
-  claude_model       → node_config["model"]（agent.json nodes）
-  gemini_model       → node_config["model"]（agent.json nodes）
+  workspace          → identity.json 定义默认值，session 可覆盖
+  max_gemini_consults→ edge max_retry（entity.json graph edges）
+  claude_model       → node_config["model"]（entity.json nodes）
+  gemini_model       → node_config["model"]（entity.json nodes）
 """
 
 import json
@@ -47,7 +47,7 @@ class AgentConfig:
     @classmethod
     def from_json(cls, path, env_prefix: str | None = None) -> "AgentConfig":
         """
-        从 agent.json 加载。Discord 密钥允许 env var 覆盖，其余只读 JSON。
+        从 entity.json 加载。Discord 密钥允许 env var 覆盖，其余只读 JSON。
         """
         data = json.loads(Path(path).read_text(encoding="utf-8"))
 
@@ -69,7 +69,7 @@ class AgentConfig:
         if not isinstance(settings_override, dict):
             settings_override = None
 
-        # discord_token: DISCORD_BOT_TOKEN env var 优先（不带 prefix），其次 agent.json
+        # discord_token: DISCORD_BOT_TOKEN env var 优先（不带 prefix），其次 entity.json
         discord_token = (
             os.getenv("DISCORD_BOT_TOKEN")
             or (os.getenv(f"{env_prefix}_DISCORD_TOKEN") if env_prefix else None)
@@ -113,18 +113,18 @@ class AgentConfig:
         env_prefix: str = "",
     ) -> "AgentConfig":
         """
-        从 blueprint agent.json 加载基础配置，然后用 instance entity.json 覆盖
+        从 blueprint entity.json 加载基础配置，然后用 instance identity.json 覆盖
         实例专属字段（name、discord_token、discord_allowed_users）。
 
         db_path 规则：
-          - 若 agent.json 中显式设置了 db_path，直接使用该值。
-          - 否则，若 entity.json 提供了 name，则 db_path = f"{name}.db"。
+          - 若 entity.json 中显式设置了 db_path，直接使用该值。
+          - 否则，若 identity.json 提供了 name，则 db_path = f"{name}.db"。
           - 否则，退回到默认值 "agent.db"。
         """
         # 读取 blueprint（复用 from_json 逻辑）
         cfg = cls.from_json(blueprint_path, env_prefix=env_prefix)
 
-        # 判断 agent.json 是否显式设置了 db_path（与默认值不同则视为显式设置）
+        # 判断 entity.json 是否显式设置了 db_path（与默认值不同则视为显式设置）
         blueprint_data = json.loads(Path(blueprint_path).read_text(encoding="utf-8"))
         db_path_explicit = "db_path" in blueprint_data
 
@@ -138,7 +138,7 @@ class AgentConfig:
             name = inst.get("name", "")
             if name:
                 cfg.name = name
-                # 若 agent.json 未显式设置 db_path，用实例名推导
+                # 若 entity.json 未显式设置 db_path，用实例名推导
                 if not db_path_explicit:
                     cfg.db_path = f"{name}.db"
 

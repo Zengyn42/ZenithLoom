@@ -2,7 +2,7 @@
 E2E 测试：apex_coder agent 架构验证
 
 覆盖：
-  1. agent.json 结构完整性（节点、边、关键配置）
+  1. entity.json 结构完整性（节点、边、关键配置）
   2. apex_coder 图编译成功（单节点 apex_main）
   3. SOUL.md 加载 + 内容关键段落检查
   4. routing_hint 存在
@@ -41,8 +41,8 @@ SKILLS_DIR = Path("blueprints/functional_graphs/apex_coder/.claude/skills")
 
 
 async def test_agent_json_structure():
-    """agent.json 含所有必需字段且值正确。"""
-    raw = json.loads((AGENT_DIR / "agent.json").read_text(encoding="utf-8"))
+    """entity.json 含所有必需字段且值正确。"""
+    raw = json.loads((AGENT_DIR / "entity.json").read_text(encoding="utf-8"))
 
     assert raw["name"] == "apex_coder", f"name 应为 apex_coder，实际: {raw['name']}"
     assert "routing_hint" in raw and len(raw["routing_hint"]) > 10, "routing_hint 缺失或过短"
@@ -70,7 +70,7 @@ async def test_agent_json_structure():
     assert ("__start__", "apex_main") in edge_pairs, "缺少 __start__ → apex_main 边"
     assert ("apex_main", "__end__") in edge_pairs, "缺少 apex_main → __end__ 边"
 
-    logger.info("✅ agent.json structure OK")
+    logger.info("✅ entity.json structure OK")
 
 
 async def test_graph_compiles():
@@ -229,8 +229,8 @@ async def test_agent_config():
 
 
 async def test_add_dirs_config():
-    """agent.json 节点含 add_dirs，指向 agents/apex_coder。"""
-    raw = json.loads((AGENT_DIR / "agent.json").read_text(encoding="utf-8"))
+    """entity.json 节点含 add_dirs，指向 agents/apex_coder。"""
+    raw = json.loads((AGENT_DIR / "entity.json").read_text(encoding="utf-8"))
     node = raw["graph"]["nodes"][0]
     assert "add_dirs" in node, "节点缺少 add_dirs 字段"
     assert any("apex_coder" in d for d in node["add_dirs"]), f"add_dirs 应含 apex_coder 路径，实际: {node['add_dirs']}"
@@ -259,7 +259,7 @@ async def test_skill_isolation():
 
 async def test_routing_hint_injection():
     """如果 apex_coder 被其他图引用，routing_hint 应可被 _collect_routing_hints 读取。"""
-    raw = json.loads((AGENT_DIR / "agent.json").read_text(encoding="utf-8"))
+    raw = json.loads((AGENT_DIR / "entity.json").read_text(encoding="utf-8"))
     hint = raw.get("routing_hint", "")
 
     assert "复杂" in hint, "routing_hint 应含'复杂'关键词"
@@ -288,7 +288,7 @@ async def run():
 
     logger.info("=" * 50)
     print("\n✅ 全部 13 项测试通过")
-    print("   agent.json 结构完整（单节点、session_key、Agent 工具）")
+    print("   entity.json 结构完整（单节点、session_key、Agent 工具）")
     print("   图编译成功（apex_main 节点就位）")
     print("   无 checkpointer 模式正常")
     print("   SOUL.md 加载成功（含 ECC + PUA 核心内容）")

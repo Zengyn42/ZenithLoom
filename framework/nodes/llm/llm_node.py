@@ -14,7 +14,7 @@ LlmNode 是所有 LLM 节点的抽象基类，封装图协议逻辑。
   OllamaNode(LlmNode)            ← 本地 Ollama 实现
 
 permission_mode — LlmNode 级权限控制抽象：
-  agent.json 中声明 "permission_mode": "<mode>"，LlmNode 基类解析并存储到
+  entity.json 中声明 "permission_mode": "<mode>"，LlmNode 基类解析并存储到
   self._permission_mode。各子类负责将其映射到 provider 原生机制。
 
   可用模式：
@@ -38,7 +38,7 @@ permission_mode — LlmNode 级权限控制抽象：
 
   优先级：node_config["permission_mode"] > config.permission_mode > "default"
 
-node_config（来自 agent.json）驱动行为：
+node_config（来自 entity.json）驱动行为：
   permission_mode        str   权限模式（见上方详细说明）
   first_turn_suffix      str   首轮 prompt 末尾附加字符串，如 "Hani:"
   user_msg_prefix        str   用户消息前缀，如 "老板: "
@@ -104,7 +104,7 @@ class LlmNode:
       - tool_rules 关键词匹配
       - permission_mode 权限控制（plan / default / acceptEdits / bypassPermissions）
 
-    permission_mode 控制层级（声明式，agent.json 中配置）：
+    permission_mode 控制层级（声明式，entity.json 中配置）：
       "plan"              只读/规划模式 — 可推理和读取，禁止所有写入/执行操作
       "default"           标准模式 — 工具操作需确认
       "acceptEdits"       自动接受文件编辑
