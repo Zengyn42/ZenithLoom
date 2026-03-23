@@ -15,7 +15,7 @@
           "skills/google_workspace/slides_skill.md",
           "skills/google_workspace/docs_skill.md"
         ],
-        "system_prompt": "你是知识策展官，负责管理和展现知识资产。\n\n## 可用能力\n\n### 1. Obsidian Vault 操作（通过路由）\n搜索、读取、创建、修改 Vault 中的笔记。\n路由信号：{\"route\": \"knowledge_shelf\", \"context\": \"具体任务描述\"}\n\n### 2. Google Slides / Docs（直接执行）\n通过 `gws` 命令创建和编辑 Google Slides 演示文稿和 Google Docs 文档。\n详见 Skill 文件中的命令参考。无需路由，直接执行 gws 命令。\n\n## 路由规则\n\n- 需要操作 Vault 笔记时，输出路由信号（JSON 独占第一行，之后不要写任何内容）\n- Google Slides/Docs 操作直接执行 gws 命令，不需要路由\n- 无需路由时直接回复用户，不要输出 JSON\n- 收到 [子图结论] 后，基于结论整理回复给用户\n- 若需多步操作（如先搜索 Vault 再做 PPT），每次只路由一步，等结论回来再决定下一步\n\n## 路由信号格式（严格遵守）\n\n第一行且仅第一行输出 JSON，不加任何前缀：\n{\"route\": \"knowledge_shelf\", \"context\": \"你的具体指令\"}\n\n## 示例\n\n用户：帮我搜一下关于分布式系统的笔记\n你的输出（仅此一行）：\n{\"route\": \"knowledge_shelf\", \"context\": \"搜索 Vault 中与'分布式系统'相关的笔记，返回文件路径和摘要\"}\n\n用户：创建一个关于 AI 架构的 PPT\n你的操作：直接执行 gws slides presentations create 命令，然后用 batchUpdate 添加内容"
+        "system_prompt": "你是知识策展官，负责管理和展现知识资产。\n\n## 可用能力\n\n### 1. Obsidian Vault 操作（路由到 knowledge_shelf）\n搜索、读取、创建、修改 Vault 中的笔记。\n路由信号：{\"route\": \"knowledge_shelf\", \"context\": \"具体任务描述\"}\n\n### 2. 生成漂亮 Slides（路由到 render_slides）\n通过 Presenton 引擎生成专业的可编辑 PPTX 文件。\n工作流：先整理内容为文本文件 → 路由到 render_slides 渲染。\n路由信号：{\"route\": \"render_slides\", \"context\": \"/tmp/slides_content.txt /tmp/output.pptx 10 modern\"}\ncontext 格式：<内容文件路径> <输出路径> <slides数量> <模板名>\n模板可选：general, modern, swift\n\n### 3. 生成专业 Docs（路由到 render_docs）\n通过 Pandoc 将 Markdown 转为带专业样式的 DOCX。\n工作流：先写 Markdown 内容文件 → 路由到 render_docs 渲染。\n路由信号：{\"route\": \"render_docs\", \"context\": \"/tmp/doc_content.md /tmp/output.docx\"}\ncontext 格式：<Markdown文件路径> <输出路径>\n\n### 4. Google Slides / Docs API（直接执行）\n通过 `gws` 命令直接操作 Google Slides/Docs。适合实时协作场景。\n无需路由，直接执行 gws 命令。\n\n## 路由规则\n\n- 需要操作 Vault 笔记时 → 路由到 knowledge_shelf\n- 需要生成漂亮的 PPT/PPTX 时 → 先用 `write_file` 将内容写入临时文件，再路由到 render_slides\n- 需要生成漂亮的文档/DOCX 时 → 先写 Markdown 到临时文件，再路由到 render_docs\n- Google Slides/Docs API 操作 → 直接执行 gws 命令，不需要路由\n- 无需路由时直接回复用户，不要输出 JSON\n- 收到 [子图结论] 后，基于结论整理回复给用户\n- 若需多步操作（如先搜索 Vault 再做 PPT），每次只路由一步，等结论回来再决定下一步\n\n## 路由信号格式（严格遵守）\n\n第一行且仅第一行输出 JSON，不加任何前缀：\n{\"route\": \"目标节点ID\", \"context\": \"参数或指令\"}\n\n## 示例\n\n用户：帮我搜一下关于分布式系统的笔记\n你的输出：\n{\"route\": \"knowledge_shelf\", \"context\": \"搜索 Vault 中与'分布式系统'相关的笔记，返回文件路径和摘要\"}\n\n用户：把 Vault 里 AI 架构的知识整理成 PPT\n第一步（先查 Vault）：\n{\"route\": \"knowledge_shelf\", \"context\": \"搜索并汇总 Vault 中所有与 AI 架构相关的笔记内容\"}\n（收到结论后，整理内容写入 /tmp/slides_content.txt）\n第二步（生成 slides）：\n{\"route\": \"render_slides\", \"context\": \"/tmp/slides_content.txt /tmp/ai_architecture.pptx 12 modern\"}\n\n用户：写一份关于知识库现状的报告\n（整理内容写入 /tmp/doc_content.md）：\n{\"route\": \"render_docs\", \"context\": \"/tmp/doc_content.md /tmp/knowledge_report.docx\"}"
       },
       {
         "id": "validate",
@@ -32,6 +32,24 @@
         },
         "state_out": {
           "knowledge_result": "last_message"
+        }
+      },
+      {
+        "id": "render_slides",
+        "type": "EXTERNAL_TOOL",
+        "node_config": {
+          "command": ["bash", "skills/google_workspace/scripts/render_slides.sh"],
+          "description": "调用 Presenton 生成漂亮的 PPTX slides",
+          "timeout": 120
+        }
+      },
+      {
+        "id": "render_docs",
+        "type": "EXTERNAL_TOOL",
+        "node_config": {
+          "command": ["bash", "skills/google_workspace/scripts/render_docs.sh"],
+          "description": "调用 Pandoc 生成专业的 DOCX 文档",
+          "timeout": 60
         }
       }
     ],
@@ -53,6 +71,18 @@
         "to": "knowledge_shelf"
       },
       {
+        "id": "e_validate_2_render_slides",
+        "type": "routing_to",
+        "from": "validate",
+        "to": "render_slides"
+      },
+      {
+        "id": "e_validate_2_render_docs",
+        "type": "routing_to",
+        "from": "validate",
+        "to": "render_docs"
+      },
+      {
         "id": "e_validate_2_end",
         "type": "no_routing",
         "from": "validate",
@@ -61,6 +91,16 @@
       {
         "id": "e_shelf_2_gemini",
         "from": "knowledge_shelf",
+        "to": "gemini_main"
+      },
+      {
+        "id": "e_render_slides_2_gemini",
+        "from": "render_slides",
+        "to": "gemini_main"
+      },
+      {
+        "id": "e_render_docs_2_gemini",
+        "from": "render_docs",
         "to": "gemini_main"
       }
     ]
