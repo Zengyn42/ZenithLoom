@@ -1,6 +1,69 @@
 # Google Docs Skill
 
-通过 `gws` CLI 操作 Google Docs 文档。
+生成专业文档。支持两条路径：
+1. **Pandoc 本地渲染**（推荐）— 生成带专业样式的 DOCX 文件
+2. **Google Docs API** — 通过 `gws` CLI 直接操作 Google Docs
+
+---
+
+## 路径一：Pandoc 本地渲染（推荐）
+
+将 Markdown 内容转换为带专业样式的 DOCX 文件。
+
+### 工作流
+
+1. 将内容写为 Markdown 格式（含 YAML frontmatter）
+2. 保存到临时文件（如 `/tmp/doc_content.md`）
+3. 路由到 `render_docs` 节点，或直接调用脚本
+
+### 调用方式
+
+```bash
+bash skills/google_workspace/scripts/render_docs.sh \
+  /tmp/doc_content.md \    # Markdown 文件
+  /tmp/output.docx          # 输出路径
+```
+
+### Markdown 写作规范
+
+```markdown
+---
+title: 文档标题
+author: Jei · 无垠智穹
+date: 2026-03-22
+---
+
+# 第一章
+
+正文内容。**重点** 用粗体标注。
+
+## 1.1 小节
+
+- 要点一
+- 要点二
+
+> 关键结论或重要发现用 blockquote 高亮。
+
+### 1.1.1 细节
+
+| 指标 | Q4 | Q1 | 变化 |
+|------|----|----|------|
+| 笔记数 | 930 | 1,247 | +34% |
+```
+
+### 写作规则
+
+- 用 heading 层级组织结构（最多 3 层：H1 → H2 → H3）
+- 关键结论用 `>` blockquote 高亮
+- 表格用 pipe 格式，标注数据来源
+- 代码用 fenced code block（带语言标识）
+- 内容来自 Vault 时，在脚注或文末标注笔记路径
+
+---
+
+## 路径二：Google Docs API（gws CLI）
+
+通过 `gws` CLI 直接在 Google Drive 中创建和编辑文档。适合需要实时协作的场景。
 
 ## 常用命令
 
