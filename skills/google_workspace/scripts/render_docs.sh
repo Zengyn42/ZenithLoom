@@ -1,41 +1,36 @@
 #!/bin/bash
 # render_docs.sh — 调用 Pandoc 生成专业的 DOCX 文档
 #
-# Usage: render_docs.sh <markdown_file> [output_path]
+# Usage: render_docs.sh <markdown_content>
 #
 # Arguments:
-#   markdown_file — Markdown 内容文件路径
-#   output_path   — 输出 DOCX 文件路径 (默认: /tmp/document.docx)
+#   markdown_content — Markdown 内容文本（直接传入，非文件路径）
+#
+# 由 EXTERNAL_TOOL 节点调用，markdown_content 来自 routing_context。
 
 set -euo pipefail
 
-MARKDOWN_FILE="${1:?Usage: render_docs.sh <markdown_file> [output_path]}"
-OUTPUT="${2:-/tmp/document.docx}"
+MARKDOWN_CONTENT="${1:?Usage: render_docs.sh <markdown_content>}"
+OUTPUT="/tmp/document_$(date +%s).docx"
 
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 TEMPLATE_DIR="${SCRIPT_DIR}/../templates"
 REFERENCE_DOC="${TEMPLATE_DIR}/professional.docx"
-
-if [ ! -f "$MARKDOWN_FILE" ]; then
-    echo "Error: Markdown file not found: $MARKDOWN_FILE" >&2
-    exit 1
-fi
 
 if ! command -v pandoc &> /dev/null; then
     echo "Error: pandoc not installed. Run: sudo apt install pandoc" >&2
     exit 1
 fi
 
-echo "Generating document with Pandoc..."
-echo "  Input: $MARKDOWN_FILE"
+# 写入临时 Markdown 文件
+TMPFILE=$(mktemp /tmp/doc_content_XXXXXX.md)
+echo "$MARKDOWN_CONTENT" > "$TMPFILE"
+trap "rm -f '$TMPFILE'" EXIT
 
-PANDOC_ARGS=("$MARKDOWN_FILE" -o "$OUTPUT")
+PANDOC_ARGS=("$TMPFILE" -o "$OUTPUT")
 
 if [ -f "$REFERENCE_DOC" ]; then
     PANDOC_ARGS+=(--reference-doc="$REFERENCE_DOC")
-    echo "  Template: $REFERENCE_DOC"
-else
-    echo "  Template: (none, using Pandoc default)"
 fi
 
 pandoc "${PANDOC_ARGS[@]}"
