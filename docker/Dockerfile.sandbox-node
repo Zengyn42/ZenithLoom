@@ -1,0 +1,17 @@
+# BootstrapBuilder — Node.js Sandbox for Tool Discovery
+# Build: docker build -t bb-sandbox-node -f docker/Dockerfile.sandbox-node .
+# Usage: docker run --rm --memory=1g --cpus=1 --read-only --tmpfs /workspace:rw bb-sandbox-node
+
+FROM node:20-slim
+
+RUN apt-get update && apt-get install -y --no-install-recommends \
+    git \
+    && rm -rf /var/lib/apt/lists/*
+
+# Non-root user for safety
+RUN useradd -m sandbox
+USER sandbox
+
+WORKDIR /workspace
+
+CMD ["/bin/bash"]

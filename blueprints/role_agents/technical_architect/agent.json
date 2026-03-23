@@ -137,6 +137,23 @@
         "state_out": {
           "apex_conclusion": "last_message"
         }
+      },
+      {
+        "id": "tool_discovery",
+        "type": "SUBGRAPH_REF",
+        "agent_dir": "blueprints/functional_graphs/tool_discovery",
+        "max_retry": 1,
+        "state_in": {
+          "user_query": "routing_context",
+          "routing_context": "routing_context",
+          "workspace": "workspace",
+          "project_root": "project_root",
+          "knowledge_vault": "knowledge_vault",
+          "project_docs": "project_docs"
+        },
+        "state_out": {
+          "discovery_report": "last_message"
+        }
       }
     ],
     "edges": [
@@ -225,6 +242,17 @@
       {
         "id": "e_apex_2_claude",
         "from": "apex_coder",
+        "to": "claude_main"
+      },
+      {
+        "id": "e_validate_2_discovery",
+        "type": "routing_to",
+        "from": "validate",
+        "to": "tool_discovery"
+      },
+      {
+        "id": "e_discovery_2_claude",
+        "from": "tool_discovery",
         "to": "claude_main"
       }
     ]
