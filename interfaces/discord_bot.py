@@ -935,7 +935,7 @@ def run_discord(loader=None):
 
     token = loader.load_config().discord_token if loader else ""
     if not token:
-        print("请在 agent.json 或 .env（DISCORD_BOT_TOKEN）中设置 Discord Bot Token")
+        print("请在 entity.json 或 .env（DISCORD_BOT_TOKEN）中设置 Discord Bot Token")
         return
     logger.info(f"[Discord] 启动中... agent={loader.name if loader else '?'} DEBUG={'ON' if is_debug() else 'OFF'}")
     bot.run(token, log_handler=None)

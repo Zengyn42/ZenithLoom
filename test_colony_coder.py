@@ -92,33 +92,29 @@ async def test_ollama_no_tools_uses_base_path():
 @pytest.mark.asyncio
 async def test_ollama_tool_loop_terminates_on_submit_validation():
     """Tool loop ends when submit_validation (_terminal=True) is returned."""
+    import json as _json
     from framework.nodes.llm.ollama import OllamaNode
 
-    submit_call = {
-        "function": {
+    tool_call_response = {
+        "role": "assistant",
+        "content": "",
+        "tool_calls": [{"id": "call_0", "type": "function", "function": {
             "name": "submit_validation",
-            "arguments": {
+            "arguments": _json.dumps({
                 "status": "pass",
                 "category": "correctness",
                 "severity": "low",
                 "rationale": "looks good",
-            },
-        }
-    }
-    tool_call_response = {
-        "message": {
-            "role": "assistant",
-            "content": "",
-            "tool_calls": [submit_call],
-        }
+            }),
+        }}],
     }
 
     node = OllamaNode(
         config={},
         node_config={"id": "soft_validate", "model": "qwen3.5:27b", "tools": ["submit_validation"]},
     )
-    with patch.object(node, "_post_chat", new_callable=AsyncMock) as mock_post:
-        mock_post.return_value = tool_call_response
+    with patch.object(node, "_chat_completions", new_callable=AsyncMock) as mock_chat:
+        mock_chat.return_value = tool_call_response
         result = await node._call_with_tools({
             "messages": [{"role": "user", "content": "validate this code"}],
             "node_sessions": {},
@@ -135,15 +131,16 @@ async def test_ollama_tool_loop_text_response():
     from framework.nodes.llm.ollama import OllamaNode
 
     text_response = {
-        "message": {"role": "assistant", "content": "here is the code", "tool_calls": []}
+        "role": "assistant",
+        "content": "here is the code",
     }
 
     node = OllamaNode(
         config={},
         node_config={"id": "code_gen", "model": "qwen3.5:27b", "tools": ["read_file", "write_file"]},
     )
-    with patch.object(node, "_post_chat", new_callable=AsyncMock) as mock_post:
-        mock_post.return_value = text_response
+    with patch.object(node, "_chat_completions", new_callable=AsyncMock) as mock_chat:
+        mock_chat.return_value = text_response
         result = await node._call_with_tools({
             "messages": [{"role": "user", "content": "write hello.py"}],
             "node_sessions": {},
@@ -215,87 +212,71 @@ async def test_planner_graph_compiles():
     import blueprints.functional_graphs.colony_coder.state  # noqa: F401
     from framework.agent_loader import AgentLoader
     from pathlib import Path
-    g = await AgentLoader(Path("blueprints/functional_graphs/colony_coder_planner")).build_graph()
+    g = await AgentLoader(Path("blueprints/functional_graphs/colony_coder_planner")).build_graph(checkpointer=None)
     node_ids = set(g.nodes) - {"__start__"}
     required = {"design_debate", "claude_swarm", "task_decompose", "decomposition_validator"}
     assert required <= node_ids, f"Missing nodes: {required - node_ids}"
 
 
-def test_hard_validate_pass():
-    from blueprints.functional_graphs.colony_coder_executor.validators import hard_validate
-    result = hard_validate({
-        "validation_output": {"status": "pass", "severity": "low"},
-        "transient_retry_count": 0, "retry_count": 0,
+def test_inject_task_context_basic():
+    from blueprints.functional_graphs.colony_coder_executor.validators import inject_task_context
+    result = inject_task_context({
+        "refined_plan": "Build a game",
+        "tasks": [{"id": "t1", "description": "write code", "dependencies": []}],
+        "execution_order": ["t1"],
+        "working_directory": "/tmp/test",
+        "qa_analysis": "",
+        "qa_fail_count": 0,
     })
-    assert result["routing_target"] == "execute"
+    assert "messages" in result
+    assert result["retry_count"] == 0
+    content = result["messages"][0].content
+    assert "Build a game" in content
+    assert "t1" in content
 
 
-def test_hard_validate_routes_to_error_classifier():
-    from blueprints.functional_graphs.colony_coder_executor.validators import hard_validate
-    result = hard_validate({
-        "validation_output": {"status": "fail", "severity": "medium"},
-        "transient_retry_count": 0, "retry_count": 0,
+def test_inject_task_context_with_qa_feedback():
+    from blueprints.functional_graphs.colony_coder_executor.validators import inject_task_context
+    result = inject_task_context({
+        "refined_plan": "Build a game",
+        "tasks": [],
+        "execution_order": [],
+        "working_directory": "/tmp/test",
+        "qa_analysis": "E2E tests failed: function not found",
+        "qa_fail_count": 1,
     })
-    assert result["routing_target"] == "error_classifier"
+    content = result["messages"][0].content
+    assert "QA Feedback" in content
+    assert "E2E tests failed" in content
 
 
-def test_hard_validate_abort_at_cap():
-    from blueprints.functional_graphs.colony_coder_executor.validators import hard_validate
-    result = hard_validate({
-        "validation_output": {"status": "fail", "severity": "high"},
-        "transient_retry_count": 0, "retry_count": 3,
-    })
+def test_run_tests_missing_runner():
+    from blueprints.functional_graphs.colony_coder_executor.validators import run_tests
+    result = run_tests({"working_directory": "/tmp/nonexistent_dir_xyz"})
+    assert result["execution_returncode"] == 1
+    assert "not found" in result["execution_stderr"]
+
+
+def test_test_route_pass():
+    from blueprints.functional_graphs.colony_coder_executor.validators import test_route
+    result = test_route({"execution_returncode": 0, "retry_count": 0})
     assert result["routing_target"] == "__end__"
-    assert result["success"] is False
 
 
-def test_error_classifier_transient():
-    from blueprints.functional_graphs.colony_coder_executor.validators import error_classifier
-    result = error_classifier({
-        "validation_output": {"category": "syntax_error", "severity": "low"},
-        "transient_retry_count": 0,
+def test_test_route_fail_retry():
+    from blueprints.functional_graphs.colony_coder_executor.validators import test_route
+    result = test_route({
+        "execution_returncode": 1, "retry_count": 0,
+        "execution_stdout": "FAILED test_foo", "execution_stderr": "",
     })
-    assert result["routing_target"] == "self_fix"
-    assert result["transient_retry_count"] == 1
+    assert result["routing_target"] == "code_gen"
+    assert result["retry_count"] == 1
 
 
-def test_error_classifier_escalates_to_claude():
-    from blueprints.functional_graphs.colony_coder_executor.validators import error_classifier
-    result = error_classifier({
-        "validation_output": {"category": "syntax_error", "severity": "low"},
-        "transient_retry_count": 2,  # at TRANSIENT_RETRY_CAP
-    })
-    assert result["routing_target"] == "claude_rescue"
-
-
-def test_rescue_router_dual_write():
-    from blueprints.functional_graphs.colony_coder_executor.validators import rescue_router
-    result = rescue_router({
-        "validation_output": {
-            "status": "fail", "category": "cross_task",
-            "severity": "high", "rationale": "shared interface broken",
-            "affected_scope": "t1,t2",
-        },
-        "cross_task_issues": [],
-        "current_task_id": "t3",
-    })
-    assert result["routing_target"] == "rollback_state"
-    assert len(result["cross_task_issues"]) == 1
-    assert result["affected_task_ids"] == ["t1", "t2"]
-
-
-def test_cascade_rollback_transitive():
-    from blueprints.functional_graphs.colony_coder_executor.validators import cascade_rollback
-    tasks = [
-        {"id": "t1", "dependencies": []},
-        {"id": "t2", "dependencies": ["t1"]},
-        {"id": "t3", "dependencies": ["t2"]},
-        {"id": "t4", "dependencies": []},
-    ]
-    affected = cascade_rollback(tasks, ["t1"])
-    assert "t2" in affected
-    assert "t3" in affected
-    assert "t4" not in affected
+def test_test_route_exhausted():
+    from blueprints.functional_graphs.colony_coder_executor.validators import test_route
+    result = test_route({"execution_returncode": 1, "retry_count": 5})
+    assert result["routing_target"] == "__end__"
 
 
 @pytest.mark.asyncio
@@ -303,14 +284,9 @@ async def test_executor_graph_compiles():
     import blueprints.functional_graphs.colony_coder.state  # noqa: F401
     from framework.agent_loader import AgentLoader
     from pathlib import Path
-    g = await AgentLoader(Path("blueprints/functional_graphs/colony_coder_executor")).build_graph()
+    g = await AgentLoader(Path("blueprints/functional_graphs/colony_coder_executor")).build_graph(checkpointer=None)
     node_ids = set(g.nodes) - {"__start__"}
-    required = {
-        "code_gen", "soft_validate", "self_fix",
-        "apply_patch", "execute",
-        "hard_validate", "error_classifier", "rescue_router", "rollback_state",
-        "claude_rescue",
-    }
+    required = {"inject_task_context", "code_gen", "run_tests", "test_route"}
     assert required <= node_ids, f"Missing: {required - node_ids}"
 
 
@@ -340,9 +316,9 @@ async def test_integrator_graph_compiles():
     import blueprints.functional_graphs.colony_coder.state  # noqa: F401
     from framework.agent_loader import AgentLoader
     from pathlib import Path
-    g = await AgentLoader(Path("blueprints/functional_graphs/colony_coder_integrator")).build_graph()
+    g = await AgentLoader(Path("blueprints/functional_graphs/colony_coder_integrator")).build_graph(checkpointer=None)
     node_ids = set(g.nodes) - {"__start__"}
-    required = {"integration_test", "integration_rescue", "apply_patch", "integration_route"}
+    required = {"integration_test", "integration_rescue", "integration_route"}
     assert required <= node_ids, f"Missing: {required - node_ids}"
 
 
@@ -352,6 +328,6 @@ async def test_master_graph_compiles():
     import blueprints.functional_graphs.colony_coder.state  # noqa: F401
     from framework.agent_loader import AgentLoader
     from pathlib import Path
-    g = await AgentLoader(Path("blueprints/functional_graphs/colony_coder")).build_graph()
+    g = await AgentLoader(Path("blueprints/functional_graphs/colony_coder")).build_graph(checkpointer=None)
     node_ids = set(g.nodes) - {"__start__"}
-    assert {"plan", "execute", "integrate"} <= node_ids
+    assert {"plan", "execute", "qa"} <= node_ids

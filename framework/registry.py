@@ -20,7 +20,7 @@
 
    所有 schema 名称以 _schema 结尾。框架内置 schema 在 framework/schema/ 下定义，
    业务图 schema 在各自目录的 state.py 中定义，均通过 register_schema() 自注册。
-   agent.json 中通过 "state_schema": "<name>" 引用，不声明则默认 "base_schema"。
+   entity.json 中通过 "state_schema": "<name>" 引用，不声明则默认 "base_schema"。
 
 内置节点和条件通过 framework/builtins.py 注册（import 时自动执行）。
 """

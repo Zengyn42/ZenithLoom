@@ -35,8 +35,8 @@ def test_entity_loader_accepts_positional_agent_dir():
     from pathlib import Path
     from framework.agent_loader import EntityLoader
     with tempfile.TemporaryDirectory() as tmp:
-        # Create minimal agent.json so EntityLoader doesn't fail on missing config
-        agent_json = Path(tmp) / "agent.json"
+        # Create minimal entity.json so EntityLoader doesn't fail on missing config
+        agent_json = Path(tmp) / "entity.json"
         agent_json.write_text('{"graph": {"nodes": [], "edges": []}}')
         loader = EntityLoader(Path(tmp))
         assert loader is not None

@@ -12,7 +12,7 @@ node_config 字段：
   max_retry   int|null  该子图在一轮对话中最多被调用的次数（默认 null = 无限制）
                 超限时不执行子图，返回 AIMessage 告知主图原因。
 
-用法示例（agent.json）：
+用法示例（entity.json）：
   {"id": "debate_brainstorm", "type": "SUBGRAPH_REF",
    "agent_dir": "agents/debate_gemini_first",
    "max_retry": 1,

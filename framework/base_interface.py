@@ -233,7 +233,7 @@ class BaseInterface:
                 lines.append(f"  {left:<30} {c.description}")
             return "\n".join(lines)
 
-        # ── Agent 图拓扑（从 agent.json 递归展开 SUBGRAPH_REF 子图）─────────
+        # ── Agent 图拓扑（从 entity.json 递归展开 SUBGRAPH_REF 子图）─────────
         if cmd == "!topology":
             return self._loader.build_topology_mermaid()
 

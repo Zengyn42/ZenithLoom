@@ -333,7 +333,7 @@ def _make_child_agent_dir(tmp: Path, child_name: str, has_own_persona: bool = Fa
             ],
         },
     }
-    (child_dir / "agent.json").write_text(json.dumps(agent_json))
+    (child_dir / "entity.json").write_text(json.dumps(agent_json))
     if has_own_persona:
         (child_dir / "CHILD_ROLE.md").write_text("# Child Role\nI am a child agent.")
     return child_dir
@@ -374,7 +374,7 @@ def _make_parent_agent_dir(
             ],
         },
     }
-    (parent_dir / "agent.json").write_text(json.dumps(agent_json))
+    (parent_dir / "entity.json").write_text(json.dumps(agent_json))
     if has_persona:
         (parent_dir / "PARENT_ROLE.md").write_text(
             "# Parent Role\nYou are the parent agent with important persona."
@@ -457,7 +457,7 @@ class TestPersonaPassthrough:
                     ],
                 },
             }
-            (parent_dir / "agent.json").write_text(json.dumps(agent_json))
+            (parent_dir / "entity.json").write_text(json.dumps(agent_json))
             (parent_dir / "PARENT_ROLE.md").write_text("# Parent with LLM")
 
             loader = EntityLoader(parent_dir)
@@ -507,7 +507,7 @@ def _make_subgraph_dir(
         "persona_files": [persona_fname] if persona_content else [],
         "graph": {"nodes": nodes, "edges": edges},
     }
-    (d / "agent.json").write_text(json.dumps(agent_json))
+    (d / "entity.json").write_text(json.dumps(agent_json))
     if persona_content:
         (d / persona_fname).write_text(persona_content)
     return d
@@ -572,7 +572,7 @@ def _make_composite_dir(
         "persona_files": [persona_fname] if persona_content else [],
         "graph": {"nodes": all_nodes, "edges": edges},
     }
-    (d / "agent.json").write_text(json.dumps(agent_json))
+    (d / "entity.json").write_text(json.dumps(agent_json))
     if persona_content:
         (d / persona_fname).write_text(persona_content)
     return d

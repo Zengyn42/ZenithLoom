@@ -4,7 +4,7 @@
 SUBGRAPH_MAPPER 节点类型：在子图和父图之间进行显式字段映射，
 防止子图节点意外写入父图保留字段（如 rollback_reason、gemini_context）。
 
-用法（声明式 agent.json 子图节点列表中）：
+用法（声明式 entity.json 子图节点列表中）：
   {"id": "sub_entry", "type": "SUBGRAPH_MAPPER", "direction": "in",
    "map": {"messages": "sub_messages", "project_root": "sub_root"}}
   {"id": "sub_exit",  "type": "SUBGRAPH_MAPPER", "direction": "out",
