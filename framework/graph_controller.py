@@ -125,6 +125,73 @@ class GraphController:
                 except Exception as e:
                     logger.warning(f"[controller] sync_node_sessions failed: {e}")
 
+    async def _exec_on_checkpointer(self, sql: str, params: tuple = ()) -> int:
+        """通过 checkpointer 自身的连接执行写操作，避免 database locked。"""
+        cp = self._graph.checkpointer
+        if cp and hasattr(cp, "conn"):
+            cur = await cp.conn.execute(sql, params)
+            await cp.conn.commit()
+            return cur.rowcount
+        raise RuntimeError("checkpointer connection not available")
+
+    async def reset_checkpoint(self, thread_id: str) -> int:
+        """
+        清除指定 thread_id 的全部 checkpoint/writes，并清除 node_sessions。
+        通过 checkpointer 自身的连接执行，避免 database locked。
+        """
+        try:
+            deleted = await self._exec_on_checkpointer(
+                "DELETE FROM checkpoints WHERE thread_id = ?", (thread_id,)
+            )
+            await self._exec_on_checkpointer(
+                "DELETE FROM writes WHERE thread_id = ?", (thread_id,)
+            )
+        except RuntimeError:
+            deleted = self._session_mgr.reset(thread_id)
+        # 清除 node_sessions
+        name = self._session_mgr.find_name_by_thread_id(thread_id)
+        if name:
+            env = self._session_mgr.get_envelope(name)
+            if env and env.node_sessions:
+                env.node_sessions.clear()
+                from datetime import datetime, timezone
+                env.updated_at = datetime.now(timezone.utc).isoformat()
+                self._session_mgr._save()
+        logger.info(f"[controller] reset_checkpoint thread={thread_id!r} deleted={deleted}")
+        return deleted
+
+    async def compact_checkpoint(self, thread_id: str, keep_last: int = 20) -> int:
+        """
+        只保留最近 keep_last 条 checkpoint，通过 checkpointer 连接执行。
+        """
+        try:
+            deleted = await self._exec_on_checkpointer(
+                """DELETE FROM checkpoints
+                   WHERE thread_id = ?
+                     AND checkpoint_id NOT IN (
+                         SELECT checkpoint_id FROM checkpoints
+                         WHERE thread_id = ?
+                         ORDER BY checkpoint_id DESC
+                         LIMIT ?
+                     )""",
+                (thread_id, thread_id, keep_last),
+            )
+        except RuntimeError:
+            deleted = self._session_mgr.compact(thread_id, keep_last=keep_last)
+        logger.info(f"[controller] compact_checkpoint thread={thread_id!r} deleted={deleted} kept={keep_last}")
+        return deleted
+
+    async def checkpoint_stats(self, thread_id: str) -> int:
+        """查询指定 thread_id 的 checkpoint 数量，通过 checkpointer 连接执行。"""
+        cp = self._graph.checkpointer
+        if cp and hasattr(cp, "conn"):
+            cur = await cp.conn.execute(
+                "SELECT COUNT(*) FROM checkpoints WHERE thread_id = ?", (thread_id,)
+            )
+            row = await cur.fetchone()
+            return row[0] if row else 0
+        return self._session_mgr.session_stats(thread_id).get("message_count", 0)
+
     async def new_session(self, name: str, workspace: str = "") -> None:
         """
         创建新命名 session，UUID 为空，各节点首次运行时自动建立新上下文。

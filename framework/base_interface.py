@@ -333,8 +333,10 @@ class BaseInterface:
         # ── Checkpoint 管理 ───────────────────────────────────────────────
         if cmd == "!memory":
             thread_id = self._resolve_thread_id()
-            stats     = session_mgr.session_stats(thread_id)
             name      = self._resolve_session_name() or "default"
+            stats     = session_mgr.session_stats(thread_id)
+            # 通过 checkpointer 连接获取准确的 checkpoint 数量
+            stats["message_count"] = await controller.checkpoint_stats(thread_id)
             return (
                 f"Session 状态（{name}）\n"
                 f"  thread     : {stats['thread_id']}\n"
@@ -348,14 +350,14 @@ class BaseInterface:
             except ValueError:
                 keep = 20
             thread_id = self._resolve_thread_id()
-            deleted   = session_mgr.compact(thread_id, keep_last=keep)
+            deleted   = await controller.compact_checkpoint(thread_id, keep_last=keep)
             return f"Compact 完成：删除了 {deleted} 条旧记录，保留最近 {keep} 条。"
 
         if cmd == "!reset":
             if arg != "confirm":
                 return "此操作将清空当前 session 全部记忆（无法恢复）。确认请输入：!reset confirm"
             thread_id = self._resolve_thread_id()
-            deleted   = session_mgr.reset(thread_id)
+            deleted = await controller.reset_checkpoint(thread_id)
             return f"Session 已重置，清空了 {deleted} 条记录。"
 
         # ── 工作目录 ──────────────────────────────────────────────────────
