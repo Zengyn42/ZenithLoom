@@ -253,9 +253,9 @@ class TestOllamaNodeTokenGuard:
 
         state = _make_state(history_chars=100)
 
-        # Mock _post_chat to return a simple text response (no tool calls)
-        with patch.object(node, "_post_chat", new_callable=AsyncMock, return_value={
-            "message": {"role": "assistant", "content": "done"},
+        # Mock _chat_completions to return a simple text response (no tool calls)
+        with patch.object(node, "_chat_completions", new_callable=AsyncMock, return_value={
+            "role": "assistant", "content": "done",
         }):
             result = await node(state)
 

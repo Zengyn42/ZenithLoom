@@ -324,7 +324,7 @@ async def test_integrator_graph_compiles():
 
 @pytest.mark.asyncio
 async def test_master_graph_compiles():
-    # Must import state.py first to register "colony_executor" schema
+    # Must import state.py first to register "colony_coder_schema"
     import blueprints.functional_graphs.colony_coder.state  # noqa: F401
     from framework.agent_loader import AgentLoader
     from pathlib import Path
