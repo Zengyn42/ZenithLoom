@@ -2,7 +2,7 @@
   "mcpServers": {
     "obsidian-vault": {
       "command": "python3",
-      "args": ["-m", "mcp_servers.obsidian.server", "--vault", "/home/kingy/Foundation/EdenGateway/Vault"],
+      "args": ["-m", "mcp_servers.obsidian.server", "--vault", "/home/kingy/Foundation/Vault"],
       "cwd": "/home/kingy/Foundation/BootstrapBuilder"
     }
   }

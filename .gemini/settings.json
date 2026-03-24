@@ -6,7 +6,7 @@
         "-m",
         "mcp_servers.obsidian.server",
         "--vault",
-        "/home/kingy/Foundation/EdenGateway/Vault"
+        "/home/kingy/Foundation/Vault"
       ]
     }
   }
