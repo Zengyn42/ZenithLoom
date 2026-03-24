@@ -89,7 +89,7 @@ def check_before_llm(
     Args:
         prompt:   当前 prompt 文本
         messages: Ollama 格式的完整消息列表（与 prompt 二选一）
-        history:  LangGraph state["messages"] 历史
+        history:  LangGraph state["messages"] 历史（不应包含已作为 prompt 传入的那条消息，避免双重计数）
         node_id:  节点 ID（用于日志）
         limit:    节点级阈值（由 LlmNode.__init__ 从 node_config 读取）
 

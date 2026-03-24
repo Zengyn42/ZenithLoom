@@ -415,8 +415,10 @@ class GeminiCodeAssistNode(_GeminiSessionMixin, AgentNode):
             )
 
         # ── Token 安全阀 ──
+        # routing_context 不在 msgs 中，history 计全部；否则 prompt 已含 msgs[-1]，只取前缀避免双重计数
+        _guard_history = list(msgs) if routing_context else list(msgs[:-1]) if msgs else []
         try:
-            check_before_llm(prompt=prompt, history=list(msgs), node_id=self._node_id, limit=self._token_limit)
+            check_before_llm(prompt=prompt, history=_guard_history, node_id=self._node_id, limit=self._token_limit)
         except TokenLimitExceeded as exc:
             logger.error(str(exc))
             return {
@@ -804,8 +806,10 @@ class GeminiCLINode(AgentNode):
             )
 
         # ── Token 安全阀 ──
+        # routing_context 不在 msgs 中，history 计全部；否则 prompt 已含 msgs[-1]，只取前缀避免双重计数
+        _guard_history = list(msgs) if routing_context else list(msgs[:-1]) if msgs else []
         try:
-            check_before_llm(prompt=prompt, history=list(msgs), node_id=self._node_id, limit=self._token_limit)
+            check_before_llm(prompt=prompt, history=_guard_history, node_id=self._node_id, limit=self._token_limit)
         except TokenLimitExceeded as exc:
             logger.error(str(exc))
             return {
