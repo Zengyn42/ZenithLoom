@@ -641,6 +641,11 @@ class GeminiCLINode(AgentNode):
             )
 
         stdout_text = stdout_bytes.decode(errors="replace")
+        # Gemini CLI may print warnings (e.g. "MCP issues detected...") before
+        # the JSON payload.  Strip everything before the first '{'.
+        json_start = stdout_text.find("{")
+        if json_start > 0:
+            stdout_text = stdout_text[json_start:]
         try:
             data = json.loads(stdout_text)
         except json.JSONDecodeError as e:
