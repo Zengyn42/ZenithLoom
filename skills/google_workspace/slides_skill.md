@@ -6,7 +6,9 @@
 
 ## 路径一：Presenton 本地渲染（推荐）→ render_slides
 
-生成漂亮的、可编辑的 PPTX 文件。Presenton 有专业设计引擎，自动处理布局、配色、排版。
+生成漂亮的 PDF 演示文稿。Presenton 使用本地 Ollama 模型 + 专业设计引擎，自动处理布局、配色、排版。无需 API key，全部在本地完成。
+
+> 注：Presenton PPTX 导出暂有 bug（GitHub #442），当前导出为 PDF 格式。
 
 ### 使用方式
 
@@ -16,7 +18,7 @@
 {"route": "render_slides", "context": "你整理好的 slides 内容文本"}
 ```
 
-框架会自动将 context 传给 Presenton 渲染引擎，返回生成的 PPTX 文件路径。
+框架会自动将 context 传给 Presenton 渲染引擎，返回生成的 PDF 文件路径。
 
 ### 内容写作格式
 
