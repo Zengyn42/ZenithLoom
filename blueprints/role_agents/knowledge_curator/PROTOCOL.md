@@ -20,8 +20,9 @@ Vault 路径：`/home/kingy/Foundation/EdenGateway/Vault/`
 {"route": "knowledge_shelf", "context": "具体任务描述"}
 ```
 
-### 生成漂亮 Slides（Presenton → 本地 PPTX）
-将完整的 slides 内容文本放在 context 中，引擎自动设计布局。
+### 生成漂亮 Slides（Presenton + Ollama → 本地 PDF）
+将完整的 slides 内容文本放在 context 中，引擎自动设计布局，导出为 PDF。
+（注：Presenton PPTX 导出有 bug，暂用 PDF 格式。Presenton 使用本地 Ollama 模型渲染，无需 API key。）
 ```json
 {"route": "render_slides", "context": "slides 内容文本（标题、要点、数据等）"}
 ```

@@ -1,5 +1,5 @@
 #!/bin/bash
-# render_slides.sh — 调用 Presenton API 生成漂亮的 PPTX slides
+# render_slides.sh — 调用 Presenton API 生成漂亮的 PDF slides
 #
 # Usage: render_slides.sh <content_text>
 #
@@ -7,18 +7,19 @@
 #   content_text — slides 内容文本（直接传入，非文件路径）
 #
 # 由 EXTERNAL_TOOL 节点调用，content_text 来自 routing_context。
+# 注意：Presenton PPTX 导出有 bug (#442)，暂用 PDF 导出。
 
 set -euo pipefail
 
 CONTENT="${1:?Usage: render_slides.sh <content_text>}"
-OUTPUT="/tmp/presentation_$(date +%s).pptx"
+OUTPUT="/tmp/presentation_$(date +%s).pdf"
 N_SLIDES=10
-TEMPLATE="modern"
+TEMPLATE="general"
 
 PRESENTON_URL="${PRESENTON_API_URL:-http://localhost:5000}"
 PRESENTON_CONTAINER="${PRESENTON_CONTAINER_NAME:-presenton}"
 API_URL="${PRESENTON_URL}/api/v1/ppt/presentation/generate"
-API_KEY="${PRESENTON_API_KEY:?Error: PRESENTON_API_KEY environment variable not set}"
+API_KEY="${PRESENTON_API_KEY:-}"
 
 # --- 按需启动 Presenton Docker 容器 ---
 ensure_presenton_running() {
@@ -65,8 +66,13 @@ trap stop_presenton EXIT
 
 ensure_presenton_running
 
+AUTH_HEADER=()
+if [ -n "$API_KEY" ]; then
+    AUTH_HEADER=(-H "Authorization: Bearer $API_KEY")
+fi
+
 RESPONSE=$(curl -s -w "\n%{http_code}" -X POST "$API_URL" \
-    -H "Authorization: Bearer $API_KEY" \
+    "${AUTH_HEADER[@]}" \
     -H "Content-Type: application/json" \
     -d "$(jq -n \
         --arg content "$CONTENT" \
@@ -77,7 +83,7 @@ RESPONSE=$(curl -s -w "\n%{http_code}" -X POST "$API_URL" \
             n_slides: $n_slides,
             language: "Chinese",
             template: $template,
-            export_as: "pptx"
+            export_as: "pdf"
         }')")
 
 HTTP_CODE=$(echo "$RESPONSE" | tail -1)
