@@ -319,9 +319,10 @@ class LlmNode:
             _stream_cb.set(_debug_intercept)
 
         # ── Token 安全阀 ─────────────────────────────────────────────────
+        # prompt 已包含 msgs[-1]（latest_input），history 只取前缀避免双重计数
         try:
             check_before_llm(
-                prompt=prompt, history=list(msgs),
+                prompt=prompt, history=list(msgs[:-1]),
                 node_id=self._node_id, limit=self._token_limit,
             )
         except TokenLimitExceeded as exc:
