@@ -180,12 +180,13 @@ class ExternalToolNode:
 
         logger.warning("[external_tool] heartbeat MCP server failed to start within 10s")
 
-    def _on_timeout(self, proc: subprocess.Popen, task_id: str, output_path: str) -> dict:
+    async def _on_timeout(self, proc: subprocess.Popen, task_id: str, output_path: str) -> dict:
         """120s 超时后的处理：启动 heartbeat 监控，返回 PENDING 消息。
 
         1. 确保 Heartbeat MCP Server 正在运行（自动启动）
-        2. 通过 TaskVault 注册后台监控
-        3. 返回 PENDING 消息
+        2. 通过 TaskVault 注册 PID（本地持久化）
+        3. 通过 MCP 调用 heartbeat_register_monitor 启动监控循环
+        4. 返回 PENDING 消息
 
         Returns:
             LangGraph state dict。
@@ -200,6 +201,9 @@ class ExternalToolNode:
             output_path=output_path,
             hard_timeout=self._hard_timeout,
         )
+
+        # 通过 MCP 调用 heartbeat_register_monitor 启动实际监控循环
+        await self._register_monitor_via_mcp(task_id, proc.pid, output_path)
 
         pending_content = (
             f"[PENDING] 命令执行超过 {_ASYNC_THRESHOLD:.0f}s，已转入后台继续运行。\n"
@@ -216,6 +220,32 @@ class ExternalToolNode:
             }
         else:
             return {self._inject_as: pending_content}
+
+    async def _register_monitor_via_mcp(self, task_id: str, pid: int, output_path: str) -> None:
+        """通过 MCP 协议调用 heartbeat_register_monitor 启动监控循环。"""
+        try:
+            from mcp.client.sse import sse_client
+            from mcp import ClientSession
+
+            server_url = "http://127.0.0.1:8100/sse"
+            async with sse_client(server_url) as (read_stream, write_stream):
+                async with ClientSession(read_stream, write_stream) as session:
+                    await session.initialize()
+                    result = await session.call_tool(
+                        "heartbeat_register_monitor",
+                        {
+                            "task_id": task_id,
+                            "pid": pid,
+                            "output_path": output_path,
+                            "hard_timeout": self._hard_timeout,
+                            "agent_id": "",
+                        },
+                    )
+                    logger.info(f"[external_tool] MCP register_monitor result: {result}")
+        except Exception as e:
+            logger.warning(f"[external_tool] failed to register monitor via MCP: {e}")
+            # TaskVault 已注册，最坏情况是没有主动监控，但 PID 文件仍在
+            # 下次 TaskVault 实例化时 reconciliation 会处理
 
     async def __call__(self, state: dict) -> dict:
         if self._backend == "code_execution":
@@ -259,7 +289,7 @@ class ExternalToolNode:
             )
         except asyncio.TimeoutError:
             logger.info(f"[external_tool] 120s threshold reached for {task_id}")
-            return self._on_timeout(proc, task_id, output_path)
+            return await self._on_timeout(proc, task_id, output_path)
 
         # 子进程在 120s 内完成 — 正常路径
         tee_thread.join(timeout=5.0)
