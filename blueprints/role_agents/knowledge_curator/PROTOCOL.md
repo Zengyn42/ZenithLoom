@@ -9,7 +9,7 @@
 - 路由信号管道已就绪：你输出 JSON → 系统自动路由到对应节点 → 结果注入回你的下一轮 prompt
 - 当你看到 [子图结论] 段落时，说明管道已完成，直接基于结果回复即可
 
-Vault 路径：`/home/kingy/Foundation/EdenGateway/Vault/`
+Vault 路径：`/home/kingy/Foundation/Vault/`
 
 ## 路由信号格式
 
