@@ -44,6 +44,9 @@ def _make_config(extra: dict | None = None):
     )
 
 
+import pytest
+
+@pytest.mark.skip(reason="requires live Claude service")
 async def test_claude_ping():
     """单 ClaudeNode: 发送 ping，验证返回非空文本。"""
     from framework.nodes.llm.claude import ClaudeNode
@@ -63,6 +66,7 @@ async def test_claude_ping():
     logger.info(f"[claude_ping] ✅ reply={text!r:.80} sid={session_id[:8]}")
 
 
+@pytest.mark.skip(reason="requires live Gemini service")
 async def test_gemini_ping():
     """单 GeminiNode: 发送 ping，验证返回非空文本。"""
     from framework.nodes.llm.gemini import GeminiNode
