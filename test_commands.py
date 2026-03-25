@@ -53,6 +53,7 @@ def _mock_loader(sm, name: str = "hani") -> MagicMock:
     # Make load_config().discord_allowed_users return an empty list (allow all)
     config = MagicMock()
     config.discord_allowed_users = []
+    config.workspace = ""
     loader.load_config = MagicMock(return_value=config)
     loader.json = {}
     return loader
@@ -67,7 +68,12 @@ def _setup_bot(sm, name: str = "hani"):
     bot._controller = MagicMock()
     bot._channel_active_session.clear()
     bot._channel_tasks.clear()
-    bot._channel_locks.clear()
+    bot._channel_queues.clear()
+    bot._channel_consumers.clear()
+    # Set up AsyncMock methods on controller for handle_command tests
+    bot._controller.checkpoint_stats = AsyncMock(return_value=0)
+    bot._controller.compact_checkpoint = AsyncMock(return_value=5)
+    bot._controller.reset_checkpoint = AsyncMock(return_value=10)
     return bot, loader
 
 
@@ -402,11 +408,10 @@ async def test_discord_whoami_debug():
         assert "12345" in msg_ok
         print(f"   !whoami: {msg_ok}")
 
-        ctx_d = _mock_ctx()
-        await bot.toggle_debug(ctx_d)
-        msg_d = ctx_d.send.call_args[0][0]
-        assert "Debug mode" in msg_d
-        print(f"   !debug: {msg_d}")
+        iface_d = bot._DiscordInterface(loader)
+        reply_d = await iface_d.handle_command("!debug", "")
+        assert "Debug mode" in reply_d
+        print(f"   !debug: {reply_d}")
 
     print("✅ Discord !whoami / !debug OK\n")
 
@@ -422,7 +427,7 @@ async def test_discord_tokens():
 
     with tempfile.TemporaryDirectory() as tmp:
         sm = _make_session_mgr(tmp)
-        _setup_bot(sm)
+        _, loader = _setup_bot(sm)
 
         # Inject known stats
         tt._token_stats.update({
@@ -433,19 +438,16 @@ async def test_discord_tokens():
             "calls": 5,
         })
 
-        ctx = _mock_ctx()
-        await bot.show_tokens(ctx)
-        msg = ctx.send.call_args[0][0]
-        assert "1,000" in msg or "1000" in msg
-        assert "500" in msg
-        print(f"   !tokens preview:\n{msg[:300]}")
+        iface = bot._DiscordInterface(loader)
+        reply = await iface.handle_command("!tokens", "")
+        assert "1,000" in reply or "1000" in reply
+        assert "500" in reply
+        print(f"   !tokens preview:\n{reply[:300]}")
 
-        ctx2 = _mock_ctx()
-        await bot.show_tokens(ctx2, reset="reset")
-        msg2 = ctx2.send.call_args[0][0]
-        assert "重置" in msg2
+        reply2 = await iface.handle_command("!tokens", "reset")
+        assert "重置" in reply2
         assert tt._token_stats["input_tokens"] == 0
-        print(f"   !tokens reset: {msg2}")
+        print(f"   !tokens reset: {reply2}")
 
     print("✅ Discord !tokens OK\n")
 
@@ -460,18 +462,17 @@ async def test_discord_memory():
 
     with tempfile.TemporaryDirectory() as tmp:
         sm = _make_session_mgr(tmp)
-        _setup_bot(sm)
+        _, loader = _setup_bot(sm)
 
         # Ensure channel session exists
         sm.create_session("discord-100")
         bot._channel_active_session[100] = "discord-100"
 
-        ctx = _mock_ctx(channel_id=100)
-        await bot.show_memory(ctx)
-        msg = ctx.send.call_args[0][0]
-        assert "default" in msg  # display name for discord-100
-        assert "KB" in msg
-        print(f"   !memory: {msg}")
+        iface = bot._DiscordInterface(loader, channel_id=100)
+        reply = await iface.handle_command("!memory", "")
+        assert "discord-100" in reply  # session name
+        assert "KB" in reply
+        print(f"   !memory: {reply}")
 
     print("✅ Discord !memory OK\n")
 
@@ -486,31 +487,27 @@ async def test_discord_compact_reset_clear():
 
     with tempfile.TemporaryDirectory() as tmp:
         sm = _make_session_mgr(tmp)
-        _setup_bot(sm)
+        _, loader = _setup_bot(sm)
 
         sm.create_session("discord-100")
         bot._channel_active_session[100] = "discord-100"
 
+        iface = bot._DiscordInterface(loader, channel_id=100)
+
         # !compact (default keep=20)
-        ctx = _mock_ctx(channel_id=100)
-        await bot.compact_session(ctx)
-        msg = ctx.send.call_args[0][0]
-        assert "Compact" in msg
-        print(f"   !compact: {msg}")
+        reply = await iface.handle_command("!compact", "")
+        assert "Compact" in reply
+        print(f"   !compact: {reply}")
 
         # !reset without confirm → shows warning
-        ctx2 = _mock_ctx(channel_id=100)
-        await bot.reset_session(ctx2)
-        msg2 = ctx2.send.call_args[0][0]
-        assert "confirm" in msg2 or "确认" in msg2
-        print(f"   !reset (no confirm): {msg2[:70]}")
+        reply2 = await iface.handle_command("!reset", "")
+        assert "confirm" in reply2 or "确认" in reply2
+        print(f"   !reset (no confirm): {reply2[:70]}")
 
         # !reset confirm → executes
-        ctx3 = _mock_ctx(channel_id=100)
-        await bot.reset_session(ctx3, confirm="confirm")
-        msg3 = ctx3.send.call_args[0][0]
-        assert "重置" in msg3 or "Session" in msg3
-        print(f"   !reset confirm: {msg3[:70]}")
+        reply3 = await iface.handle_command("!reset", "confirm")
+        assert "重置" in reply3 or "Session" in reply3
+        print(f"   !reset confirm: {reply3[:70]}")
 
         # !clear → immediate reset (creates new session with same name)
         old_tid = sm.get("discord-100")
@@ -537,19 +534,19 @@ async def test_discord_setproject_project():
 
     with tempfile.TemporaryDirectory() as tmp:
         sm = _make_session_mgr(tmp)
-        _setup_bot(sm)
+        _, loader = _setup_bot(sm)
 
         # Ensure channel session
         sm.create_session("discord-100")
         bot._channel_active_session[100] = "discord-100"
 
+        iface100 = bot._DiscordInterface(loader, channel_id=100)
+
         with tempfile.TemporaryDirectory() as real_dir:
             # Valid path
-            ctx = _mock_ctx(channel_id=100)
-            await bot.set_project(ctx, path=real_dir)
-            msg = ctx.send.call_args[0][0]
-            assert real_dir in msg
-            print(f"   !setproject (valid): {msg}")
+            reply = await iface100.handle_command("!setproject", real_dir)
+            assert real_dir in reply
+            print(f"   !setproject (valid): {reply}")
 
             # Workspace persisted in SessionEnvelope
             env = sm.get_envelope("discord-100")
@@ -557,34 +554,27 @@ async def test_discord_setproject_project():
             print(f"   workspace persisted: {env.workspace}")
 
             # !project shows it
-            ctx2 = _mock_ctx(channel_id=100)
-            await bot.show_project(ctx2)
-            msg2 = ctx2.send.call_args[0][0]
-            assert real_dir in msg2
-            print(f"   !project: {msg2}")
+            reply2 = await iface100.handle_command("!project", "")
+            assert real_dir in reply2
+            print(f"   !project: {reply2}")
 
             # Different channel unaffected
             sm.create_session("discord-200")
             bot._channel_active_session[200] = "discord-200"
-            ctx_other = _mock_ctx(channel_id=200)
-            await bot.show_project(ctx_other)
-            msg_other = ctx_other.send.call_args[0][0]
-            assert "未设置" in msg_other
-            print(f"   other channel unaffected: {msg_other}")
+            iface200 = bot._DiscordInterface(loader, channel_id=200)
+            reply_other = await iface200.handle_command("!project", "")
+            assert "未设置" in reply_other
+            print(f"   other channel unaffected: {reply_other}")
 
         # Invalid path
-        ctx3 = _mock_ctx(channel_id=100)
-        await bot.set_project(ctx3, path="/nonexistent/xyz/abc")
-        msg3 = ctx3.send.call_args[0][0]
-        assert "不存在" in msg3
-        print(f"   !setproject (invalid): {msg3}")
+        reply3 = await iface100.handle_command("!setproject", "/nonexistent/xyz/abc")
+        assert "不存在" in reply3
+        print(f"   !setproject (invalid): {reply3}")
 
         # No path → shows current
-        ctx4 = _mock_ctx(channel_id=100)
-        await bot.set_project(ctx4, path="")
-        msg4 = ctx4.send.call_args[0][0]
-        assert "当前" in msg4
-        print(f"   !setproject (no arg): {msg4}")
+        reply4 = await iface100.handle_command("!setproject", "")
+        assert "当前" in reply4
+        print(f"   !setproject (no arg): {reply4}")
 
     print("✅ Discord !setproject / !project OK\n")
 
@@ -716,15 +706,12 @@ async def test_cleanup_channel():
         sm.create_session("discord-200")
         bot._channel_active_session[100] = "discord-100"
         bot._channel_active_session[200] = "discord-200"
-        bot._channel_locks[100] = asyncio.Lock()
-
         deleted = await bot._cleanup_channel(100)
         assert deleted == 2
         assert sm.get("discord-100") is None
         assert sm.get("discord-100-dev") is None
         assert sm.get("discord-200") is not None  # untouched
         assert 100 not in bot._channel_active_session
-        assert 100 not in bot._channel_locks
         assert 200 in bot._channel_active_session  # untouched
         print(f"   cleaned up {deleted} sessions, channel 200 untouched")
 
@@ -746,16 +733,15 @@ async def test_discord_help():
 
     with tempfile.TemporaryDirectory() as tmp:
         sm = _make_session_mgr(tmp)
-        _setup_bot(sm)
+        _, loader = _setup_bot(sm)
 
-        ctx = _mock_ctx()
-        await bot.show_help(ctx)
-        msg = ctx.send.call_args[0][0]
+        iface = bot._DiscordInterface(loader)
+        reply = await iface.handle_command("!help", "")
         for keyword in ("!new", "!switch", "!sessions", "!session",
                         "!tokens", "!memory", "!compact", "!reset",
                         "!setproject", "!whoami", "!stop", "!channels"):
-            assert keyword in msg, f"!help missing keyword: {keyword}"
-        print(f"   !help length: {len(msg)} chars — all keywords present")
+            assert keyword in reply, f"!help missing keyword: {keyword}"
+        print(f"   !help length: {len(reply)} chars — all keywords present")
 
     print("✅ Discord !help OK\n")
 
