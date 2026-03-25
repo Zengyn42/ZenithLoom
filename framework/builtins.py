@@ -158,6 +158,19 @@ def _(config, node_config):
     return HeartbeatNode(node_config)
 
 
+@register_node("TASK_MONITOR")
+def _(config, node_config):
+    """TASK_MONITOR：后台子进程监控节点。
+
+    由 AsyncTaskManager 通过 Heartbeat 动态注册，不直接在 entity.json 中声明。
+    此注册确保 registry 中有该类型，避免 get_node_factory("TASK_MONITOR") 失败。
+    """
+    # TASK_MONITOR 不需要真正的节点实例 — 它通过 HeartbeatManager.register_monitor() 管理
+    # 返回一个 no-op callable 满足 registry 接口
+    async def _noop(state: dict) -> dict:
+        return {}
+    return _noop
+
 
 # ---------------------------------------------------------------------------
 # 条件谓词

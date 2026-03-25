@@ -4,18 +4,25 @@
 HeartbeatManager: 主图可感知、可控制的并行任务调度器。
 每个 task 独立 asyncio 协程，有自己的 interval、lock、退避策略。
 通过 HeartbeatManager 共享对象与主图桥接（查询 + 控制 API）。
+
+TASK_MONITOR 任务类型：短 interval 轮询 PID 是否存活，
+检测后台子进程完成后触发 on_complete 回调。
 """
 
 import asyncio
 import json
 import logging
+import os
 from dataclasses import dataclass, field
 from datetime import datetime, timedelta
 from pathlib import Path
 
+from mcp_servers.heartbeat.task_vault import pid_alive
+
 logger = logging.getLogger(__name__)
 
 _DEFAULT_INTERVAL = 23  # hours
+_MONITOR_POLL_INTERVAL = 60  # seconds — TASK_MONITOR 的轮询间隔（1 分钟）
 
 
 # ---------------------------------------------------------------------------
@@ -53,7 +60,8 @@ class HeartbeatManager:
 
     def __init__(self, blueprint_path: Path, state_path: Path,
                  on_failure=None, on_complete=None,
-                 task_overrides: dict | None = None):
+                 task_overrides: dict | None = None,
+                 session_registry: set | None = None):
         """
         on_failure:  async callable(event_dict) — 失败时立即回调（level=error）。
         on_complete: async callable(event_dict) — 每次执行完成后回调（含成功/告警）。
@@ -61,6 +69,7 @@ class HeartbeatManager:
                      由 MCP Server 设置为 send_log_message 推送。
         task_overrides: {task_id: {key: value}} — entity 级参数覆写。
                         支持 interval_hours, timeout 等任意字段。
+        session_registry: 活跃 session 集合引用（用于检测 agent 断连）。
         """
         self._blueprint_path = Path(blueprint_path)
         self._state_path = Path(state_path)
@@ -70,6 +79,7 @@ class HeartbeatManager:
         self._on_failure = on_failure  # async callable(event_dict) | None
         self._on_complete = on_complete  # async callable(event_dict) | None
         self._task_overrides = task_overrides or {}  # entity 级参数覆写
+        self._session_registry: set | None = session_registry  # 活跃 session 集合
 
     # ── 生命周期 ──────────────────────────────────────────────────────────
 
@@ -268,6 +278,273 @@ class HeartbeatManager:
 
         self._save_state()
         return f"Task {task_id!r} interval changed: {old_interval}h → {hours}h"
+
+    # ── TASK_MONITOR 动态注册 ─────────────────────────────────────────────
+
+    async def register_monitor(
+        self,
+        task_id: str,
+        pid: int,
+        output_path: str,
+        hard_timeout: float,
+        agent_id: str = "",
+        agent_session: object | None = None,
+    ) -> str:
+        """动态注册一个 TASK_MONITOR 任务（后台子进程监控）。
+
+        短 interval 轮询 PID 存活状态，完成后触发 on_complete 回调。
+
+        Args:
+            task_id: 唯一任务标识。
+            pid: 子进程 PID。
+            output_path: 子进程输出文件路径。
+            hard_timeout: 最大允许运行时间（秒）。
+            agent_id: 关联的 agent 标识。
+            agent_session: MCP SSE session 引用（用于定向推送）。
+
+        Returns:
+            状态消息。
+        """
+        if task_id in self._tasks:
+            return f"Task {task_id!r} already registered."
+
+        entry = TaskEntry(
+            id=task_id,
+            type="TASK_MONITOR",
+            config={
+                "pid": pid,
+                "output_path": output_path,
+                "hard_timeout": hard_timeout,
+                "agent_id": agent_id,
+                "agent_session": agent_session,
+            },
+            node=None,  # TASK_MONITOR 不需要 node 实例
+            interval_hours=_MONITOR_POLL_INTERVAL / 3600,  # 转换为小时
+        )
+        self._tasks[task_id] = entry
+
+        self._loops[task_id] = asyncio.create_task(
+            self._monitor_loop(task_id, pid, output_path, hard_timeout),
+            name=f"heartbeat:monitor:{task_id}",
+        )
+        logger.info(
+            f"[heartbeat] TASK_MONITOR registered: {task_id} pid={pid} "
+            f"agent_id={agent_id!r} hard_timeout={hard_timeout}s"
+        )
+        return f"Monitor registered: {task_id}"
+
+    def list_monitors(self, agent_id: str) -> list[dict]:
+        """返回指定 agent 关联的所有 TASK_MONITOR 任务列表。
+
+        Args:
+            agent_id: 要查询的 agent 标识。
+
+        Returns:
+            匹配的 monitor 任务信息列表。
+        """
+        results: list[dict] = []
+        for entry in self._tasks.values():
+            if entry.type != "TASK_MONITOR":
+                continue
+            if entry.config.get("agent_id") != agent_id:
+                continue
+            results.append({
+                "task_id": entry.id,
+                "status": entry.status,
+                "pid": entry.config.get("pid"),
+                "output_path": entry.config.get("output_path"),
+                "hard_timeout": entry.config.get("hard_timeout"),
+                "last_run": entry.last_run.isoformat(timespec="seconds") if entry.last_run else None,
+            })
+        return results
+
+    async def _send_to_session(self, session: object, event: dict, level: str = "info") -> bool:
+        """尝试向指定 session 发送 SSE 事件。
+
+        Returns:
+            True 发送成功；False 发送失败（session 可能已断开）。
+        """
+        try:
+            await session.send_log_message(level=level, data=event, logger="heartbeat")
+            return True
+        except Exception as e:
+            logger.warning(f"[heartbeat] failed to send to agent session: {e}")
+            return False
+
+    async def _monitor_loop(
+        self,
+        task_id: str,
+        pid: int,
+        output_path: str,
+        hard_timeout: float,
+    ) -> None:
+        """TASK_MONITOR 专用循环：短 interval 轮询 PID 存活状态。
+
+        每次 poll 循环：
+        1. 检查 agent_session 是否仍活跃（断连则 kill 子进程）
+        2. 向关联 agent 推送 monitor_heartbeat SSE 事件
+        3. 检查 hard_timeout
+        4. 检查 PID 存活
+        """
+        entry = self._tasks.get(task_id)
+        if entry is None:
+            return
+
+        start_time = asyncio.get_event_loop().time()
+        entry.status = "monitoring"
+
+        # 从 config 中获取 agent_session
+        agent_session: object | None = entry.config.get("agent_session")
+
+        while True:
+            await asyncio.sleep(_MONITOR_POLL_INTERVAL)
+
+            elapsed = asyncio.get_event_loop().time() - start_time
+
+            # ── 需求 5：检查 agent_session 是否仍在 session_registry 中 ──
+            if (
+                agent_session is not None
+                and self._session_registry is not None
+                and agent_session not in self._session_registry
+            ):
+                logger.warning(
+                    f"[heartbeat] TASK_MONITOR: agent disconnected for {task_id}, killing pid={pid}"
+                )
+                try:
+                    os.kill(pid, 9)  # SIGKILL
+                except (ProcessLookupError, OSError):
+                    pass
+                entry.status = "FAILED"
+                entry.last_result = "agent disconnected"
+                entry.last_run = datetime.now()
+
+                try:
+                    from mcp_servers.heartbeat.task_vault import TaskVault, TaskStatus
+                    TaskVault.get_instance().mark_completed(task_id, TaskStatus.FAILED)
+                except Exception as e:
+                    logger.warning(f"[heartbeat] failed to mark task failed: {e}")
+
+                event = {
+                    "task_id": task_id,
+                    "type": "TASK_MONITOR",
+                    "level": "error",
+                    "error": "agent disconnected",
+                    "status": "failed",
+                    "time": datetime.now().isoformat(timespec="seconds"),
+                }
+                if self._on_failure:
+                    try:
+                        await self._on_failure(event)
+                    except Exception as cb_err:
+                        logger.warning(f"[heartbeat] monitor on_failure error: {cb_err}")
+                break
+
+            # ── 需求 4：向关联 Agent 推送 monitor_heartbeat SSE 事件 ──
+            heartbeat_event: dict = {
+                "task_id": task_id,
+                "type": "TASK_MONITOR",
+                "level": "info",
+                "status": "monitoring",
+                "elapsed_seconds": int(elapsed),
+                "pid": pid,
+                "pid_alive": pid_alive(pid),
+                "time": datetime.now().isoformat(timespec="seconds"),
+            }
+            if agent_session is not None:
+                sent = await self._send_to_session(agent_session, heartbeat_event, level="info")
+                if not sent and self._on_complete:
+                    # session 无效，走广播
+                    try:
+                        await self._on_complete(heartbeat_event)
+                    except Exception as cb_err:
+                        logger.warning(f"[heartbeat] monitor heartbeat broadcast error: {cb_err}")
+            elif self._on_complete:
+                try:
+                    await self._on_complete(heartbeat_event)
+                except Exception as cb_err:
+                    logger.warning(f"[heartbeat] monitor heartbeat broadcast error: {cb_err}")
+
+            # hard_timeout 检查
+            if elapsed > hard_timeout:
+                logger.warning(
+                    f"[heartbeat] TASK_MONITOR hard_timeout ({hard_timeout}s): {task_id}"
+                )
+                try:
+                    os.kill(pid, 9)  # SIGKILL
+                except (ProcessLookupError, OSError):
+                    pass
+                entry.status = "TIMEOUT"
+                entry.last_result = f"hard_timeout after {hard_timeout}s"
+                entry.last_run = datetime.now()
+
+                # 标记 TaskVault 中的任务
+                try:
+                    from mcp_servers.heartbeat.task_vault import TaskVault, TaskStatus
+                    TaskVault.get_instance().mark_completed(task_id, TaskStatus.TIMEOUT)
+                except Exception as e:
+                    logger.warning(f"[heartbeat] failed to mark task timeout: {e}")
+
+                event = {
+                    "task_id": task_id,
+                    "type": "TASK_MONITOR",
+                    "level": "error",
+                    "error": f"hard_timeout after {hard_timeout}s",
+                    "status": "timeout",
+                    "time": datetime.now().isoformat(timespec="seconds"),
+                }
+                if self._on_failure:
+                    try:
+                        await self._on_failure(event)
+                    except Exception as cb_err:
+                        logger.warning(f"[heartbeat] monitor on_failure error: {cb_err}")
+                break
+
+            # PID 存活检查
+            if not pid_alive(pid):
+                logger.info(f"[heartbeat] TASK_MONITOR: pid {pid} exited for {task_id}")
+
+                # 读取输出
+                result_text = ""
+                try:
+                    p = Path(output_path)
+                    if p.exists():
+                        result_text = p.read_text(encoding="utf-8", errors="replace")
+                except Exception as e:
+                    result_text = f"(failed to read output: {e})"
+
+                entry.status = "OK"
+                entry.last_result = result_text[:500]  # 截取预览
+                entry.last_run = datetime.now()
+
+                # 标记 TaskVault 中的任务
+                try:
+                    from mcp_servers.heartbeat.task_vault import TaskVault, TaskStatus
+                    TaskVault.get_instance().mark_completed(task_id, TaskStatus.COMPLETED)
+                except Exception as e:
+                    logger.warning(f"[heartbeat] failed to mark task completed: {e}")
+
+                event = {
+                    "task_id": task_id,
+                    "type": "TASK_MONITOR",
+                    "level": "info",
+                    "status": "completed",
+                    "content": result_text[:500],
+                    "time": datetime.now().isoformat(timespec="seconds"),
+                }
+                if self._on_complete:
+                    try:
+                        await self._on_complete(event)
+                    except Exception as cb_err:
+                        logger.warning(f"[heartbeat] monitor on_complete error: {cb_err}")
+                break
+
+        # 清理 — 从 tasks 字典移除（monitor 是一次性的）
+        self._tasks.pop(task_id, None)
+        self._save_state()
+
+    def get_loop(self) -> asyncio.AbstractEventLoop:
+        """线程安全的 event loop accessor。"""
+        return asyncio.get_event_loop()
 
     # ── 内部 ──────────────────────────────────────────────────────────────
 

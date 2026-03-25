@@ -169,7 +169,8 @@ async def heartbeat_load_blueprint(blueprint_path: str, overrides: str = "") -> 
 
     mgr = HeartbeatManager(path, state_path, on_failure=_broadcast_alert,
                            on_complete=_broadcast_event,
-                           task_overrides=task_overrides)
+                           task_overrides=task_overrides,
+                           session_registry=_active_sessions)
     await mgr.start()
     _managers[name] = mgr
 
@@ -282,6 +283,80 @@ async def heartbeat_set_interval(task_id: str, hours: float) -> str:
     for mgr in _managers.values():
         known.extend(mgr._tasks.keys())
     return f"Unknown task: {task_id!r}. Known: {known}"
+
+
+@mcp.tool()
+async def heartbeat_register_monitor(
+    task_id: str,
+    pid: int,
+    output_path: str,
+    hard_timeout: float = 300.0,
+    agent_id: str = "",
+) -> str:
+    """
+    注册一个 TASK_MONITOR 任务：监控后台子进程 PID，完成后通过 SSE 广播通知。
+
+    task_id:      唯一任务标识（由 ExternalToolNode 生成）
+    pid:          子进程 PID
+    output_path:  子进程输出文件路径
+    hard_timeout: 最大允许运行时间（秒），超时后 kill
+    agent_id:     关联的 agent 标识
+    """
+    _capture_session()
+
+    # 捕获当前调用者的 session（用于定向推送）
+    current_session = None
+    try:
+        ctx = mcp.get_context()
+        if ctx._request_context and ctx._request_context.session:
+            current_session = ctx._request_context.session
+    except Exception:
+        pass
+
+    # 选择第一个可用的 manager 注册（TASK_MONITOR 不依赖特定 blueprint）
+    if not _managers:
+        return "No blueprint loaded. Load a heartbeat blueprint first to enable monitoring."
+
+    mgr = next(iter(_managers.values()))
+    result = await mgr.register_monitor(
+        task_id=task_id,
+        pid=pid,
+        output_path=output_path,
+        hard_timeout=hard_timeout,
+        agent_id=agent_id,
+        agent_session=current_session,
+    )
+    return result
+
+
+@mcp.tool()
+def heartbeat_my_monitors(agent_id: str) -> str:
+    """列出指定 agent 关联的所有 TASK_MONITOR 任务。
+
+    agent_id: 要查询的 agent 标识。
+    """
+    if not _managers:
+        return "No blueprints loaded."
+
+    all_monitors: list[dict] = []
+    for mgr in _managers.values():
+        all_monitors.extend(mgr.list_monitors(agent_id))
+
+    if not all_monitors:
+        return f"No monitors found for agent_id={agent_id!r}."
+
+    lines = [f"{len(all_monitors)} monitor(s) for agent_id={agent_id!r}:"]
+    for m in all_monitors:
+        lines.append(
+            f"  {m['task_id']} | status={m['status']} | pid={m['pid']} "
+            f"| hard_timeout={m['hard_timeout']}s"
+        )
+    return "\n".join(lines)
+
+
+async def _broadcast_task_completed(event: dict) -> None:
+    """广播 task_completed SSE 事件（由 TASK_MONITOR 完成时触发）。"""
+    await _broadcast_event(event, level=event.get("level", "info"))
 
 
 @mcp.tool()

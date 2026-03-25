@@ -21,9 +21,10 @@ import asyncio
 import json
 import logging
 import os
+import queue
 import re as _re
 from datetime import datetime, timezone
-from langchain_core.messages import HumanMessage
+from langchain_core.messages import HumanMessage, AIMessage
 
 _SEND_FILE_RE = _re.compile(r"\[SEND_FILE:\s*([^\]]+)\]")
 
@@ -31,6 +32,9 @@ _logger = logging.getLogger(__name__)
 
 # 严重告警阈值：连续失败 N 次升级为 critical
 _CRITICAL_THRESHOLD = 3
+
+# PENDING 消息标记前缀
+_PENDING_PREFIX = "[PENDING]"
 
 
 class BaseInterface:
@@ -43,6 +47,8 @@ class BaseInterface:
         self._session_mgr = None
         self._streaming: bool = True
         self._last_stream_chunk_count: int = 0
+        # 后台任务完成通知队列（线程安全）
+        self._completed_tasks_queue: queue.Queue[str] = queue.Queue()
 
     async def setup(self) -> None:
         """初始化 controller、session_mgr 和 config（所有子类应在 run() 开头调用）。"""
@@ -71,9 +77,20 @@ class BaseInterface:
         SSE 推送触发的告警处理入口。
 
         分级响应：
+          - TASK_MONITOR 完成事件 → _on_task_completed()
           - consecutive_failures < 3 → _on_heartbeat_alert()（直接通知用户）
           - consecutive_failures >= 3 → _on_heartbeat_critical()（唤醒 Agent）
         """
+        # TASK_MONITOR 完成事件
+        alert_type = alert.get("type", "")
+        if alert_type == "TASK_MONITOR":
+            task_id = alert.get("task_id", "")
+            status = alert.get("status", "")
+            if task_id:
+                if status in ("completed", "timeout", "failed"):
+                    self._on_task_completed(task_id)
+            return
+
         consecutive = alert.get("consecutive_failures", 1)
         alert_text = (
             f"[{alert.get('task_id', '?')}] {alert.get('type', '?')} FAILED "
@@ -117,6 +134,76 @@ class BaseInterface:
         默认只 log。
         """
         _logger.warning(f"[heartbeat_agent_alert] {agent_response}")
+
+    # ------------------------------------------------------------------
+    # 后台任务完成处理（TASK_MONITOR 回调驱动）
+    # ------------------------------------------------------------------
+
+    def _on_task_completed(self, task_id: str) -> None:
+        """后台任务完成回调：入队 + 响铃通知用户。
+
+        由 Heartbeat SSE 事件或 _handle_alert 触发（线程安全）。
+        """
+        self._completed_tasks_queue.put(task_id)
+        # 响铃提醒用户（\\a = BEL 字符）
+        print(f"\a[TASK COMPLETED] {task_id} — 下次输入时自动注入结果。", flush=True)
+        _logger.info(f"[base_interface] task completed: {task_id}")
+
+    def _consume_pending_tasks(self, state: dict) -> dict:
+        """invoke 前调用：从 Task Vault 取结果，覆写 state 中的 PENDING 消息。
+
+        扫描 state["messages"] 中的 [PENDING] 标记消息，
+        如果对应 task 已完成，用实际结果替换 PENDING 内容。
+
+        Returns:
+            修改后的 state（原地修改 messages 列表）。
+        """
+        # 先排空完成队列
+        completed_ids: set[str] = set()
+        while not self._completed_tasks_queue.empty():
+            try:
+                completed_ids.add(self._completed_tasks_queue.get_nowait())
+            except queue.Empty:
+                break
+
+        if not completed_ids:
+            return state
+
+        from mcp_servers.heartbeat.task_vault import TaskVault
+
+        mgr = TaskVault.get_instance()
+        messages = state.get("messages", [])
+
+        for i, msg in enumerate(messages):
+            content = getattr(msg, "content", "")
+            if not isinstance(content, str) or not content.startswith(_PENDING_PREFIX):
+                continue
+
+            # 提取 task_id
+            task_id = None
+            extra = getattr(msg, "additional_kwargs", {})
+            if extra and "task_id" in extra:
+                task_id = extra["task_id"]
+            else:
+                # fallback: 从 content 中解析 task_id
+                for line in content.split("\n"):
+                    if line.startswith("task_id:"):
+                        task_id = line.split(":", 1)[1].strip()
+                        break
+
+            if task_id is None or task_id not in completed_ids:
+                continue
+
+            # 获取结果
+            result = mgr.get_result(task_id)
+            if result is None:
+                result = f"[TASK {task_id}] 结果文件已丢失或为空。"
+
+            # 覆写 PENDING 消息
+            _logger.info(f"[base_interface] replacing PENDING message for {task_id}")
+            messages[i] = AIMessage(content=result)
+
+        return state
 
     # ------------------------------------------------------------------
     # Session 上下文解析（Discord 子类按频道覆写）
@@ -174,6 +261,9 @@ class BaseInterface:
             init_state["workspace"] = workspace
         if extra_state:
             init_state.update(extra_state)
+
+        # 后台任务结果注入：覆写 PENDING 消息
+        init_state = self._consume_pending_tasks(init_state)
 
         self._last_stream_chunk_count = 0
         self._on_stream_reset()
