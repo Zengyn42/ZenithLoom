@@ -92,6 +92,29 @@ trap stop_presenton EXIT
 
 ensure_presenton_running
 
+# --- 确保 Presenton 配置正确（DISABLE_IMAGE_GENERATION 必须为 true，否则 PDF 导出渲染设置页） ---
+ensure_presenton_configured() {
+    local cfg
+    cfg=$(curl -s --max-time 3 "${PRESENTON_URL}/api/user-config" 2>/dev/null)
+    if echo "$cfg" | python3 -c "import json,sys; d=json.load(sys.stdin); exit(0 if d.get('DISABLE_IMAGE_GENERATION') else 1)" 2>/dev/null; then
+        return 0
+    fi
+    # 补写配置：保留原有字段，仅强制 DISABLE_IMAGE_GENERATION=true
+    local new_cfg
+    new_cfg=$(echo "$cfg" | python3 -c "
+import json,sys
+d=json.load(sys.stdin)
+d['DISABLE_IMAGE_GENERATION']=True
+d['IMAGE_PROVIDER']=d.get('IMAGE_PROVIDER','')
+print(json.dumps(d))
+" 2>/dev/null)
+    curl -s -X POST "${PRESENTON_URL}/api/user-config" \
+        -H "Content-Type: application/json" \
+        -d "$new_cfg" > /dev/null 2>&1
+}
+
+ensure_presenton_configured
+
 # --- 构建请求 JSON（通过 jq，安全处理特殊字符） ---
 REQUEST_JSON=$(jq -n \
     --arg content "$CONTENT" \
