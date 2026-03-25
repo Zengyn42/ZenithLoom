@@ -292,6 +292,14 @@ class _GeminiSessionMixin:
         if session_id:
             record = gem_sess.load_session(session_id, project_id)
             if record is not None:
+                # workspace 变更时更新 projectHash
+                if record.projectHash != project_id:
+                    logger.info(
+                        f"[gemini] workspace changed for {session_id[:8]}: "
+                        f"{record.projectHash} → {project_id}"
+                    )
+                    record.projectHash = project_id
+                    gem_sess.save_session(record, project_id)
                 client = self._get_client(session_id)
                 client._history = gem_sess.to_api_history(record)
                 self._records[session_id] = record
@@ -677,8 +685,30 @@ class GeminiCLINode(AgentNode):
         else:
             full_prompt = prompt
 
-        # resume 已有 session：先用实际模型，失败则换模型继续 resume
+        # resume 已有 session：确保 session 文件在当前 project 目录 + 通知目录变更
         if session_id:
+            # 1. 文件迁移：确保 CLI 的 --resume 能找到 session 文件
+            current_project_id = gem_sess.get_project_id(cwd or os.getcwd())
+            gem_sess._find_session_file(session_id, current_project_id)
+
+            # 2. 上下文更新：检测 workspace 是否变化，注入目录变更通知
+            #    session 的 projectHash 记录创建时的 project，若与当前不同说明 workspace 变了
+            record = gem_sess.load_session(session_id, current_project_id)
+            if record and record.projectHash != current_project_id:
+                full_prompt = (
+                    f"[重要：工作目录已变更]\n"
+                    f"你的工作目录已从旧项目切换到：{cwd}\n"
+                    f"请以新目录为准进行所有后续操作。\n\n"
+                    f"{full_prompt}"
+                )
+                # 更新 record 的 projectHash 使后续不再重复通知
+                record.projectHash = current_project_id
+                gem_sess.save_session(record, current_project_id)
+                logger.info(
+                    f"[gemini-cli] workspace changed → injected cwd notice "
+                    f"for session {session_id[:8]}"
+                )
+
             effective_model = _session_effective_model.get(session_id, self._model)
             sid_short = session_id[:8]
             # 构建 resume 降级链：实际模型优先，然后是其余可用模型
@@ -716,11 +746,13 @@ class GeminiCLINode(AgentNode):
                     logger.warning(f"[gemini-cli] resume model={model} 失败: {e}")
                     continue
 
-            # 所有模型 resume 均失败
-            raise RuntimeError(
-                f"Gemini CLI resume 全部失败 sid={sid_short}，"
-                f"已尝试 {len(resume_chain)} 个模型"
+            # 所有模型 resume 均失败 → 放弃旧 session，创建新 session 继续
+            logger.warning(
+                f"[gemini-cli] resume 全部失败 sid={sid_short}，"
+                f"已尝试 {len(resume_chain)} 个模型 → 放弃旧 session，新建"
             )
+            # 递归调用自身，session_id="" 走新建路径
+            return await self.call_llm(prompt, session_id="", tools=tools, cwd=cwd, history=history)
 
         # 新 session：按降级链尝试
         chain = self._build_fallback_chain()
