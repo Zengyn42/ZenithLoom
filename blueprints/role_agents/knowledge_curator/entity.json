@@ -12,8 +12,8 @@
         "permission_mode": "plan",
         "timeout": 120,
         "skill_files": [
-          "skills/google_workspace/slides_skill.md",
-          "skills/google_workspace/docs_skill.md"
+          "skills/presenton/slides_skill.md",
+          "skills/pandoc/docs_skill.md"
         ],
         "system_prompt": "你是知识策展官，负责管理和展现知识资产。\n所有能力和路由格式详见 PROTOCOL.md。"
       },
@@ -38,16 +38,16 @@
         "id": "render_slides",
         "type": "EXTERNAL_TOOL",
         "node_config": {
-          "command": ["bash", "skills/google_workspace/scripts/render_slides.sh", "{routing_context}"],
+          "command": ["bash", "skills/presenton/scripts/render_slides.sh", "{routing_context}"],
           "description": "调用 Presenton 生成漂亮的 PPTX slides",
-          "timeout": 120
+          "timeout": 600
         }
       },
       {
         "id": "render_docs",
         "type": "EXTERNAL_TOOL",
         "node_config": {
-          "command": ["bash", "skills/google_workspace/scripts/render_docs.sh", "{routing_context}"],
+          "command": ["bash", "skills/pandoc/scripts/render_docs.sh", "{routing_context}"],
           "description": "调用 Pandoc 生成专业的 DOCX 文档",
           "timeout": 60
         }
