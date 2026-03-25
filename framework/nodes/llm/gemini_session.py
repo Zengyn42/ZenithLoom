@@ -135,18 +135,50 @@ def _session_filename(record: ConversationRecord) -> str:
 
 
 def _find_session_file(session_id: str, project_id: str) -> Path | None:
-    """按 sessionId 前缀扫描 chats/ 目录，找到对应文件。"""
-    chats = _chats_dir(project_id)
-    if not chats.exists():
-        return None
+    """
+    按 sessionId 前缀扫描 chats/ 目录，找到对应文件。
+
+    若在 project_id 目录下找不到，fallback 扫描所有 project 目录。
+    找到后自动迁移到当前 project_id 目录下，保证后续访问路径一致。
+    """
     prefix = session_id[:8]
-    for f in chats.glob(f"session-*-{prefix}.json"):
-        try:
-            data = json.loads(f.read_text(encoding="utf-8"))
-            if data.get("sessionId") == session_id:
-                return f
-        except Exception:
+
+    # 1. 先在目标 project 目录找
+    chats = _chats_dir(project_id)
+    if chats.exists():
+        for f in chats.glob(f"session-*-{prefix}.json"):
+            try:
+                data = json.loads(f.read_text(encoding="utf-8"))
+                if data.get("sessionId") == session_id:
+                    return f
+            except Exception:
+                continue
+
+    # 2. Fallback：扫描所有 project 目录
+    if not _GEMINI_DIR.exists():
+        return None
+    for proj_dir in _GEMINI_DIR.iterdir():
+        if not proj_dir.is_dir() or proj_dir.name == project_id:
             continue
+        other_chats = proj_dir / "chats"
+        if not other_chats.exists():
+            continue
+        for f in other_chats.glob(f"session-*-{prefix}.json"):
+            try:
+                data = json.loads(f.read_text(encoding="utf-8"))
+                if data.get("sessionId") == session_id:
+                    # 迁移到当前 project 目录
+                    chats.mkdir(parents=True, exist_ok=True)
+                    new_path = chats / f.name
+                    f.rename(new_path)
+                    logger.info(
+                        f"[gemini.session] migrated {session_id[:8]} "
+                        f"from {proj_dir.name}/ → {project_id}/"
+                    )
+                    return new_path
+            except Exception:
+                continue
+
     return None
 
 
