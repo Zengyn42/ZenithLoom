@@ -47,8 +47,14 @@ API_URL="${PRESENTON_URL}/api/v1/ppt/presentation/generate"
 API_KEY="${PRESENTON_API_KEY:-}"
 
 # --- 按需启动 Presenton Docker 容器 ---
+_presenton_ready() {
+    local code
+    code=$(curl -s -o /dev/null -w "%{http_code}" --max-time 3 "${PRESENTON_URL}/api/v1/ppt/presentation/all" 2>/dev/null)
+    [ "$code" = "200" ]
+}
+
 ensure_presenton_running() {
-    if curl -s --max-time 3 "$PRESENTON_URL" > /dev/null 2>&1; then
+    if _presenton_ready; then
         return 0
     fi
 
@@ -64,7 +70,7 @@ ensure_presenton_running() {
 
     echo -n "Waiting for Presenton to be ready" >&2
     for i in $(seq 1 30); do
-        if curl -s --max-time 2 "$PRESENTON_URL" > /dev/null 2>&1; then
+        if _presenton_ready; then
             echo " ready!" >&2
             return 0
         fi
@@ -128,7 +134,8 @@ if [ -z "$DOWNLOAD_URL" ]; then
 fi
 
 if [[ "$DOWNLOAD_URL" == /* ]]; then
-    DOWNLOAD_URL="${PRESENTON_URL}${DOWNLOAD_URL}"
+    ENCODED_PATH=$(python3 -c "import urllib.parse, sys; print(urllib.parse.quote(sys.argv[1]))" "$DOWNLOAD_URL")
+    DOWNLOAD_URL="${PRESENTON_URL}${ENCODED_PATH}"
 fi
 
 curl -s -o "$OUTPUT" "$DOWNLOAD_URL"
