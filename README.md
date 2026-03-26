@@ -11,9 +11,9 @@ BootstrapBuilder/
 ├── main.py                        # 入口（CLI / Discord / Tmux 模式）
 ├── framework/                     # 核心框架层
 │   ├── state.py                   # BaseAgentState / DebateState (TypedDict)
-│   ├── config.py                  # AgentConfig dataclass（from agent.json）
+│   ├── config.py                  # AgentConfig dataclass（from entity.json）
 │   ├── registry.py                # 节点/条件注册（装饰器驱动）
-│   ├── agent_loader.py            # AgentLoader：加载 agent.json、编译图
+│   ├── agent_loader.py            # AgentLoader：加载 entity.json、编译图
 │   ├── graph.py                   # build_agent_graph()（Priority 3 默认图）
 │   ├── graph_controller.py        # GraphController：图执行 + Session 管理
 │   ├── builtins.py                # 注册所有内置节点类型和条件谓词
@@ -37,14 +37,14 @@ BootstrapBuilder/
 │       └── node.py                # LlamaNode（Ollama/vLLM，stub）
 ├── agents/                        # 每个 Agent 一个目录
 │   ├── hani/                      # 主 Agent（Claude 驱动）
-│   │   ├── agent.json             # 图配置 + 工具 + 节点
+│   │   ├── entity.json             # 图配置 + 工具 + 节点
 │   │   ├── sessions.json          # 活跃 Session & node_sessions
 │   │   ├── hani.db                # LangGraph checkpoint（SQLite）
 │   │   └── *.md                   # Persona 文件（SOUL / IDENTITY / ...）
 │   ├── debate_gemini_first/       # 辩论子图（Gemini 先手）
-│   │   └── agent.json
+│   │   └── entity.json
 │   └── debate_claude_first/       # 辩论子图（Claude 先手）
-│       └── agent.json
+│       └── entity.json
 └── interfaces/
     ├── cli.py                     # run_cli() / run_tmux()
     └── discord_bot.py             # run_discord()
@@ -80,7 +80,7 @@ class BaseAgentState(TypedDict):
 
 ---
 
-## Agent 配置（agent.json）
+## Agent 配置（entity.json）
 
 ### 顶层字段
 
@@ -133,7 +133,7 @@ def _(state: dict) -> bool:
 
 ## 声明式图定义
 
-### 节点定义（agent.json → graph.nodes）
+### 节点定义（entity.json → graph.nodes）
 
 ```json
 {
@@ -150,7 +150,7 @@ def _(state: dict) -> bool:
 }
 ```
 
-### 边类型（agent.json → graph.edges）
+### 边类型（entity.json → graph.edges）
 
 | type 值 | 触发条件 | 示例 |
 |---------|----------|------|
@@ -191,7 +191,7 @@ AgentLoader.build_graph(checkpointer=_DEFAULT)
 ├─ Priority 1: agents/{name}/graph.py 存在？
 │   └─ mod.build_graph(loader, checkpointer)       # 完全自定义图
 │
-├─ Priority 2: agent.json["graph"]["nodes"] 存在？
+├─ Priority 2: entity.json["graph"]["nodes"] 存在？
 │   └─ _build_declarative(graph_spec)
 │       ├─ 验证：节点 ID 唯一、边引用有效、BFS 可达性
 │       ├─ 选择 state_schema（"base" → BaseAgentState / "debate" → DebateState）

@@ -1,7 +1,7 @@
 {
   "mcpServers": {
     "obsidian-vault": {
-      "command": "python3",
+      "command": "/usr/bin/python3",
       "args": [
         "-m",
         "mcp_servers.obsidian.server",
