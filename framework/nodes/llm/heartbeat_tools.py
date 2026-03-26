@@ -29,6 +29,41 @@ from mcp.client.sse import sse_client
 
 logger = logging.getLogger(__name__)
 
+# 全局 HeartbeatMCPProxy 引用（由 agent_loader 设置，供 ExternalToolNode 复用）
+_active_proxy: "HeartbeatMCPProxy | None" = None
+
+# proxy 创建后的回调列表（接口层注册，延迟绑定 alert callback）
+_on_proxy_ready_hooks: list = []
+
+
+def get_active_proxy() -> "HeartbeatMCPProxy | None":
+    """获取当前 agent 的 HeartbeatMCPProxy（持久 SSE 连接）。"""
+    return _active_proxy
+
+
+def set_active_proxy(proxy: "HeartbeatMCPProxy | None") -> None:
+    """由 agent_loader 或 ExternalToolNode 按需创建后调用。"""
+    global _active_proxy
+    _active_proxy = proxy
+    if proxy is not None:
+        for hook in _on_proxy_ready_hooks:
+            try:
+                hook(proxy)
+            except Exception as e:
+                logger.warning(f"[heartbeat_tools] on_proxy_ready hook error: {e}")
+
+
+def on_proxy_ready(hook) -> None:
+    """注册一个 callback，在 proxy 就绪时调用。hook 签名: (proxy) -> None。
+    如果 proxy 已存在，立即调用。"""
+    _on_proxy_ready_hooks.append(hook)
+    if _active_proxy is not None:
+        try:
+            hook(_active_proxy)
+        except Exception as e:
+            logger.warning(f"[heartbeat_tools] on_proxy_ready hook error: {e}")
+
+
 # PID 文件路径（项目根/data/heartbeat/mcp.pid）
 _PROJECT_ROOT = Path(__file__).resolve().parent.parent.parent.parent
 _PID_FILE = _PROJECT_ROOT / "data" / "heartbeat" / "mcp.pid"

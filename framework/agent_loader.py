@@ -346,6 +346,9 @@ class EntityLoader:
         TOOL_SCHEMAS.update(schemas)
 
         self._heartbeat_proxy = proxy
+        # 注册全局引用，供 ExternalToolNode 复用持久 SSE 连接
+        from framework.nodes.llm.heartbeat_tools import set_active_proxy
+        set_active_proxy(proxy)
         return proxy
 
     async def stop_heartbeat(self):
@@ -359,6 +362,8 @@ class EntityLoader:
             except Exception as e:
                 logger.warning(f"[agent_loader] {self.name!r} heartbeat cleanup failed: {e}")
             self._heartbeat_proxy = None
+            from framework.nodes.llm.heartbeat_tools import set_active_proxy
+            set_active_proxy(None)
 
     def invalidate_engine(self) -> None:
         """使引擎和控制器缓存失效（compact/reset 后调用）。"""
