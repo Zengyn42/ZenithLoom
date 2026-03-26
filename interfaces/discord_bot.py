@@ -100,6 +100,14 @@ _channel_tasks: dict[int, asyncio.Task] = {}
 # 最后活跃的频道 ID（用于 heartbeat 告警推送）
 _last_active_channel_id: int | None = None
 
+# PENDING 后台任务 → 频道映射（task_id → channel_id）
+_pending_task_channels: dict[str, int] = {}
+
+# 后台 poller task
+_pending_poller_task: asyncio.Task | None = None
+
+_PENDING_POLL_INTERVAL = 30  # seconds
+
 
 # ==========================================
 # Per-channel session 辅助函数
@@ -278,6 +286,9 @@ async def _channel_consumer(channel_id: int) -> None:
             await message.channel.send(f"{agent_name} 出错了: {e}")
         finally:
             _channel_tasks.pop(channel_id, None)
+
+        # 检测刚发送的回复中是否有 PENDING 标记，注册后台 poller
+        _register_pending_tasks_for_channel(channel_id)
         queue.task_done()
         # 补偿额外 drain 的 task_done 计数
         for _ in range(extra_drained):
@@ -529,6 +540,104 @@ class _DiscordInterface(BaseInterface):
                 await message.channel.send(file=discord.File(path))
             except discord.HTTPException as e:
                 await message.channel.send(f"⚠️ 文件发送失败：{e}")
+
+
+# ==========================================
+# PENDING task → channel 后台 poller
+# ==========================================
+
+
+def _register_pending_tasks_for_channel(channel_id: int) -> None:
+    """扫描频道的 checkpoint 消息历史，找到 PENDING 标记并注册 poller。"""
+    global _pending_poller_task
+    try:
+        from mcp_servers.heartbeat.task_vault import TaskVault
+        vault = TaskVault.get_instance()
+        # 扫描该频道对应 session 的 thread_id checkpoint
+        session_name = _channel_active_session.get(channel_id)
+        if not session_name or not _controller:
+            return
+
+        env = _controller.session_mgr.get_envelope(session_name)
+        if not env:
+            return
+
+        # 获取 checkpoint 中的 messages
+        import asyncio
+        loop = asyncio.get_event_loop()
+        # 使用 controller 的 checkpointer 获取最新 state
+        checkpoint = _controller._checkpointer
+        if not checkpoint:
+            return
+
+        # 直接查 TaskVault 的活跃任务（更简单可靠）
+        for task_id, record in vault._tasks.items():
+            from mcp_servers.heartbeat.task_vault import TaskStatus
+            if record.status == TaskStatus.RUNNING:
+                _pending_task_channels[task_id] = channel_id
+                logger.info(f"[discord] registered pending task {task_id} → channel {channel_id}")
+
+    except Exception as e:
+        logger.warning(f"[discord] _register_pending_tasks_for_channel error: {e}")
+
+    # 确保 poller 在运行
+    if _pending_task_channels and (_pending_poller_task is None or _pending_poller_task.done()):
+        _pending_poller_task = asyncio.get_event_loop().create_task(
+            _pending_tasks_poller(), name="pending_tasks_poller"
+        )
+
+
+async def _pending_tasks_poller() -> None:
+    """后台 poller：每 30s 检查 TaskVault，任务完成后主动推送到对应频道。"""
+    while _pending_task_channels:
+        await asyncio.sleep(_PENDING_POLL_INTERVAL)
+
+        if not _pending_task_channels:
+            break
+
+        try:
+            from mcp_servers.heartbeat.task_vault import TaskVault, TaskStatus
+            vault = TaskVault.get_instance()
+
+            completed: list[tuple[str, int]] = []  # (task_id, channel_id)
+
+            for task_id, channel_id in list(_pending_task_channels.items()):
+                status = vault.query_task(task_id)
+                if status is None or status == TaskStatus.RUNNING:
+                    continue
+                completed.append((task_id, channel_id))
+
+            for task_id, channel_id in completed:
+                _pending_task_channels.pop(task_id, None)
+                status = vault.query_task(task_id)
+                result = vault.get_result(task_id)
+
+                if result is None:
+                    result = f"结果文件已丢失或为空。"
+
+                if status == TaskStatus.TIMEOUT:
+                    header = "⏰ **后台任务超时**"
+                elif status == TaskStatus.FAILED:
+                    header = "❌ **后台任务失败**"
+                else:
+                    header = "✅ **后台任务完成**"
+
+                msg_text = f"{header} `{task_id}`\n```\n{result[:1800]}\n```"
+
+                channel = bot.get_channel(channel_id)
+                if channel:
+                    try:
+                        await channel.send(msg_text)
+                        logger.info(f"[discord] sent pending task result: {task_id} → channel {channel_id}")
+                    except Exception as e:
+                        logger.warning(f"[discord] failed to send task result: {e}")
+                else:
+                    logger.warning(f"[discord] channel {channel_id} not found for task {task_id}")
+
+        except Exception as e:
+            logger.warning(f"[discord] pending_tasks_poller error: {e}")
+
+    logger.info("[discord] pending_tasks_poller exiting (no pending tasks)")
 
 
 # ==========================================
