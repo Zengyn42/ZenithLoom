@@ -313,11 +313,9 @@ async def heartbeat_register_monitor(
     except Exception:
         pass
 
-    # TASK_MONITOR 不依赖特定 blueprint；没有 manager 时创建 standalone
-    if not _managers:
-        mgr = await _get_or_create_standalone_manager()
-    else:
-        mgr = next(iter(_managers.values()))
+    # 确保至少有一个 blueprint 已加载
+    await _ensure_base_blueprint()
+    mgr = next(iter(_managers.values()))
     result = await mgr.register_monitor(
         task_id=task_id,
         pid=pid,
@@ -354,28 +352,19 @@ def heartbeat_my_monitors(agent_id: str) -> str:
     return "\n".join(lines)
 
 
-async def _get_or_create_standalone_manager() -> HeartbeatManager:
-    """获取或创建一个 standalone HeartbeatManager（无 blueprint，仅用于 TASK_MONITOR）。"""
-    _STANDALONE_NAME = "__standalone__"
-    if _STANDALONE_NAME in _managers:
-        return _managers[_STANDALONE_NAME]
+_BASE_BLUEPRINT = _state_dir / "base_heartbeat.json"
 
-    # 创建一个空的 blueprint 文件供 HeartbeatManager 加载
-    standalone_bp = _state_dir / "standalone_heartbeat.json"
-    standalone_bp.parent.mkdir(parents=True, exist_ok=True)
-    standalone_bp.write_text('{"name": "__standalone__", "tasks": []}', encoding="utf-8")
 
-    state_path = _state_dir / "__standalone___state.json"
-    mgr = HeartbeatManager(
-        standalone_bp, state_path,
-        on_failure=_broadcast_alert,
-        on_complete=_broadcast_event,
-        session_registry=_active_sessions,
-    )
-    await mgr.start()
-    _managers[_STANDALONE_NAME] = mgr
-    logger.info("[heartbeat_mcp] created standalone manager for TASK_MONITOR")
-    return mgr
+async def _ensure_base_blueprint() -> None:
+    """确保 base blueprint 已加载。TASK_MONITOR 需要至少一个 manager 来挂载 monitor loop。"""
+    if _managers:
+        return
+    _BASE_BLUEPRINT.parent.mkdir(parents=True, exist_ok=True)
+    if not _BASE_BLUEPRINT.exists():
+        _BASE_BLUEPRINT.write_text(
+            '{"name": "base", "tasks": []}', encoding="utf-8"
+        )
+    await heartbeat_load_blueprint(str(_BASE_BLUEPRINT))
 
 
 async def _broadcast_task_completed(event: dict) -> None:
