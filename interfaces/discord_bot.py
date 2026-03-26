@@ -404,10 +404,10 @@ class _DiscordInterface(BaseInterface):
 
         async def _editor():
             loop = asyncio.get_event_loop()
-            thinking_last     = 0.0
-            text_last         = 0.0
-            THINKING_THROTTLE = 1.5
-            TEXT_THROTTLE     = 1.0
+            thinking_last     = loop.time()
+            text_last         = loop.time()
+            THINKING_THROTTLE = 3.0
+            TEXT_THROTTLE     = 5.0
             # 429 动态退避：遇到 rate limit 后逐步加大编辑间隔，恢复后递减
             _backoff_until    = 0.0      # 退避截止时间（loop.time）
             _backoff_level    = 0        # 当前退避级别（0=正常）
@@ -489,8 +489,10 @@ class _DiscordInterface(BaseInterface):
                     else:
                         display = preview + cursor
                     if text_draft[0] is None:
-                        text_draft[0] = await message.channel.send("▌")
-                    await _safe_edit(text_draft[0], display)
+                        text_draft[0] = await message.channel.send(display)
+                        text_last = now  # 重置时钟，避免立刻再次编辑
+                    else:
+                        await _safe_edit(text_draft[0], display)
 
                 if sentinel:
                     break
