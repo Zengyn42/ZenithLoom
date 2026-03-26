@@ -331,6 +331,21 @@ def make_heartbeat_tools(proxy: HeartbeatMCPProxy):
         result = await proxy.call_tool("heartbeat_alerts", {})
         return {"result": result}
 
+    async def heartbeat_register_monitor(task_id: str, pid: int, output_path: str, hard_timeout: float = 300.0) -> dict:
+        """注册后台子进程监控。heartbeat MCP 会每 60s 检查 PID，完成后自动通知。"""
+        result = await proxy.call_tool("heartbeat_register_monitor", {
+            "task_id": task_id,
+            "pid": int(pid),
+            "output_path": output_path,
+            "hard_timeout": float(hard_timeout),
+        })
+        return {"result": result}
+
+    async def heartbeat_my_monitors(agent_id: str = "") -> dict:
+        """列出当前 agent 关联的所有后台监控任务。"""
+        result = await proxy.call_tool("heartbeat_my_monitors", {"agent_id": agent_id})
+        return {"result": result}
+
     registry = {
         "heartbeat_load_blueprint": heartbeat_load_blueprint,
         "heartbeat_unload_blueprint": heartbeat_unload_blueprint,
@@ -340,6 +355,8 @@ def make_heartbeat_tools(proxy: HeartbeatMCPProxy):
         "heartbeat_run": heartbeat_run,
         "heartbeat_set_interval": heartbeat_set_interval,
         "heartbeat_alerts": heartbeat_alerts,
+        "heartbeat_register_monitor": heartbeat_register_monitor,
+        "heartbeat_my_monitors": heartbeat_my_monitors,
     }
 
     schemas = {
@@ -464,6 +481,52 @@ def make_heartbeat_tools(proxy: HeartbeatMCPProxy):
                 "parameters": {
                     "type": "object",
                     "properties": {},
+                    "required": [],
+                },
+            },
+        },
+        "heartbeat_register_monitor": {
+            "type": "function",
+            "function": {
+                "name": "heartbeat_register_monitor",
+                "description": "Register a background subprocess monitor. Heartbeat MCP will poll the PID every 60s and notify when done. Use this when an external tool returns [PENDING] with a PID.",
+                "parameters": {
+                    "type": "object",
+                    "properties": {
+                        "task_id": {
+                            "type": "string",
+                            "description": "Unique task identifier from the [PENDING] message",
+                        },
+                        "pid": {
+                            "type": "integer",
+                            "description": "Process ID of the background subprocess",
+                        },
+                        "output_path": {
+                            "type": "string",
+                            "description": "Path to the subprocess output file",
+                        },
+                        "hard_timeout": {
+                            "type": "number",
+                            "description": "Maximum runtime in seconds before force-killing the process",
+                        },
+                    },
+                    "required": ["task_id", "pid", "output_path", "hard_timeout"],
+                },
+            },
+        },
+        "heartbeat_my_monitors": {
+            "type": "function",
+            "function": {
+                "name": "heartbeat_my_monitors",
+                "description": "List all active background subprocess monitors for this agent",
+                "parameters": {
+                    "type": "object",
+                    "properties": {
+                        "agent_id": {
+                            "type": "string",
+                            "description": "Agent identifier (optional)",
+                        },
+                    },
                     "required": [],
                 },
             },

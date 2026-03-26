@@ -289,6 +289,10 @@ class EntityLoader:
 
         hb_ref = entity.get("heartbeat")
         if not hb_ref:
+            # 没有 heartbeat 配置，但如果 agent 有 EXTERNAL_TOOL 节点，
+            # 仍需连接 heartbeat proxy（提供 heartbeat_register_monitor 工具）
+            if self._has_external_tool_nodes():
+                return await self._connect_heartbeat_proxy_only()
             logger.debug(f"[agent_loader] {self.name!r}: no heartbeat configuration")
             return None
 
@@ -349,6 +353,42 @@ class EntityLoader:
         # 注册全局引用，供 ExternalToolNode 复用持久 SSE 连接
         from framework.nodes.llm.heartbeat_tools import set_active_proxy
         set_active_proxy(proxy)
+        return proxy
+
+    def _has_external_tool_nodes(self) -> bool:
+        """检查当前 agent 的 graph 中是否有 EXTERNAL_TOOL 节点。"""
+        try:
+            nodes = self.json.get("graph", {}).get("nodes", [])
+            return any(n.get("type") == "EXTERNAL_TOOL" for n in nodes)
+        except Exception:
+            return False
+
+    async def _connect_heartbeat_proxy_only(self):
+        """仅建立 heartbeat proxy 连接 + 注册工具，不加载 blueprint。
+
+        用于没有 heartbeat 配置但有 EXTERNAL_TOOL 的 agent，
+        使 LLM 能使用 heartbeat_register_monitor 工具。
+        """
+        from framework.nodes.llm.heartbeat_tools import HeartbeatMCPProxy
+        proxy = HeartbeatMCPProxy()
+        try:
+            await proxy.connect()
+        except Exception as e:
+            logger.warning(
+                f"[agent_loader] {self.name!r}: heartbeat proxy connect failed: {e}"
+            )
+            return None
+
+        from framework.nodes.llm.heartbeat_tools import make_heartbeat_tools
+        from framework.nodes.llm.tools import TOOL_REGISTRY, TOOL_SCHEMAS
+        registry, schemas = make_heartbeat_tools(proxy)
+        TOOL_REGISTRY.update(registry)
+        TOOL_SCHEMAS.update(schemas)
+
+        self._heartbeat_proxy = proxy
+        from framework.nodes.llm.heartbeat_tools import set_active_proxy
+        set_active_proxy(proxy)
+        logger.info(f"[agent_loader] {self.name!r}: heartbeat proxy connected (EXTERNAL_TOOL support)")
         return proxy
 
     async def stop_heartbeat(self):
