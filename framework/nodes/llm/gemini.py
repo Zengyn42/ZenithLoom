@@ -586,6 +586,7 @@ class GeminiCLINode(AgentNode):
         model: str,
         session_id: str = "",
         cwd: str | None = None,
+        allowed_mcp_servers: list[str] | None = None,
     ) -> tuple[str, str]:
         """
         执行单次 Gemini CLI 调用。
@@ -612,6 +613,8 @@ class GeminiCLINode(AgentNode):
             logger.debug(f"[gemini-cli] plan mode → 不传 --yolo（read-only mode）")
         if session_id:
             cmd.extend(["--resume", session_id])
+        if allowed_mcp_servers:
+            cmd.extend(["--allowed-mcp-server-names"] + allowed_mcp_servers)
 
         effective_timeout = min(
             self._MAX_TIMEOUT,
@@ -675,7 +678,14 @@ class GeminiCLINode(AgentNode):
         cwd: str | None = None,
         history: list | None = None,
     ) -> tuple[str, str]:
-        """调用 Gemini CLI subprocess，返回 (reply, session_id)。history 由 session 管理，忽略。"""
+        """调用 Gemini CLI subprocess，返回 (reply, session_id)。history 由 session 管理，忽略。
+
+        tools: 基类 _select_tools() 产出的工具名列表。
+          对 Gemini CLI，映射为 --allowed-mcp-server-names（MCP server 粒度过滤）。
+          工具名会被当作 MCP server name 直接传递。
+        """
+        # tools → allowed_mcp_servers（Gemini CLI 按 MCP server name 过滤）
+        allowed_mcp_servers = tools if tools else None
         # 首次调用（无 session）时嵌入 system prompt
         if not session_id and self._system_prompt:
             full_prompt = (
@@ -729,7 +739,8 @@ class GeminiCLINode(AgentNode):
                     )
                 try:
                     reply, new_sid = await self._run_cli(
-                        full_prompt, model, session_id=session_id, cwd=cwd
+                        full_prompt, model, session_id=session_id, cwd=cwd,
+                        allowed_mcp_servers=allowed_mcp_servers,
                     )
                     _session_effective_model[new_sid or session_id] = model
                     _unavailable_models.pop(model, None)
@@ -769,7 +780,8 @@ class GeminiCLINode(AgentNode):
                 )
             try:
                 reply, new_sid = await self._run_cli(
-                    full_prompt, model, cwd=cwd
+                    full_prompt, model, cwd=cwd,
+                    allowed_mcp_servers=allowed_mcp_servers,
                 )
                 _unavailable_models.pop(model, None)  # 成功则清除不可用标记
                 if new_sid:

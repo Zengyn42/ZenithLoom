@@ -178,8 +178,10 @@ class OllamaNode(AgentNode):
         import uuid as _uuid
         from framework.nodes.llm.tools import TOOL_REGISTRY, build_tool_schemas
 
-        # plan 模式：从工具列表中剔除写入/执行类工具
-        effective_tools = list(self._tools)
+        # tool_rules 关键词匹配（与基类 __call__ 中的 _select_tools 一致）
+        lm = (state.get("messages") or [])
+        latest_input = lm[-1].content if lm else ""
+        effective_tools = self._select_tools(latest_input) or []
 
         # 自动发现动态注册的工具（heartbeat_* 等）
         dynamic = [k for k in TOOL_REGISTRY if k.startswith("heartbeat_") and k not in effective_tools]
@@ -187,11 +189,6 @@ class OllamaNode(AgentNode):
             effective_tools.extend(dynamic)
             if is_debug():
                 logger.debug(f"[ollama] dynamic tools discovered: {dynamic}")
-
-        if self.is_plan_mode:
-            effective_tools = [t for t in effective_tools if t not in self._WRITE_TOOLS]
-            if is_debug():
-                logger.debug(f"[ollama] plan mode: tools {self._tools} → {effective_tools}")
         tool_schemas = build_tool_schemas(effective_tools)
         session_key = self._node_config.get("session_key", self._node_config.get("id", ""))
 
