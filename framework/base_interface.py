@@ -153,55 +153,74 @@ class BaseInterface:
         """invoke 前调用：从 Task Vault 取结果，覆写 state 中的 PENDING 消息。
 
         扫描 state["messages"] 中的 [PENDING] 标记消息，
-        如果对应 task 已完成，用实际结果替换 PENDING 内容。
+        直接查询 TaskVault 判断任务是否已完成，不依赖 SSE 推送队列。
+
+        双通道通知：
+          1. SSE 推送 → _completed_tasks_queue（实时，但依赖持久连接）
+          2. TaskVault 直接查询（兜底，每次 invoke 时主动检查）
 
         Returns:
             修改后的 state（原地修改 messages 列表）。
         """
-        # 先排空完成队列
-        completed_ids: set[str] = set()
-        while not self._completed_tasks_queue.empty():
-            try:
-                completed_ids.add(self._completed_tasks_queue.get_nowait())
-            except queue.Empty:
-                break
-
-        if not completed_ids:
+        messages = state.get("messages", [])
+        if not messages:
             return state
 
-        from mcp_servers.heartbeat.task_vault import TaskVault
-
-        mgr = TaskVault.get_instance()
-        messages = state.get("messages", [])
-
+        # 先收集所有 PENDING 消息的 task_id
+        pending_indices: list[tuple[int, str]] = []  # (index, task_id)
         for i, msg in enumerate(messages):
             content = getattr(msg, "content", "")
             if not isinstance(content, str) or not content.startswith(_PENDING_PREFIX):
                 continue
 
-            # 提取 task_id
             task_id = None
             extra = getattr(msg, "additional_kwargs", {})
             if extra and "task_id" in extra:
                 task_id = extra["task_id"]
             else:
-                # fallback: 从 content 中解析 task_id
                 for line in content.split("\n"):
                     if line.startswith("task_id:"):
                         task_id = line.split(":", 1)[1].strip()
                         break
 
-            if task_id is None or task_id not in completed_ids:
+            if task_id:
+                pending_indices.append((i, task_id))
+
+        if not pending_indices:
+            return state
+
+        # 排空 SSE 推送队列（作为补充信号）
+        sse_completed: set[str] = set()
+        while not self._completed_tasks_queue.empty():
+            try:
+                sse_completed.add(self._completed_tasks_queue.get_nowait())
+            except queue.Empty:
+                break
+
+        # 直接查询 TaskVault（主通道：不依赖 SSE）
+        from mcp_servers.heartbeat.task_vault import TaskVault, TaskStatus
+
+        vault = TaskVault.get_instance()
+
+        for idx, task_id in pending_indices:
+            status = vault.query_task(task_id)
+
+            # 任务仍在运行 → 跳过
+            if status is None or status == TaskStatus.RUNNING:
                 continue
 
-            # 获取结果
-            result = mgr.get_result(task_id)
+            # 任务已完成（COMPLETED / FAILED / TIMEOUT）→ 获取结果
+            result = vault.get_result(task_id)
             if result is None:
                 result = f"[TASK {task_id}] 结果文件已丢失或为空。"
 
-            # 覆写 PENDING 消息
-            _logger.info(f"[base_interface] replacing PENDING message for {task_id}")
-            messages[i] = AIMessage(content=result)
+            if status == TaskStatus.TIMEOUT:
+                result = f"[TIMEOUT] 任务超时被终止。\n{result}"
+            elif status == TaskStatus.FAILED:
+                result = f"[FAILED] 任务执行失败。\n{result}"
+
+            _logger.info(f"[base_interface] replacing PENDING message for {task_id} (status={status.value})")
+            messages[idx] = AIMessage(content=result)
 
         return state
 
