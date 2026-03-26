@@ -13,7 +13,8 @@
         "timeout": 120,
         "skill_files": [
           "skills/presenton/slides_skill.md",
-          "skills/pandoc/docs_skill.md"
+          "skills/pandoc/docs_skill.md",
+          "skills/heartbeat/monitor_skill.md"
         ],
         "system_prompt": "你是知识策展官，负责管理和展现知识资产。\n所有能力和路由格式详见 PROTOCOL.md。"
       },
