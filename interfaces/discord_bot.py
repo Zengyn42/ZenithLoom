@@ -548,39 +548,25 @@ class _DiscordInterface(BaseInterface):
 
 
 def _register_pending_tasks_for_channel(channel_id: int) -> None:
-    """扫描频道的 checkpoint 消息历史，找到 PENDING 标记并注册 poller。"""
+    """查找该频道刚产生的新 PENDING 任务，绑定 task_id → channel_id。
+
+    只绑定尚未在 _pending_task_channels 中的 RUNNING 任务，
+    避免多频道时错误覆盖。
+    """
     global _pending_poller_task
     try:
-        from mcp_servers.heartbeat.task_vault import TaskVault
+        from mcp_servers.heartbeat.task_vault import TaskVault, TaskStatus
         vault = TaskVault.get_instance()
-        # 扫描该频道对应 session 的 thread_id checkpoint
-        session_name = _channel_active_session.get(channel_id)
-        if not session_name or not _controller:
-            return
 
-        env = _controller.session_mgr.get_envelope(session_name)
-        if not env:
-            return
-
-        # 获取 checkpoint 中的 messages
-        import asyncio
-        loop = asyncio.get_event_loop()
-        # 使用 controller 的 checkpointer 获取最新 state
-        checkpoint = _controller._checkpointer
-        if not checkpoint:
-            return
-
-        # 直接查 TaskVault 的活跃任务（更简单可靠）
         for task_id, record in vault._tasks.items():
-            from mcp_servers.heartbeat.task_vault import TaskStatus
-            if record.status == TaskStatus.RUNNING:
+            if record.status == TaskStatus.RUNNING and task_id not in _pending_task_channels:
                 _pending_task_channels[task_id] = channel_id
-                logger.info(f"[discord] registered pending task {task_id} → channel {channel_id}")
+                logger.info(f"[discord] bound pending task {task_id} → channel {channel_id}")
 
     except Exception as e:
         logger.warning(f"[discord] _register_pending_tasks_for_channel error: {e}")
 
-    # 确保 poller 在运行
+    # 确保 poller 在运行（作为 SSE 推送的兜底）
     if _pending_task_channels and (_pending_poller_task is None or _pending_poller_task.done()):
         _pending_poller_task = asyncio.get_event_loop().create_task(
             _pending_tasks_poller(), name="pending_tasks_poller"
@@ -678,8 +664,38 @@ def _register_discord_alert_callback():
 async def _discord_handle_alert(alert: dict):
     """
     SSE 推送触发的 Discord 告警处理。
-    level=info/warning → 任务完成报告；level=error → 失败告警。
+    TASK_MONITOR 事件 → 通过 task_id 查找绑定的频道（精确投递）
+    其他告警 → 发到最后活跃频道（兜底）
     """
+    # TASK_MONITOR 事件：精确投递到发起任务的频道
+    alert_type = alert.get("type", "")
+    task_id = alert.get("task_id", "")
+    if alert_type == "TASK_MONITOR" and task_id in _pending_task_channels:
+        channel_id = _pending_task_channels[task_id]
+        channel = bot.get_channel(channel_id)
+        status = alert.get("status", "")
+
+        if channel and status in ("completed", "timeout", "failed"):
+            # 任务终态 → 发送结果并清理映射
+            _pending_task_channels.pop(task_id, None)
+            content = alert.get("content", "")
+            if status == "completed":
+                header = "✅ **后台任务完成**"
+            elif status == "timeout":
+                header = "⏰ **后台任务超时**"
+            else:
+                header = "❌ **后台任务失败**"
+            msg = f"{header} `{task_id}`"
+            if content:
+                msg += f"\n```\n{content[:1800]}\n```"
+            await channel.send(msg)
+            logger.info(f"[discord_alert] TASK_MONITOR {status}: {task_id} → channel {channel_id}")
+            return
+        elif channel and status == "monitoring":
+            # 周期性心跳 → 静默（不刷屏）
+            return
+        # channel 找不到 → fall through 到兜底
+
     channel = _find_alert_channel()
     if channel is None:
         logger.warning(f"[discord_alert] no channel to send alert: {alert}")
