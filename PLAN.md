@@ -95,7 +95,7 @@ CLI 与 Discord 之间存在大量重复代码（`invoke_agent`、session 命令
 
 1. **BaseInterface 基类** — 提取共享逻辑，CLI/Discord/GChat 均继承
 2. **GChatInterface** — 通过 `gws events +subscribe` 接收 GChat 消息，经 LangGraph 处理，`gws chat +send` 回复
-3. **ExternalToolNode（EXTERNAL_TOOL）** — 通用 CLI 调用节点，`agent.json` 声明命令列表即可接入任意外部工具
+3. **ExternalToolNode（EXTERNAL_TOOL）** — 通用 CLI 调用节点，`entity.json` 声明命令列表即可接入任意外部工具
 
 ### 架构原则
 
@@ -146,7 +146,7 @@ EXTERNAL_TOOL 节点 ──→ 子进程调用任意 CLI（参数列表，无 sh
 | `main.py` | 新增 `gchat` 模式 |
 | `framework/config.py` | AgentConfig 新增 `gchat_space`、`gchat_gcp_project`、`gchat_event_types` |
 
-### EXTERNAL_TOOL 用法示例（agent.json）
+### EXTERNAL_TOOL 用法示例（entity.json）
 
 ```json
 // gws：已有结构化 CLI（直接调用，无需 CLI-Anything）
@@ -165,7 +165,7 @@ EXTERNAL_TOOL 节点 ──→ 子进程调用任意 CLI（参数列表，无 sh
                    "description": "渲染 Blender 动画", "timeout": 120 } }
 ```
 
-### GChat 配置（agent.json）
+### GChat 配置（entity.json）
 
 ```json
 "gchat_space": "spaces/AAAA...",

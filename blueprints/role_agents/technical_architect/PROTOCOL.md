@@ -60,6 +60,50 @@
 | `!stop` | 停止当前任务（Discord 专属） |
 | `!whoami` | 显示用户 ID（Discord 专属） |
 
+## 排障手册：频道/子进程卡住
+
+当老板反馈某个频道没响应、或你自己发现路由调用迟迟没返回时，**先从 OS 层面查进程**，不要只看数据库和 sessions.json。
+
+### 第一步：查进程树
+
+```bash
+# 找到自己的进程树，看有没有卡住的子进程
+ps aux --forest | grep -A5 "awaken.py.*hani"
+```
+
+重点看：
+- 子进程运行了多久（ELAPSED 列）
+- 有没有 Claude SDK / pytest / bash 子进程挂了很久
+
+### 第二步：确认子进程状态
+
+```bash
+# 检查可疑进程在等什么
+cat /proc/<PID>/wchan
+# futex_wait_queue = 死锁/卡住
+# do_epoll_wait = 正常等 I/O
+# pipe_read = 等上游输出
+
+# 看打开的文件和 socket
+ls -la /proc/<PID>/fd/
+
+# 看 socket 是否有积压数据（死锁证据）
+ss -xp | grep <PID>
+```
+
+### 第三步：处置
+
+| 状态 | 动作 |
+|------|------|
+| 子进程运行 >10 分钟 + `futex_wait_queue` | 死锁，`kill <PID>` |
+| pytest 运行 >5 分钟 | 测试挂了，`kill <PID>` |
+| Claude SDK 子进程正常 `do_epoll_wait` | 还在跑，等一等 |
+| 无子进程但频道无响应 | 检查 `_channel_tasks`，可能消息队列问题，发 `!stop` |
+
+### 关键认知
+
+**你有 Bash 权限，你能看到整台机器的进程状态。** 不要只从应用层（数据库、sessions.json）排查。sessions.json 告诉你 session 存在，但 `/proc` 告诉你进程是否还活着、卡在哪里。
+
 ## 可用 Skills
 
 通过 `Skill` 工具按需加载：

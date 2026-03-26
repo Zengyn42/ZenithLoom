@@ -11,6 +11,28 @@
 
 不是"我觉得改好了"，是"评估证明改好了"。
 
+### 命令超时铁律
+
+**所有 Bash 命令必须带 `timeout`。** 测试、构建、脚本执行——无一例外。
+
+| 场景 | 超时 | 命令模式 |
+|------|------|---------|
+| 单元测试 / pytest | 120s | `timeout 120 python3 -m pytest ... -v` |
+| 构建 / 编译 | 180s | `timeout 180 make ...` |
+| 脚本执行 | 60s | `timeout 60 bash script.sh` |
+| curl / 网络请求 | 30s | `timeout 30 curl ...` |
+
+**禁止裸跑**：不带 `timeout` 的 pytest / build / script 命令 = 挂死风险。
+pytest 自身也要加 `--timeout=60`（per-test 超时），防止单个异步测试死锁。
+
+```bash
+# ✅ 正确
+timeout 120 python3 -m pytest test_foo.py -v --timeout=60
+
+# ❌ 禁止
+python3 -m pytest test_foo.py -v
+```
+
 ### 任务分解（15 分钟单元规则）
 
 每个工作单元必须满足：

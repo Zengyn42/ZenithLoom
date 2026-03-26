@@ -1,22 +1,22 @@
 """
 无垠智穹 — 实体唤醒入口
 
-读取 entity.json，直接运行对应的 connector。
+读取 identity.json，直接运行对应的 connector。
 
 用法：
   python awaken.py --entity <path> [--connector <type>] [--debug]
 
-  <path>: 实体目录路径，含 entity.json
+  <path>: 实体目录路径，含 identity.json
           e.g. ~/Foundation/EdenGateway/agents/hani
 
-  --connector: 覆盖 entity.json 中的 connector（cli | discord | tmux | gchat）
+  --connector: 覆盖 identity.json 中的 connector（cli | discord | tmux | gchat）
   --debug:     启用详细调试日志
 
 示例：
   python awaken.py --entity ~/Foundation/EdenGateway/agents/hani
   python awaken.py --entity ~/Foundation/EdenGateway/agents/hani --connector cli
 
-entity.json 格式：
+identity.json 格式：
   {
     "name": "hani",
     "blueprint": "/path/to/BootstrapBuilder/blueprints/role_agents/technical_architect",
@@ -72,12 +72,12 @@ def main():
         print(__doc__)
         sys.exit(1)
 
-    # ── 读取 entity.json ────────────────────────────────────────────────────
+    # ── 读取 identity.json ────────────────────────────────────────────────────
     entity_dir = Path(entity_path).expanduser().resolve()
-    entity_file = entity_dir / "entity.json"
+    entity_file = entity_dir / "identity.json"
 
     if not entity_file.exists():
-        print(f"❌ entity.json not found: {entity_file}")
+        print(f"❌ identity.json not found: {entity_file}")
         sys.exit(1)
 
     entity = json.loads(entity_file.read_text(encoding="utf-8"))
@@ -86,7 +86,7 @@ def main():
     connector = connector_override or entity.get("connector", "cli")
 
     if not blueprint_path:
-        print(f"❌ entity.json missing 'blueprint' field: {entity_file}")
+        print(f"❌ identity.json missing 'blueprint' field: {entity_file}")
         sys.exit(1)
 
     # ── 解析 blueprint + framework ──────────────────────────────────────────
@@ -100,6 +100,9 @@ def main():
     framework_str = str(framework_dir)
     if framework_str not in sys.path:
         sys.path.insert(0, framework_str)
+
+    # 切换 CWD 到 framework root，使 entity.json 里的相对路径（如 agent_dir）正确 resolve
+    os.chdir(framework_dir)
 
     if debug:
         from framework.debug import set_debug

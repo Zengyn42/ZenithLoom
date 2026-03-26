@@ -25,7 +25,7 @@ __start__ → query_expand → search_aggregate → candidate_filter → sandbox
 通过 `SUBGRAPH_REF` 挂载到主 Agent 图（`technical_architect`）。
 
 主图改动：
-- `agent.json`：+1 node（`tool_discovery`），+2 edges
+- `entity.json`：+1 node（`tool_discovery`），+2 edges
 - `command_registry.py`：+1 行 `_r("!discover", ...)`
 - `base_interface.py`：`handle_command()` 添加 `!discover` 分支
 
@@ -112,7 +112,7 @@ class ToolDiscoveryState(TypedDict):
 
 ```
 blueprints/functional_graphs/tool_discovery/
-├── agent.json                  # 图定义
+├── entity.json                  # 图定义
 └── ROLE.md                     # LLM 节点 persona
 
 framework/schema/tool_discovery.py              # State schema
@@ -128,12 +128,12 @@ docker/
 ### 修改
 
 ```
-blueprints/role_agents/technical_architect/agent.json   # +1 node, +2 edges
+blueprints/role_agents/technical_architect/entity.json   # +1 node, +2 edges
 framework/command_registry.py                           # +1 行注册
 framework/base_interface.py                             # +1 命令处理分支
 ```
 
-## 八、agent.json 结构
+## 八、entity.json 结构
 
 ```json
 {
@@ -174,7 +174,7 @@ framework/base_interface.py                             # +1 命令处理分支
 
 | Phase | 内容 | 预计工作量 |
 |-------|------|-----------|
-| P1 | State schema + agent.json 骨架 | 2h |
+| P1 | State schema + entity.json 骨架 | 2h |
 | P2 | search_aggregator.py（GitHub API + 去重） | 3h |
 | P3 | sandbox_runner.py + Dockerfiles | 6h |
 | P4 | Report prompt + ROLE.md | 2h |

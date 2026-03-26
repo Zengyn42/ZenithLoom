@@ -58,7 +58,7 @@ class SessionEnvelope:
     @classmethod
     def new(cls, thread_id: str | None = None, workspace: str = "") -> "SessionEnvelope":
         now = datetime.now(timezone.utc).isoformat()
-        tid = thread_id or f"hani_session_{uuid4().hex[:8]}"
+        tid = thread_id or f"session_{uuid4().hex[:8]}"
         return cls(thread_id=tid, created_at=now, updated_at=now, workspace=workspace)
 
 
