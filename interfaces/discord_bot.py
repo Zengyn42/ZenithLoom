@@ -661,11 +661,18 @@ def _find_alert_channel():
 
 
 def _register_discord_alert_callback():
-    """将 Discord 告警处理注册到 HeartbeatMCPProxy 的 SSE 回调。"""
-    if _loader is None or _loader.heartbeat_proxy is None:
-        return
-    _loader.heartbeat_proxy.set_alert_callback(_discord_handle_alert)
-    logger.info("[Discord] heartbeat alert callback registered (SSE push)")
+    """将 Discord 告警处理注册到 HeartbeatMCPProxy 的 SSE 回调。
+
+    使用 on_proxy_ready hook：如果 proxy 已存在立即注册，
+    否则等 ExternalToolNode 按需创建 proxy 时自动触发。
+    """
+    from framework.nodes.llm.heartbeat_tools import on_proxy_ready
+
+    def _bind_callback(proxy):
+        proxy.set_alert_callback(_discord_handle_alert)
+        logger.info("[Discord] heartbeat alert callback registered (SSE push)")
+
+    on_proxy_ready(_bind_callback)
 
 
 async def _discord_handle_alert(alert: dict):
