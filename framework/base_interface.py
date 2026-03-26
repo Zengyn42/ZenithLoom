@@ -149,26 +149,26 @@ class BaseInterface:
         print(f"\a[TASK COMPLETED] {task_id} — 下次输入时自动注入结果。", flush=True)
         _logger.info(f"[base_interface] task completed: {task_id}")
 
-    def _consume_pending_tasks(self, state: dict) -> dict:
-        """invoke 前调用：从 Task Vault 取结果，覆写 state 中的 PENDING 消息。
+    def _inject_completed_tasks(self, result_state: dict) -> str | None:
+        """invoke 后调用：扫描 result_state 的完整 checkpoint 消息历史，
+        找到 PENDING 标记的任务，查询 TaskVault 是否已完成。
 
-        扫描 state["messages"] 中的 [PENDING] 标记消息，
-        直接查询 TaskVault 判断任务是否已完成，不依赖 SSE 推送队列。
+        如果有任务完成，返回格式化的结果文本（直接作为回复）。
+        没有完成的任务则返回 None。
 
-        双通道通知：
-          1. SSE 推送 → _completed_tasks_queue（实时，但依赖持久连接）
-          2. TaskVault 直接查询（兜底，每次 invoke 时主动检查）
+        Args:
+            result_state: ainvoke 返回的完整 state（含 checkpoint 历史）。
 
         Returns:
-            修改后的 state（原地修改 messages 列表）。
+            完成任务的结果文本，或 None。
         """
-        messages = state.get("messages", [])
+        messages = result_state.get("messages", [])
         if not messages:
-            return state
+            return None
 
-        # 先收集所有 PENDING 消息的 task_id
-        pending_indices: list[tuple[int, str]] = []  # (index, task_id)
-        for i, msg in enumerate(messages):
+        # 收集所有 PENDING 消息的 task_id
+        pending_task_ids: list[str] = []
+        for msg in messages:
             content = getattr(msg, "content", "")
             if not isinstance(content, str) or not content.startswith(_PENDING_PREFIX):
                 continue
@@ -184,32 +184,22 @@ class BaseInterface:
                         break
 
             if task_id:
-                pending_indices.append((i, task_id))
+                pending_task_ids.append(task_id)
 
-        if not pending_indices:
-            return state
+        if not pending_task_ids:
+            return None
 
-        # 排空 SSE 推送队列（作为补充信号）
-        sse_completed: set[str] = set()
-        while not self._completed_tasks_queue.empty():
-            try:
-                sse_completed.add(self._completed_tasks_queue.get_nowait())
-            except queue.Empty:
-                break
-
-        # 直接查询 TaskVault（主通道：不依赖 SSE）
         from mcp_servers.heartbeat.task_vault import TaskVault, TaskStatus
 
         vault = TaskVault.get_instance()
+        completed_results: list[str] = []
 
-        for idx, task_id in pending_indices:
+        for task_id in pending_task_ids:
             status = vault.query_task(task_id)
 
-            # 任务仍在运行 → 跳过
             if status is None or status == TaskStatus.RUNNING:
                 continue
 
-            # 任务已完成（COMPLETED / FAILED / TIMEOUT）→ 获取结果
             result = vault.get_result(task_id)
             if result is None:
                 result = f"[TASK {task_id}] 结果文件已丢失或为空。"
@@ -219,10 +209,16 @@ class BaseInterface:
             elif status == TaskStatus.FAILED:
                 result = f"[FAILED] 任务执行失败。\n{result}"
 
-            _logger.info(f"[base_interface] replacing PENDING message for {task_id} (status={status.value})")
-            messages[idx] = AIMessage(content=result)
+            _logger.info(f"[base_interface] task {task_id} completed (status={status.value})")
+            completed_results.append(f"[后台任务完成: {task_id}]\n{result}")
 
-        return state
+        if not completed_results:
+            return None
+
+        # 将完成结果追加到正常回复之后
+        normal_reply = self._extract_response(result_state)
+        separator = "\n\n---\n" if normal_reply else ""
+        return f"{normal_reply}{separator}" + "\n\n".join(completed_results)
 
     # ------------------------------------------------------------------
     # Session 上下文解析（Discord 子类按频道覆写）
@@ -281,9 +277,6 @@ class BaseInterface:
         if extra_state:
             init_state.update(extra_state)
 
-        # 后台任务结果注入：覆写 PENDING 消息
-        init_state = self._consume_pending_tasks(init_state)
-
         self._last_stream_chunk_count = 0
         self._on_stream_reset()
         if self._streaming:
@@ -296,6 +289,13 @@ class BaseInterface:
 
         # P3 fix: sync node_sessions to sessions.json (controller.run() does this; ainvoke() does not)
         self._controller.sync_node_sessions(result_state, thread_id)
+
+        # 后台任务结果注入：检查 result_state 中的 PENDING 消息
+        # result_state 包含完整 checkpoint 历史，在此检查才能找到之前的 PENDING
+        injected = self._inject_completed_tasks(result_state)
+        if injected:
+            # 有任务完成 → 将结果追加返回，而非让 LLM 重新处理
+            return injected
 
         return self._extract_response(result_state)
 
