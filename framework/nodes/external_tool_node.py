@@ -13,7 +13,8 @@ node_config fields:
 
 固有行为（不可配置）：
   120s 内完成 → 正常返回
-  超过 120s  → 自动启动 heartbeat MCP 后台监控，返回 PENDING 消息
+  超过 120s  → 返回 PENDING 消息（含 PID / task_id / output_path）
+              Agent（LLM）负责连接 heartbeat MCP 注册监控
 """
 
 import asyncio
@@ -24,7 +25,6 @@ import re
 import shlex
 import subprocess
 import threading
-import time
 import uuid
 
 from langchain_core.messages import AIMessage
@@ -34,7 +34,7 @@ from framework.debug import is_debug
 
 logger = logging.getLogger(__name__)
 
-# 所有 EXTERNAL_TOOL 的固有超时阈值：超过此时间自动转入 heartbeat 后台监控
+# 所有 EXTERNAL_TOOL 的固有超时阈值：超过此时间返回 PENDING
 _ASYNC_THRESHOLD = 120.0  # seconds
 
 
@@ -65,8 +65,7 @@ class ExternalToolNode:
 
     Async timeout:
         120s 内完成 → 正常返回结果
-        超过 120s  → 注册 heartbeat 后台监控 → 返回 PENDING 消息 → heartbeat 每 60s 报告
-        超过 hard_timeout → kill 进程 → 标记 TIMEOUT
+        超过 120s  → 返回 PENDING 消息（含 PID 信息）→ Agent 负责注册 heartbeat 监控
     """
 
     def __init__(self, config: AgentConfig, node_config: dict) -> None:
@@ -159,42 +158,15 @@ class ExternalToolNode:
 
         return proc, buffer, writer
 
-    def _ensure_heartbeat_server(self) -> None:
-        """确保 Heartbeat MCP Server 正在运行，未运行则自动启动。
-
-        最多等待 10 秒，每 0.5 秒检查一次。
-        """
-        from framework.nodes.llm.heartbeat_tools import _is_server_running, _launch_server
-
-        if _is_server_running():
-            return
-
-        logger.info("[external_tool] heartbeat MCP server not running, launching...")
-        _launch_server("http://127.0.0.1:8100/sse")
-
-        for _ in range(20):
-            time.sleep(0.5)
-            if _is_server_running():
-                logger.info("[external_tool] heartbeat MCP server started successfully")
-                return
-
-        logger.warning("[external_tool] heartbeat MCP server failed to start within 10s")
-
     async def _on_timeout(self, proc: subprocess.Popen, task_id: str, output_path: str) -> dict:
-        """120s 超时后的处理：启动 heartbeat 监控，返回 PENDING 消息。
+        """120s 超时：注册本地 TaskVault，返回 PENDING 消息给 Agent。
 
-        1. 确保 Heartbeat MCP Server 正在运行（自动启动）
-        2. 确保有持久 HeartbeatMCPProxy 连接（SSE 回调链路）
-        3. 通过 TaskVault 注册 PID（本地持久化）
-        4. 通过 proxy 调用 heartbeat_register_monitor 启动监控循环
-        5. 返回 PENDING 消息
+        Agent（LLM）收到后应使用 heartbeat_register_monitor 工具
+        委托 heartbeat MCP 监控该 PID。
 
         Returns:
             LangGraph state dict。
         """
-        self._ensure_heartbeat_server()
-        await self._ensure_proxy()
-
         from mcp_servers.heartbeat.task_vault import TaskVault
 
         TaskVault.get_instance().register_task(
@@ -204,15 +176,18 @@ class ExternalToolNode:
             hard_timeout=self._hard_timeout,
         )
 
-        # 通过 proxy 的持久 SSE 连接调用 heartbeat_register_monitor
-        await self._register_monitor_via_mcp(task_id, proc.pid, output_path)
-
         pending_content = (
-            f"[PENDING] 命令执行超过 {_ASYNC_THRESHOLD:.0f}s，已转入后台继续运行。\n"
+            f"[PENDING] 命令执行超过 {_ASYNC_THRESHOLD:.0f}s，子进程仍在后台运行。\n"
             f"task_id: {task_id}\n"
-            f"完成后系统会通知你。你可以继续其他工作。"
+            f"pid: {proc.pid}\n"
+            f"output_path: {output_path}\n"
+            f"hard_timeout: {self._hard_timeout}\n"
+            f"\n"
+            f"请立即使用 heartbeat_register_monitor 工具注册监控：\n"
+            f"  task_id={task_id}, pid={proc.pid}, output_path={output_path}, hard_timeout={self._hard_timeout}\n"
+            f"注册后通知用户任务已转入后台，完成后会自动通知。"
         )
-        logger.info(f"[external_tool] timeout: {task_id} pid={proc.pid} backgrounded")
+        logger.info(f"[external_tool] timeout: {task_id} pid={proc.pid} → PENDING returned to Agent")
 
         if self._inject_as == "message":
             return {
@@ -222,79 +197,6 @@ class ExternalToolNode:
             }
         else:
             return {self._inject_as: pending_content}
-
-    async def _ensure_proxy(self) -> None:
-        """确保有持久 HeartbeatMCPProxy 连接。
-
-        如果 agent 没有配置 heartbeat（没有 proxy），按需创建一个
-        并注册到全局引用。这样 monitor_loop 的完成事件能通过
-        SSE logging_callback 推回 agent。
-        """
-        from framework.nodes.llm.heartbeat_tools import get_active_proxy, set_active_proxy
-
-        if get_active_proxy() is not None:
-            return
-
-        from framework.nodes.llm.heartbeat_tools import HeartbeatMCPProxy
-
-        proxy = HeartbeatMCPProxy()
-        try:
-            await proxy.connect()
-            set_active_proxy(proxy)
-            logger.info("[external_tool] created on-demand HeartbeatMCPProxy")
-        except Exception as e:
-            logger.warning(f"[external_tool] failed to create proxy: {e}")
-
-    async def _register_monitor_via_mcp(self, task_id: str, pid: int, output_path: str) -> None:
-        """通过 agent 的持久 HeartbeatMCPProxy 调用 heartbeat_register_monitor。
-
-        复用 proxy 的持久 SSE 连接，这样 monitor_loop 的完成事件
-        能通过同一连接的 logging_callback 推回 agent。
-        """
-        from framework.nodes.llm.heartbeat_tools import get_active_proxy
-
-        proxy = get_active_proxy()
-        if proxy is not None:
-            try:
-                result = await proxy.call_tool(
-                    "heartbeat_register_monitor",
-                    {
-                        "task_id": task_id,
-                        "pid": pid,
-                        "output_path": output_path,
-                        "hard_timeout": self._hard_timeout,
-                        "agent_id": "",
-                    },
-                )
-                logger.info(f"[external_tool] MCP register_monitor via proxy: {result}")
-                return
-            except Exception as e:
-                logger.warning(f"[external_tool] proxy register_monitor failed: {e}")
-
-        # Fallback: proxy 不可用时自建短暂连接（通知链路可能不完整）
-        try:
-            from mcp.client.sse import sse_client
-            from mcp import ClientSession
-
-            server_url = "http://127.0.0.1:8100/sse"
-            async with sse_client(server_url) as (read_stream, write_stream):
-                async with ClientSession(read_stream, write_stream) as session:
-                    await session.initialize()
-                    result = await session.call_tool(
-                        "heartbeat_register_monitor",
-                        {
-                            "task_id": task_id,
-                            "pid": pid,
-                            "output_path": output_path,
-                            "hard_timeout": self._hard_timeout,
-                            "agent_id": "",
-                        },
-                    )
-                    logger.info(f"[external_tool] MCP register_monitor (fallback): {result}")
-        except Exception as e:
-            logger.warning(f"[external_tool] failed to register monitor via MCP: {e}")
-            # TaskVault 已注册，最坏情况是没有主动监控
-            # Discord poller 和 _inject_completed_tasks 作为兜底
 
     async def __call__(self, state: dict) -> dict:
         if self._backend == "code_execution":
