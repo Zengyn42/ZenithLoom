@@ -24,6 +24,7 @@ import shutil
 import subprocess
 import sys
 import tempfile
+import threading
 import time
 from contextlib import asynccontextmanager
 from pathlib import Path
@@ -171,40 +172,46 @@ def _ensure_presenton_configured() -> None:
 
 
 # ---------------------------------------------------------------------------
-# Tools
+# Background task runner (fire-and-forget)
 # ---------------------------------------------------------------------------
 
-@mcp.tool()
-def render_slides(content: str, filename: str = "") -> dict:
-    """Render content to PDF slides via the Presenton API.
+def _run_in_background(fn, *args, **kwargs) -> tuple[int, str]:
+    """Run fn(*args, **kwargs) in a daemon thread. Returns (pid, log_path).
 
-    Args:
-        content: The slide content text (Markdown or plain text).
-        filename: Optional output filename (without extension). Defaults to a
-                  timestamped name like ``presentation_<epoch>.pdf``.
+    The thread PID is the current process PID (MCP server process) since we
+    use threads, not subprocesses. The log_path file captures stdout/stderr
+    written by fn via the logger.
 
-    Returns:
-        dict with ``status``, ``file_path``, and ``file_size`` on success,
-        or ``status`` and ``error`` on failure.
+    For heartbeat monitoring we write a sentinel file:
+      {log_path}.done  → contains exit status JSON when complete
     """
-    if not content.strip():
-        return {"status": "error", "error": "Content is empty"}
+    ts = int(time.time() * 1000)
+    log_path = f"/tmp/render_task_{ts}.log"
 
-    try:
-        _ensure_presenton_running()
-        _ensure_presenton_configured()
-    except RuntimeError as exc:
-        return {"status": "error", "error": str(exc)}
+    def _wrapper():
+        try:
+            result = fn(*args, **kwargs)
+            with open(f"{log_path}.done", "w") as f:
+                json.dump({"status": "success", **result}, f)
+        except Exception as exc:
+            with open(f"{log_path}.done", "w") as f:
+                json.dump({"status": "error", "error": str(exc)}, f)
 
-    # Build output path
-    if filename:
-        safe_name = Path(filename).stem
-        output_path = f"/tmp/{safe_name}.pdf"
-    else:
-        output_path = f"/tmp/presentation_{int(time.time())}.pdf"
+    t = threading.Thread(target=_wrapper, daemon=True)
+    t.start()
+    return os.getpid(), log_path
+
+
+# ---------------------------------------------------------------------------
+# Core rendering functions (synchronous, called from background thread)
+# ---------------------------------------------------------------------------
+
+def _render_slides_sync(content: str, output_path: str) -> dict:
+    """Synchronous Presenton render — runs inside background thread."""
+    _ensure_presenton_running()
+    _ensure_presenton_configured()
 
     api_url = f"{PRESENTON_URL}/api/v1/ppt/presentation/generate"
-
     request_body = json.dumps({
         "content": content,
         "n_slides": 10,
@@ -226,14 +233,12 @@ def render_slides(content: str, filename: str = "") -> dict:
 
         download_url = body.get("path", "")
         if not download_url:
-            return {"status": "error", "error": f"No download URL in response: {body}"}
+            return {"error": f"No download URL in response: {body}"}
 
-        # If path is absolute (starts with /), prepend the base URL
         if download_url.startswith("/"):
             encoded_path = quote(download_url)
             download_url = f"{PRESENTON_URL}{encoded_path}"
 
-        # Download the PDF
         req = urllib.request.Request(download_url)
         with urllib.request.urlopen(req) as resp:
             pdf_data = resp.read()
@@ -243,91 +248,134 @@ def render_slides(content: str, filename: str = "") -> dict:
 
         file_size = os.path.getsize(output_path)
         logger.info(f"Generated slides: {output_path} ({file_size} bytes)")
+        return {"file_path": output_path, "file_size": file_size}
 
-        return {
-            "status": "success",
-            "file_path": output_path,
-            "file_size": file_size,
-        }
-
-    except Exception as exc:
-        return {"status": "error", "error": f"Presenton API call failed: {exc}"}
     finally:
         _stop_presenton()
 
 
+def _render_docs_sync(content: str, output_path: str, ext: str) -> dict:
+    """Synchronous Pandoc render — runs inside background thread."""
+    tmp_fd, tmp_path = tempfile.mkstemp(suffix=".md", prefix="doc_content_", dir="/tmp")
+    try:
+        with os.fdopen(tmp_fd, "w") as f:
+            f.write(content)
+
+        cmd = ["pandoc", tmp_path, "-o", output_path]
+        if _REFERENCE_DOC.is_file() and ext == "docx":
+            cmd.append(f"--reference-doc={_REFERENCE_DOC}")
+
+        result = subprocess.run(cmd, capture_output=True, text=True)
+        if result.returncode != 0:
+            return {"error": f"pandoc failed (exit {result.returncode}): {result.stderr}"}
+
+        if not os.path.isfile(output_path):
+            return {"error": "pandoc did not produce an output file"}
+
+        file_size = os.path.getsize(output_path)
+        logger.info(f"Generated document: {output_path} ({file_size} bytes)")
+        return {"file_path": output_path, "file_size": file_size}
+    finally:
+        try:
+            os.unlink(tmp_path)
+        except OSError:
+            pass
+
+
+# ---------------------------------------------------------------------------
+# Tools
+# ---------------------------------------------------------------------------
+
 @mcp.tool()
-def render_docs(content: str, filename: str = "", format: str = "docx") -> dict:
-    """Render Markdown content to DOCX (or another format) via Pandoc.
+def render_slides(content: str, filename: str = "") -> dict:
+    """Render content to PDF slides via the Presenton API (async/background).
+
+    This tool starts rendering immediately and returns a ``pending`` status
+    with the task PID and output path. Because Presenton rendering can take
+    minutes, call ``heartbeat_register_monitor`` with the returned ``pid`` and
+    ``output_path`` to be notified when the file is ready.
 
     Args:
-        content: Markdown content to render.
-        filename: Optional output filename (without extension). Defaults to a
-                  timestamped name like ``document_<epoch>.docx``.
-        format: Output format (default ``docx``). Any Pandoc output format is
-                accepted (e.g. ``pdf``, ``html``, ``docx``).
+        content: The slide content text (Markdown or plain text).
+        filename: Optional output filename stem (no extension).
 
     Returns:
-        dict with ``status``, ``file_path``, and ``file_size`` on success,
-        or ``status`` and ``error`` on failure.
+        dict with ``status="pending"``, ``pid``, ``output_path``, ``done_path``,
+        or ``status="error"`` if content is empty / Presenton is unavailable.
     """
     if not content.strip():
         return {"status": "error", "error": "Content is empty"}
 
-    # Check pandoc is installed
+    # Verify Presenton can start before firing background task
+    try:
+        _ensure_presenton_running()
+        _ensure_presenton_configured()
+    except RuntimeError as exc:
+        return {"status": "error", "error": str(exc)}
+
+    safe_name = Path(filename).stem if filename else f"presentation_{int(time.time())}"
+    output_path = f"/tmp/{safe_name}.pdf"
+
+    pid, log_path = _run_in_background(_render_slides_sync, content, output_path)
+
+    logger.info(f"render_slides: started background task pid={pid} output={output_path}")
+    return {
+        "status": "pending",
+        "pid": pid,
+        "output_path": output_path,
+        "done_path": f"{log_path}.done",
+        "message": (
+            "渲染已在后台开始。请调用 heartbeat_register_monitor 监视进度，"
+            f"完成后文件保存至 {output_path}"
+        ),
+    }
+
+
+@mcp.tool()
+def render_docs(content: str, filename: str = "", format: str = "docx") -> dict:
+    """Render Markdown content to DOCX (or another format) via Pandoc (async/background).
+
+    Pandoc itself is fast, but may be slow for large documents or when
+    generating PDFs via LaTeX. The tool fires the render in the background
+    and returns a ``pending`` status immediately. Call
+    ``heartbeat_register_monitor`` with the returned ``pid`` and ``output_path``
+    to be notified when the document is ready.
+
+    Args:
+        content: Markdown content to render.
+        filename: Optional output filename stem (no extension).
+        format: Output format (default ``docx``). Any Pandoc output format.
+
+    Returns:
+        dict with ``status="pending"``, ``pid``, ``output_path``, ``done_path``,
+        or ``status="error"`` if content is empty / pandoc not installed.
+    """
+    if not content.strip():
+        return {"status": "error", "error": "Content is empty"}
+
     if not shutil.which("pandoc"):
         return {
             "status": "error",
             "error": "pandoc not installed. Run: sudo apt install pandoc",
         }
 
-    # Build output path
     ext = format if format else "docx"
-    if filename:
-        safe_name = Path(filename).stem
-        output_path = f"/tmp/{safe_name}.{ext}"
-    else:
-        output_path = f"/tmp/document_{int(time.time())}.{ext}"
+    safe_name = Path(filename).stem if filename else f"document_{int(time.time())}"
+    output_path = f"/tmp/{safe_name}.{ext}"
 
-    # Write content to a temporary Markdown file
-    tmp_fd, tmp_path = tempfile.mkstemp(suffix=".md", prefix="doc_content_", dir="/tmp")
-    try:
-        with os.fdopen(tmp_fd, "w") as f:
-            f.write(content)
+    pid, log_path = _run_in_background(_render_docs_sync, content, output_path, ext)
 
-        # Build pandoc command
-        cmd = ["pandoc", tmp_path, "-o", output_path]
-
-        if _REFERENCE_DOC.is_file() and ext == "docx":
-            cmd.append(f"--reference-doc={_REFERENCE_DOC}")
-
-        result = subprocess.run(cmd, capture_output=True, text=True)
-        if result.returncode != 0:
-            return {
-                "status": "error",
-                "error": f"pandoc failed (exit {result.returncode}): {result.stderr}",
-            }
-
-        if not os.path.isfile(output_path):
-            return {"status": "error", "error": "pandoc did not produce an output file"}
-
-        file_size = os.path.getsize(output_path)
-        logger.info(f"Generated document: {output_path} ({file_size} bytes)")
-
-        return {
-            "status": "success",
-            "file_path": output_path,
-            "file_size": file_size,
-        }
-
-    except Exception as exc:
-        return {"status": "error", "error": f"Pandoc rendering failed: {exc}"}
-    finally:
-        # Clean up temp Markdown file
-        try:
-            os.unlink(tmp_path)
-        except OSError:
-            pass
+    logger.info(f"render_docs: started background task pid={pid} output={output_path}")
+    return {
+        "status": "pending",
+        "pid": pid,
+        "output_path": output_path,
+        "done_path": f"{log_path}.done",
+        "message": (
+            "渲染已在后台开始。请调用 heartbeat_register_monitor 监视进度，"
+            f"完成后文件保存至 {output_path}"
+        ),
+    }
 
 
 # ---------------------------------------------------------------------------

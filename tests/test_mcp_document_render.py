@@ -3,6 +3,7 @@
 import json
 import os
 import subprocess
+import time
 from unittest.mock import patch, MagicMock
 
 import pytest
@@ -11,6 +12,8 @@ from mcp_servers.document_render.server import (
     _presenton_ready,
     _ensure_presenton_running,
     _stop_presenton,
+    _render_slides_sync,
+    _render_docs_sync,
     render_slides,
     render_docs,
 )
@@ -43,10 +46,9 @@ class TestPrestonReady:
 class TestStopPresenton:
     @patch("mcp_servers.document_render.server.subprocess.run")
     def test_stop_running_container(self, mock_run):
-        # First call: docker ps (container is running)
         mock_run.side_effect = [
             MagicMock(stdout="presenton\nother\n"),
-            MagicMock(),  # docker stop
+            MagicMock(),
         ]
         _stop_presenton()
         assert mock_run.call_count == 2
@@ -55,11 +57,11 @@ class TestStopPresenton:
     def test_stop_not_running(self, mock_run):
         mock_run.return_value = MagicMock(stdout="other\n")
         _stop_presenton()
-        assert mock_run.call_count == 1  # only docker ps, no stop
+        assert mock_run.call_count == 1
 
 
 # ---------------------------------------------------------------------------
-# render_slides
+# render_slides — now fire-and-forget, returns pending
 # ---------------------------------------------------------------------------
 
 class TestRenderSlides:
@@ -72,46 +74,37 @@ class TestRenderSlides:
         result = render_slides("   \n  ")
         assert result["status"] == "error"
 
-    @patch("mcp_servers.document_render.server._stop_presenton")
     @patch("mcp_servers.document_render.server._ensure_presenton_configured")
     @patch("mcp_servers.document_render.server._ensure_presenton_running")
-    def test_presenton_not_available(self, mock_ensure, mock_config, mock_stop):
+    def test_presenton_not_available(self, mock_ensure, mock_config):
         mock_ensure.side_effect = RuntimeError("Container not found")
         result = render_slides("some content")
         assert result["status"] == "error"
         assert "Container" in result["error"]
 
-    @patch("mcp_servers.document_render.server._stop_presenton")
-    @patch("urllib.request.urlopen")
     @patch("mcp_servers.document_render.server._ensure_presenton_configured")
     @patch("mcp_servers.document_render.server._ensure_presenton_running")
-    def test_successful_render(self, mock_ensure, mock_config, mock_urlopen, mock_stop):
-        # First urlopen: API generate call
-        api_resp = MagicMock()
-        api_resp.read.return_value = json.dumps({"path": "/output/slides.pdf"}).encode()
-        api_resp.__enter__ = MagicMock(return_value=api_resp)
-        api_resp.__exit__ = MagicMock(return_value=False)
+    def test_returns_pending_immediately(self, mock_ensure, mock_config):
+        """render_slides should return pending without waiting for render."""
+        result = render_slides("My presentation content", filename="test_pending")
+        assert result["status"] == "pending"
+        assert "pid" in result
+        assert result["output_path"] == "/tmp/test_pending.pdf"
+        assert "done_path" in result
+        assert result["done_path"].endswith(".done")
+        assert "heartbeat_register_monitor" in result["message"]
 
-        # Second urlopen: download PDF
-        pdf_resp = MagicMock()
-        pdf_resp.read.return_value = b"%PDF-1.4 fake pdf content"
-        pdf_resp.__enter__ = MagicMock(return_value=pdf_resp)
-        pdf_resp.__exit__ = MagicMock(return_value=False)
-
-        mock_urlopen.side_effect = [api_resp, pdf_resp]
-
-        result = render_slides("My presentation content", filename="test_slides")
-        assert result["status"] == "success"
-        assert result["file_path"] == "/tmp/test_slides.pdf"
-        assert result["file_size"] > 0
-
-        # Cleanup
-        if os.path.exists("/tmp/test_slides.pdf"):
-            os.unlink("/tmp/test_slides.pdf")
+    @patch("mcp_servers.document_render.server._ensure_presenton_configured")
+    @patch("mcp_servers.document_render.server._ensure_presenton_running")
+    def test_pending_pid_is_valid(self, mock_ensure, mock_config):
+        """Returned PID should be the current process (thread-based background)."""
+        result = render_slides("content", filename="test_pid")
+        assert result["status"] == "pending"
+        assert result["pid"] == os.getpid()
 
 
 # ---------------------------------------------------------------------------
-# render_docs
+# render_docs — now fire-and-forget, returns pending
 # ---------------------------------------------------------------------------
 
 class TestRenderDocs:
@@ -127,29 +120,69 @@ class TestRenderDocs:
         assert result["status"] == "error"
         assert "pandoc" in result["error"].lower()
 
-    @patch("mcp_servers.document_render.server.subprocess.run")
     @patch("mcp_servers.document_render.server.shutil.which")
-    def test_pandoc_failure(self, mock_which, mock_run):
+    def test_returns_pending_immediately(self, mock_which):
+        """render_docs should return pending without waiting for pandoc."""
         mock_which.return_value = "/usr/bin/pandoc"
-        mock_run.return_value = MagicMock(returncode=1, stderr="pandoc error")
-        result = render_docs("# Hello", filename="test_fail")
-        assert result["status"] == "error"
-        assert "pandoc failed" in result["error"]
+        result = render_docs("# Hello World", filename="test_doc_pending")
+        assert result["status"] == "pending"
+        assert "pid" in result
+        assert result["output_path"] == "/tmp/test_doc_pending.docx"
+        assert "done_path" in result
+        assert "heartbeat_register_monitor" in result["message"]
 
-    @patch("mcp_servers.document_render.server.subprocess.run")
     @patch("mcp_servers.document_render.server.shutil.which")
-    def test_successful_render(self, mock_which, mock_run):
+    def test_custom_format_in_output_path(self, mock_which):
         mock_which.return_value = "/usr/bin/pandoc"
+        result = render_docs("# Hello", filename="test_html", format="html")
+        assert result["status"] == "pending"
+        assert result["output_path"].endswith(".html")
+
+
+# ---------------------------------------------------------------------------
+# _render_slides_sync — tests the actual sync rendering logic
+# ---------------------------------------------------------------------------
+
+class TestRenderSlicesSync:
+    @patch("mcp_servers.document_render.server._stop_presenton")
+    @patch("urllib.request.urlopen")
+    @patch("mcp_servers.document_render.server._ensure_presenton_configured")
+    @patch("mcp_servers.document_render.server._ensure_presenton_running")
+    def test_successful_sync_render(self, mock_ensure, mock_config, mock_urlopen, mock_stop):
+        api_resp = MagicMock()
+        api_resp.read.return_value = json.dumps({"path": "/output/slides.pdf"}).encode()
+        api_resp.__enter__ = MagicMock(return_value=api_resp)
+        api_resp.__exit__ = MagicMock(return_value=False)
+
+        pdf_resp = MagicMock()
+        pdf_resp.read.return_value = b"%PDF-1.4 fake pdf content"
+        pdf_resp.__enter__ = MagicMock(return_value=pdf_resp)
+        pdf_resp.__exit__ = MagicMock(return_value=False)
+
+        mock_urlopen.side_effect = [api_resp, pdf_resp]
+
+        output_path = "/tmp/test_slides_sync.pdf"
+        result = _render_slides_sync("My content", output_path)
+        assert result["file_path"] == output_path
+        assert result["file_size"] > 0
+
+        if os.path.exists(output_path):
+            os.unlink(output_path)
+
+
+# ---------------------------------------------------------------------------
+# _render_docs_sync — tests the actual pandoc logic
+# ---------------------------------------------------------------------------
+
+class TestRenderDocsSync:
+    @patch("mcp_servers.document_render.server.subprocess.run")
+    def test_successful_sync_render(self, mock_run):
         mock_run.return_value = MagicMock(returncode=0, stderr="")
-
-        output_path = "/tmp/test_doc_render.docx"
-        # Create fake output file that pandoc would produce
+        output_path = "/tmp/test_docs_sync.docx"
         with open(output_path, "wb") as f:
             f.write(b"fake docx content")
-
         try:
-            result = render_docs("# Hello World", filename="test_doc_render")
-            assert result["status"] == "success"
+            result = _render_docs_sync("# Hello", output_path, "docx")
             assert result["file_path"] == output_path
             assert result["file_size"] > 0
         finally:
@@ -157,19 +190,41 @@ class TestRenderDocs:
                 os.unlink(output_path)
 
     @patch("mcp_servers.document_render.server.subprocess.run")
+    def test_pandoc_failure(self, mock_run):
+        mock_run.return_value = MagicMock(returncode=1, stderr="pandoc error")
+        result = _render_docs_sync("# Hello", "/tmp/fail.docx", "docx")
+        assert "error" in result
+        assert "pandoc failed" in result["error"]
+
+
+# ---------------------------------------------------------------------------
+# Background task writes done_path sentinel
+# ---------------------------------------------------------------------------
+
+class TestBackgroundSentinel:
     @patch("mcp_servers.document_render.server.shutil.which")
-    def test_custom_format(self, mock_which, mock_run):
+    @patch("mcp_servers.document_render.server.subprocess.run")
+    def test_done_file_written_on_success(self, mock_run, mock_which):
+        """Background thread should write .done sentinel file when complete."""
         mock_which.return_value = "/usr/bin/pandoc"
+        result = render_docs("# Test", filename="test_sentinel")
+        output_path = result["output_path"]
+        done_path = result["done_path"]
+
+        # Create fake output file for pandoc
+        with open(output_path, "wb") as f:
+            f.write(b"fake docx")
         mock_run.return_value = MagicMock(returncode=0, stderr="")
 
-        output_path = "/tmp/test_html_render.html"
-        with open(output_path, "w") as f:
-            f.write("<html>test</html>")
+        # Wait up to 3s for background thread to complete
+        for _ in range(30):
+            if os.path.exists(done_path):
+                break
+            time.sleep(0.1)
 
-        try:
-            result = render_docs("# Hello", filename="test_html_render", format="html")
-            assert result["status"] == "success"
-            assert result["file_path"].endswith(".html")
-        finally:
-            if os.path.exists(output_path):
-                os.unlink(output_path)
+        # Cleanup regardless
+        for path in [output_path, done_path]:
+            try:
+                os.unlink(path)
+            except OSError:
+                pass
