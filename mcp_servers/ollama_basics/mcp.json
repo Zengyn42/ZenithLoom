@@ -1,0 +1,7 @@
+{
+  "transport": "sse",
+  "url": "http://127.0.0.1:8102/sse",
+  "command": "python -m mcp_servers.ollama_basics.server --transport sse --port 8102",
+  "startup": "auto",
+  "shared": true
+}

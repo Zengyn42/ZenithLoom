@@ -1,0 +1,7 @@
+{
+  "transport": "sse",
+  "url": "http://127.0.0.1:8104/sse",
+  "command": "python -m mcp_servers.document_render.server --transport sse --port 8104",
+  "startup": "auto",
+  "shared": true
+}
