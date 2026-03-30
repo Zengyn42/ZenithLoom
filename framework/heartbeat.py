@@ -289,6 +289,7 @@ class HeartbeatManager:
         hard_timeout: float,
         agent_id: str = "",
         agent_session: object | None = None,
+        agent_pid: int = 0,
     ) -> str:
         """动态注册一个 TASK_MONITOR 任务（后台子进程监控）。
 
@@ -296,11 +297,13 @@ class HeartbeatManager:
 
         Args:
             task_id: 唯一任务标识。
-            pid: 子进程 PID。
+            pid: 子进程 PID（被监控的任务进程）。
             output_path: 子进程输出文件路径。
             hard_timeout: 最大允许运行时间（秒）。
             agent_id: 关联的 agent 标识。
             agent_session: MCP SSE session 引用（用于定向推送）。
+            agent_pid: 调用方 agent 的进程 PID。若非零，monitor 会同时检查
+                       agent 进程存活状态——agent 消失则 kill pid 并终止监控。
 
         Returns:
             状态消息。
@@ -317,6 +320,7 @@ class HeartbeatManager:
                 "hard_timeout": hard_timeout,
                 "agent_id": agent_id,
                 "agent_session": agent_session,
+                "agent_pid": agent_pid,
             },
             node=None,  # TASK_MONITOR 不需要 node 实例
             interval_hours=_MONITOR_POLL_INTERVAL / 3600,  # 转换为小时
@@ -324,12 +328,12 @@ class HeartbeatManager:
         self._tasks[task_id] = entry
 
         self._loops[task_id] = asyncio.create_task(
-            self._monitor_loop(task_id, pid, output_path, hard_timeout),
+            self._monitor_loop(task_id, pid, output_path, hard_timeout, agent_pid=agent_pid),
             name=f"heartbeat:monitor:{task_id}",
         )
         logger.info(
             f"[heartbeat] TASK_MONITOR registered: {task_id} pid={pid} "
-            f"agent_id={agent_id!r} hard_timeout={hard_timeout}s"
+            f"agent_id={agent_id!r} agent_pid={agent_pid} hard_timeout={hard_timeout}s"
         )
         return f"Monitor registered: {task_id}"
 
@@ -377,14 +381,16 @@ class HeartbeatManager:
         pid: int,
         output_path: str,
         hard_timeout: float,
+        agent_pid: int = 0,
     ) -> None:
         """TASK_MONITOR 专用循环：短 interval 轮询 PID 存活状态。
 
         每次 poll 循环：
-        1. 检查 agent_session 是否仍活跃（断连则 kill 子进程）
-        2. 向关联 agent 推送 monitor_heartbeat SSE 事件
-        3. 检查 hard_timeout
-        4. 检查 PID 存活
+        1. 检查 agent_pid 进程是否存活（死亡则 kill 子进程，终止监控）
+        2. 检查 agent_session 是否仍活跃（断连则 kill 子进程）
+        3. 向关联 agent 推送 monitor_heartbeat SSE 事件
+        4. 检查 hard_timeout
+        5. 检查 PID 存活
         """
         entry = self._tasks.get(task_id)
         if entry is None:
@@ -393,13 +399,34 @@ class HeartbeatManager:
         start_time = asyncio.get_event_loop().time()
         entry.status = "monitoring"
 
-        # 从 config 中获取 agent_session
+        # 从 config 中获取 agent_session 和 agent_pid
         agent_session: object | None = entry.config.get("agent_session")
+        _agent_pid: int = agent_pid or entry.config.get("agent_pid", 0)
 
         while True:
             await asyncio.sleep(_MONITOR_POLL_INTERVAL)
 
             elapsed = asyncio.get_event_loop().time() - start_time
+
+            # ── agent_pid 进程探活：agent 进程消失则 kill 子进程 ──
+            if _agent_pid and not pid_alive(_agent_pid):
+                logger.warning(
+                    f"[heartbeat] TASK_MONITOR: agent process dead "
+                    f"(agent_pid={_agent_pid}) for {task_id}, killing pid={pid}"
+                )
+                try:
+                    os.kill(pid, 9)  # SIGKILL
+                except (ProcessLookupError, OSError):
+                    pass
+                entry.status = "FAILED"
+                entry.last_result = f"agent process {_agent_pid} died"
+                entry.last_run = datetime.now()
+                try:
+                    from mcp_servers.heartbeat.task_vault import TaskVault, TaskStatus
+                    TaskVault.get_instance().mark_completed(task_id, TaskStatus.FAILED)
+                except Exception as e:
+                    logger.warning(f"[heartbeat] failed to mark task failed: {e}")
+                break
 
             # ── 需求 5：检查 agent_session 是否仍在 session_registry 中 ──
             if (

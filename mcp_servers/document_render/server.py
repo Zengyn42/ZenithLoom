@@ -24,7 +24,6 @@ import shutil
 import subprocess
 import sys
 import tempfile
-import threading
 import time
 from contextlib import asynccontextmanager
 from pathlib import Path
@@ -172,38 +171,45 @@ def _ensure_presenton_configured() -> None:
 
 
 # ---------------------------------------------------------------------------
-# Background task runner (fire-and-forget)
+# Background subprocess launcher (fire-and-forget, real PID)
 # ---------------------------------------------------------------------------
 
-def _run_in_background(fn, *args, **kwargs) -> tuple[int, str]:
-    """Run fn(*args, **kwargs) in a daemon thread. Returns (pid, log_path).
+def _launch_worker(worker_type: str, content: str, output_path: str, fmt: str = "docx") -> tuple[int, str]:
+    """Launch a render worker subprocess. Returns (real_pid, done_path).
 
-    The thread PID is the current process PID (MCP server process) since we
-    use threads, not subprocesses. The log_path file captures stdout/stderr
-    written by fn via the logger.
-
-    For heartbeat monitoring we write a sentinel file:
-      {log_path}.done  → contains exit status JSON when complete
+    Uses subprocess.Popen so the caller gets a real OS PID that heartbeat
+    can monitor via os.kill(pid, 0). The worker writes a JSON sentinel file
+    at done_path when it completes (success or error).
     """
     ts = int(time.time() * 1000)
-    log_path = f"/tmp/render_task_{ts}.log"
+    content_file = f"/tmp/render_content_{ts}.txt"
+    done_path = f"/tmp/render_done_{ts}.json"
 
-    def _wrapper():
-        try:
-            result = fn(*args, **kwargs)
-            with open(f"{log_path}.done", "w") as f:
-                json.dump({"status": "success", **result}, f)
-        except Exception as exc:
-            with open(f"{log_path}.done", "w") as f:
-                json.dump({"status": "error", "error": str(exc)}, f)
+    # Write content to temp file (avoids huge command-line args)
+    Path(content_file).write_text(content, encoding="utf-8")
 
-    t = threading.Thread(target=_wrapper, daemon=True)
-    t.start()
-    return os.getpid(), log_path
+    cmd = [
+        sys.executable, "-m", "mcp_servers.document_render.worker",
+        "--type", worker_type,
+        "--content-file", content_file,
+        "--output", output_path,
+        "--done-path", done_path,
+        "--format", fmt,
+    ]
+
+    proc = subprocess.Popen(
+        cmd,
+        cwd=str(_PROJECT_ROOT),
+        stdout=subprocess.DEVNULL,
+        stderr=subprocess.DEVNULL,
+        close_fds=True,
+    )
+    logger.info(f"Launched render worker: type={worker_type} pid={proc.pid} output={output_path}")
+    return proc.pid, done_path
 
 
 # ---------------------------------------------------------------------------
-# Core rendering functions (synchronous, called from background thread)
+# Core rendering functions (synchronous, used by sync tools)
 # ---------------------------------------------------------------------------
 
 def _render_slides_sync(content: str, output_path: str) -> dict:
@@ -287,26 +293,31 @@ def _render_docs_sync(content: str, output_path: str, ext: str) -> dict:
 # ---------------------------------------------------------------------------
 
 @mcp.tool()
-def render_slides(content: str, filename: str = "") -> dict:
+def render_slides(content: str, agent_id: str, filename: str = "") -> dict:
     """Render content to PDF slides via the Presenton API (async/background).
 
-    This tool starts rendering immediately and returns a ``pending`` status
-    with the task PID and output path. Because Presenton rendering can take
-    minutes, call ``heartbeat_register_monitor`` with the returned ``pid`` and
-    ``output_path`` to be notified when the file is ready.
+    Starts a real subprocess and returns immediately with ``status="pending"``
+    and the worker's PID. Call ``heartbeat_register_monitor`` with the returned
+    ``pid``, ``output_path``, and ``agent_id`` so heartbeat can:
+      - notify you via SSE when rendering completes
+      - kill the worker if your agent process disappears
 
     Args:
-        content: The slide content text (Markdown or plain text).
+        content:  Slide content (Markdown or plain text).
+        agent_id: Your agent's identifier (e.g. "jei"). Used by heartbeat to
+                  route notifications and clean up if you disconnect.
         filename: Optional output filename stem (no extension).
 
     Returns:
         dict with ``status="pending"``, ``pid``, ``output_path``, ``done_path``,
-        or ``status="error"`` if content is empty / Presenton is unavailable.
+        ``agent_id``; or ``status="error"`` on validation failure.
     """
     if not content.strip():
         return {"status": "error", "error": "Content is empty"}
+    if not agent_id.strip():
+        return {"status": "error", "error": "agent_id is required"}
 
-    # Verify Presenton can start before firing background task
+    # Verify Presenton is reachable before firing worker
     try:
         _ensure_presenton_running()
         _ensure_presenton_configured()
@@ -316,43 +327,46 @@ def render_slides(content: str, filename: str = "") -> dict:
     safe_name = Path(filename).stem if filename else f"presentation_{int(time.time())}"
     output_path = f"/tmp/{safe_name}.pdf"
 
-    pid, log_path = _run_in_background(_render_slides_sync, content, output_path)
+    pid, done_path = _launch_worker("slides", content, output_path)
 
-    logger.info(f"render_slides: started background task pid={pid} output={output_path}")
     return {
         "status": "pending",
         "pid": pid,
         "output_path": output_path,
-        "done_path": f"{log_path}.done",
+        "done_path": done_path,
+        "agent_id": agent_id,
         "message": (
-            "渲染已在后台开始。请调用 heartbeat_register_monitor 监视进度，"
-            f"完成后文件保存至 {output_path}"
+            f"渲染已在后台开始 (pid={pid})。"
+            f"请调用 heartbeat_register_monitor(task_id=..., pid={pid}, "
+            f"output_path={output_path!r}, agent_id={agent_id!r}) 监视进度。"
         ),
     }
 
 
 @mcp.tool()
-def render_docs(content: str, filename: str = "", format: str = "docx") -> dict:
+def render_docs(content: str, agent_id: str, filename: str = "", format: str = "docx") -> dict:
     """Render Markdown content to DOCX (or another format) via Pandoc (async/background).
 
-    Pandoc itself is fast, but may be slow for large documents or when
-    generating PDFs via LaTeX. The tool fires the render in the background
-    and returns a ``pending`` status immediately. Call
-    ``heartbeat_register_monitor`` with the returned ``pid`` and ``output_path``
-    to be notified when the document is ready.
+    Starts a real subprocess and returns immediately with ``status="pending"``
+    and the worker's PID. Call ``heartbeat_register_monitor`` with the returned
+    ``pid``, ``output_path``, and ``agent_id`` so heartbeat can notify you and
+    clean up if your agent process disappears.
 
     Args:
-        content: Markdown content to render.
+        content:  Markdown content to render.
+        agent_id: Your agent's identifier. Used by heartbeat for notifications
+                  and cleanup.
         filename: Optional output filename stem (no extension).
-        format: Output format (default ``docx``). Any Pandoc output format.
+        format:   Output format (default ``docx``). Any Pandoc output format.
 
     Returns:
         dict with ``status="pending"``, ``pid``, ``output_path``, ``done_path``,
-        or ``status="error"`` if content is empty / pandoc not installed.
+        ``agent_id``; or ``status="error"`` on validation failure.
     """
     if not content.strip():
         return {"status": "error", "error": "Content is empty"}
-
+    if not agent_id.strip():
+        return {"status": "error", "error": "agent_id is required"}
     if not shutil.which("pandoc"):
         return {
             "status": "error",
@@ -363,17 +377,18 @@ def render_docs(content: str, filename: str = "", format: str = "docx") -> dict:
     safe_name = Path(filename).stem if filename else f"document_{int(time.time())}"
     output_path = f"/tmp/{safe_name}.{ext}"
 
-    pid, log_path = _run_in_background(_render_docs_sync, content, output_path, ext)
+    pid, done_path = _launch_worker("docs", content, output_path, fmt=ext)
 
-    logger.info(f"render_docs: started background task pid={pid} output={output_path}")
     return {
         "status": "pending",
         "pid": pid,
         "output_path": output_path,
-        "done_path": f"{log_path}.done",
+        "done_path": done_path,
+        "agent_id": agent_id,
         "message": (
-            "渲染已在后台开始。请调用 heartbeat_register_monitor 监视进度，"
-            f"完成后文件保存至 {output_path}"
+            f"渲染已在后台开始 (pid={pid})。"
+            f"请调用 heartbeat_register_monitor(task_id=..., pid={pid}, "
+            f"output_path={output_path!r}, agent_id={agent_id!r}) 监视进度。"
         ),
     }
 
