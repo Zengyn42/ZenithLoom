@@ -1,6 +1,29 @@
 {
   "llm": "claude",
   "channel_history_limit": 0,
+  "mcp": [
+    {
+      "name": "obsidian-vault",
+      "module": "mcp_servers.obsidian.server",
+      "module_args": ["--transport", "sse", "--port", "8101", "--vault", "/home/kingy/Foundation/Vault"],
+      "url": "http://localhost:8101/sse",
+      "shared": true
+    },
+    {
+      "name": "document-render",
+      "module": "mcp_servers.document_render.server",
+      "module_args": ["--transport", "sse", "--port", "8104"],
+      "url": "http://localhost:8104/sse",
+      "shared": true
+    },
+    {
+      "name": "vault-sync",
+      "module": "mcp_servers.vault_sync.server",
+      "module_args": ["--transport", "sse", "--port", "8105"],
+      "url": "http://localhost:8105/sse",
+      "shared": true
+    }
+  ],
   "graph": {
     "nodes": [
       {

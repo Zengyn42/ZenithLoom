@@ -261,6 +261,59 @@ class EntityLoader:
         """返回 HeartbeatMCPProxy 实例（可能为 None，需先调用 start_heartbeat）。"""
         return self._heartbeat_proxy
 
+    async def start_mcp_servers(self) -> list[str]:
+        """
+        按 entity.json 顶层 "mcp" 数组启动所需的 MCP Server 进程。
+
+        读取格式：
+          "mcp": [
+            {
+              "name": "obsidian-vault",
+              "module": "mcp_servers.obsidian.server",
+              "module_args": ["--transport", "sse", "--port", "8101",
+                              "--vault", "/home/kingy/Foundation/Vault"],
+              "url": "http://localhost:8101/sse",
+              "shared": true
+            }
+          ]
+
+        返回成功启动/已运行的 server 名称列表。
+        """
+        from framework.mcp_manager import MCPManager
+        mgr = MCPManager.get_instance()
+        specs = self._json.get("mcp", [])
+        if not specs:
+            return []
+
+        started: list[str] = []
+        for spec in specs:
+            name = spec.get("name", "")
+            if not name:
+                logger.warning(f"[agent_loader] {self.name!r}: mcp entry missing 'name', skipped")
+                continue
+            ok = await mgr.acquire(spec, agent_name=self.name)
+            if ok:
+                started.append(name)
+                logger.info(f"[agent_loader] {self.name!r}: mcp server {name!r} acquired")
+            else:
+                logger.error(f"[agent_loader] {self.name!r}: mcp server {name!r} failed to start")
+
+        return started
+
+    async def stop_mcp_servers(self) -> None:
+        """
+        释放本 agent 持有的所有 MCP Server 引用。
+        引用归零时 MCPManager 负责停止进程。
+        """
+        from framework.mcp_manager import MCPManager
+        mgr = MCPManager.get_instance()
+        specs = self._json.get("mcp", [])
+        for spec in specs:
+            name = spec.get("name", "")
+            if name:
+                await mgr.release(name, agent_name=self.name)
+                logger.info(f"[agent_loader] {self.name!r}: mcp server {name!r} released")
+
     async def start_heartbeat(self):
         """
         连接 Heartbeat MCP Server 并装载 entity 指定的 blueprint。

@@ -123,6 +123,21 @@ class ClaudeSDKNode(AgentNode):
             # ColonyCoder QA/rescue 注入大量源码+测试输出时容易超限)
             _max_buf = self.node_config.get("max_buffer_size", 10 * 1024 * 1024)
 
+            # MCP servers: 从 MCPManager 获取当前运行中的 server SSE 配置
+            # 如果 node_config 指定 "mcp_names" 列表，只取指定的 server；
+            # 否则取 MCPManager 中所有当前运行的 server（agent 已 acquire 的）。
+            _mcp_servers: dict = {}
+            try:
+                from framework.mcp_manager import MCPManager
+                _mgr = MCPManager.get_instance()
+                _mcp_names = self.node_config.get("mcp_names")
+                if _mcp_names is not None:
+                    _mcp_servers = _mgr.get_sse_configs(_mcp_names)
+                else:
+                    _mcp_servers = _mgr.get_all_configs()
+            except Exception as _mcp_err:
+                logger.debug(f"[claude] mcp_manager lookup failed: {_mcp_err}")
+
             return ClaudeAgentOptions(
                 system_prompt=sp,
                 cwd=cwd or None,
@@ -139,6 +154,7 @@ class ClaudeSDKNode(AgentNode):
                 thinking=_thinking_cfg,
                 add_dirs=self._add_dirs,
                 max_buffer_size=_max_buf,
+                mcp_servers=_mcp_servers or {},
             )
 
         async def _run_once(sid: str, msg_text: str) -> tuple[str, str, bool]:
