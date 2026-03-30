@@ -292,15 +292,18 @@ async def heartbeat_register_monitor(
     output_path: str,
     hard_timeout: float = 300.0,
     agent_id: str = "",
+    agent_pid: int = 0,
 ) -> str:
     """
     注册一个 TASK_MONITOR 任务：监控后台子进程 PID，完成后通过 SSE 广播通知。
 
-    task_id:      唯一任务标识（由 ExternalToolNode 生成）
-    pid:          子进程 PID
+    task_id:      唯一任务标识
+    pid:          被监控的子进程 PID（渲染 worker 进程）
     output_path:  子进程输出文件路径
-    hard_timeout: 最大允许运行时间（秒），超时后 kill
-    agent_id:     关联的 agent 标识
+    hard_timeout: 最大允许运行时间（秒），超时后 kill（默认 300s）
+    agent_id:     调用方 agent 的标识（用于 SSE 定向推送）
+    agent_pid:    调用方 agent 的进程 PID。若提供，monitor 会持续检查 agent
+                  进程存活状态——agent 进程消失时立即 kill pid 并终止监控。
     """
     _capture_session()
 
@@ -323,6 +326,7 @@ async def heartbeat_register_monitor(
         hard_timeout=hard_timeout,
         agent_id=agent_id,
         agent_session=current_session,
+        agent_pid=agent_pid,
     )
     return result
 
