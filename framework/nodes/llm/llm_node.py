@@ -372,6 +372,11 @@ class LlmNode:
         routing_target = signal.get("route", "") if signal else ""
         routing_context = signal.get("context", "") if signal else ""
 
+        # 检测是否为新用户 turn：last message 是 HumanMessage 说明刚收到用户输入
+        # 此时重置 subgraph_call_counts，防止上一轮计数跨 turn 持久化阻塞本轮路由
+        from langchain_core.messages import HumanMessage as _HumanMessage
+        _is_new_turn = bool(msgs and isinstance(msgs[-1], _HumanMessage))
+
         if routing_target:
             logger.info(f"[{self._node_id}] routing signal: target={routing_target!r}")
             result: dict = {
@@ -381,6 +386,8 @@ class LlmNode:
                 "consult_count": 0,  # 新路由请求，重置计数（防止上一轮子图的计数泄漏阻塞本轮路由）
                 "node_sessions": {self._session_key: new_session_id},
             }
+            if _is_new_turn:
+                result["subgraph_call_counts"] = {}  # 新 turn 首次路由，清空跨轮计数
         else:
             result = {
                 "messages": [AIMessage(content=raw_output)],

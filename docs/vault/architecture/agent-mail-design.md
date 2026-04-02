@@ -207,7 +207,12 @@ Asa 的 mailbox watcher 收到 `monitor_delegate` → 直接调 `heartbeat_regis
 
 ## 待决策
 
-- [x] ~~每个 agent 启动时是否必须连接 mail MCP？~~ → **否，收发分离，读直接 SQL，写懒加载**
-- [ ] shared.db 还是各自 db？
-- [ ] 轮询间隔：1s 还是更长？
+- [x] ~~每个 agent 启动时是否必须连接 mail MCP？~~ → **是，统一走 MCP 自启动机制**
+- [x] ~~懒加载 vs 启动时连接？~~ → **启动时连接，由 entity.json mcps 字段声明**
+- [x] ~~注册 PID 走 MCP 还是直接 SQL？~~ → **连接时通过 MCP 工具注册，连接即注册**
+- [ ] shared.db 还是各自 db？→ 倾向 shared.db（`data/agent_mail/mail.db`）
 - [ ] `list_agents()` 是否需要"在线状态"？
+
+## 关联文档
+
+- [MCP 自启动机制](./mcp-autostart-design.md) — agent_mail 启动逻辑属于框架级通用设计的一部分
