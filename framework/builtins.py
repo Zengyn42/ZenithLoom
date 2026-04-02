@@ -15,8 +15,6 @@ import 时自动执行注册（无副作用，幂等）。
   VALIDATE         — ValidateNode，输出质量验证
   VRAM_FLUSH       — VramFlushNode，GPU 显存清洗
   SUBGRAPH_MAPPER  — SubgraphMapperNode，子图状态字段映射
-  SUBGRAPH_REF     — SubgraphRefNode，外部子图节点（向后兼容别名 AGENT_REF）
-  AGENT_REF        — SubgraphRefNode，同 SUBGRAPH_REF（向后兼容别名）
   EXTERNAL_TOOL    — ExternalToolNode，通用外部 CLI 调用（gws / obsidian / cli-anything-* 等）
   PROBE            — ProbeNode，服务存活探针（heartbeat 图专用，claude/gemini/ollama）
   SYSTEM_STATS     — SystemStatsNode，系统资源采集（CPU/内存/磁盘/GPU，支持阈值告警）
@@ -110,16 +108,8 @@ def _(config, node_config):
     return SubgraphMapperNode(node_config)
 
 
-@register_node("SUBGRAPH_REF")
-def _(config, node_config):
-    from framework.nodes.subgraph.subgraph_ref_node import SubgraphRefNode
-    return SubgraphRefNode(config, node_config)
-
-
-@register_node("AGENT_REF")
-def _(config, node_config):
-    from framework.nodes.subgraph.subgraph_ref_node import SubgraphRefNode
-    return SubgraphRefNode(config, node_config)
+# SUBGRAPH_REF / AGENT_REF — removed; now handled inline by agent_loader
+# as SUBGRAPH_NODE with input_schema (backward compat auto-conversion).
 
 
 @register_node("DETERMINISTIC")

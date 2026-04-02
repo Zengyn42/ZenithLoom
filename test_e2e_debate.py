@@ -3,10 +3,10 @@ E2E 测试：辩论子图架构验证
 
 覆盖：
   1. BaseAgentState 含新字段（knowledge_vault / project_docs / debate_conclusion）
-  2. AGENT_REF 节点类型已注册
+  2. SUBGRAPH_NODE 节点类型编译正确
   3. 两个辩论子图独立编译（debate_gemini_first / debate_claude_first）
   4. Hani 主图含 debate_brainstorm / debate_design 节点
-  5. AgentRefNode 实例化 + state_in/state_out 映射逻辑单元测试
+  5. SubgraphNodeWrapper input_schema/output_field 映射逻辑单元测试
 
 运行：
     python3 test_e2e_debate.py
@@ -44,11 +44,16 @@ async def test_state_fields():
 
 
 async def test_agent_ref_registered():
-    """SUBGRAPH_REF 节点类型已在 registry 注册。"""
+    """SUBGRAPH_NODE 由 agent_loader 直接处理（不在 registry 注册）。
+    SUBGRAPH_REF/AGENT_REF 已移除，agent_loader 中有向后兼容处理。"""
     import framework.builtins
     from framework.registry import get_node_factory
-    get_node_factory("SUBGRAPH_REF")
-    logger.info("✅ SUBGRAPH_REF registered OK")
+    # SUBGRAPH_NODE/SUBGRAPH_REF 不在 registry — 由 agent_loader 内联处理
+    # 验证核心节点类型仍正常注册
+    get_node_factory("CLAUDE_SDK")
+    get_node_factory("GEMINI_API")
+    get_node_factory("VALIDATE")
+    logger.info("✅ Core node types registered OK (SUBGRAPH_REF removed as expected)")
 
 
 async def test_debate_graphs_compile():
@@ -109,26 +114,23 @@ def _make_mock_graph(final_state: dict, node_id: str = "gemini_conclusion"):
 
 
 async def test_agent_ref_state_mapping():
-    """AgentRefNode state_in/state_out 映射逻辑（不发起真实 LLM 调用）。"""
+    """SubgraphNodeWrapper input_schema/output_field 映射逻辑（不发起真实 LLM 调用）。"""
     from langchain_core.messages import AIMessage
-    from framework.nodes.subgraph.subgraph_ref_node import SubgraphRefNode as AgentRefNode
-    from framework.config import AgentConfig
+    from framework.agent_loader import SubgraphNodeWrapper
 
-    cfg = AgentConfig(tools=[])
-    node_config = {
-        "agent_dir": "blueprints/functional_graphs/debate_gemini_first",
-        "state_in":  {"task": "routing_context", "knowledge_vault": "knowledge_vault"},
-        "state_out": {"debate_conclusion": "last_message"},
-    }
-
-    node = AgentRefNode(cfg, node_config)
-
-    # Mock 子图，返回预设 messages
+    # 构建 wrapper，使用 input_schema dict（字段重命名）+ output_field
     fake_reply = "最终结论：微服务更适合这个场景。"
     mock_graph = _make_mock_graph({
         "messages": [AIMessage(content=fake_reply)],
     })
-    node._graph = mock_graph  # 注入 mock，跳过真实编译
+
+    wrapper = SubgraphNodeWrapper(
+        graph=mock_graph,
+        node_id="debate_brainstorm",
+        graph_name="debate_gemini_first",
+        input_schema={"task": "routing_context", "knowledge_vault": "knowledge_vault"},
+        output_field="debate_conclusion",
+    )
 
     parent_state = {
         "routing_context": "微服务 vs 单体架构选型",
@@ -137,21 +139,21 @@ async def test_agent_ref_state_mapping():
         "debate_conclusion": "",
     }
 
-    result = await node(parent_state)
+    result = await wrapper(parent_state)
 
-    # 验证 state_in 映射：子图收到的 task 应来自 routing_context
+    # 验证 input_schema 映射：子图收到的 task 应来自 routing_context
     call_args = mock_graph._call_args
-    assert call_args["task"] == "微服务 vs 单体架构选型", "state_in 映射失败"
+    assert call_args["task"] == "微服务 vs 单体架构选型", "input_schema 映射失败"
     assert call_args["knowledge_vault"] == "/home/kingy/ObsidianVault", "knowledge_vault 未透传"
 
-    # 验证 state_out 映射：debate_conclusion 应是最后一条消息内容
-    assert result["debate_conclusion"] == fake_reply, "state_out last_message 映射失败"
+    # 验证 output_field 映射：debate_conclusion 应是最后一条消息内容
+    assert result["debate_conclusion"] == fake_reply, "output_field last_message 映射失败"
 
     # 验证辩论结论被注入为 AIMessage
     assert "messages" in result, "结果应含 messages（AIMessage 注入）"
     assert "[子图结论]" in result["messages"][0].content, "AIMessage 应含 [子图结论] 前缀"
 
-    logger.info(f"✅ SubgraphRefNode mapping OK: conclusion={fake_reply[:40]!r}")
+    logger.info(f"✅ SubgraphNodeWrapper mapping OK: conclusion={fake_reply[:40]!r}")
 
 
 async def test_debate_state_schema():
@@ -208,21 +210,11 @@ async def test_no_checkpointer_build():
 
 
 async def test_session_cleanup():
-    """SubgraphRefNode 调用后清理子图产生的孤儿 session。"""
+    """SubgraphNodeWrapper 调用后清理子图产生的孤儿 session。"""
     from langchain_core.messages import AIMessage
-    from framework.nodes.subgraph.subgraph_ref_node import SubgraphRefNode as AgentRefNode
-    from framework.config import AgentConfig
+    from framework.agent_loader import SubgraphNodeWrapper
 
-    cfg = AgentConfig(tools=[])
-    node_config = {
-        "agent_dir": "blueprints/functional_graphs/debate_gemini_first",
-        "state_in":  {"task": "routing_context", "knowledge_vault": "knowledge_vault"},
-        "state_out": {"debate_conclusion": "last_message"},
-    }
-
-    node = AgentRefNode(cfg, node_config)
-
-    # Mock 子图，返回预设 messages 和新增的 node_sessions
+    # 构建 wrapper
     fake_reply = "辩论结论：选方案A。"
     mock_graph = _make_mock_graph({
         "messages": [AIMessage(content=fake_reply)],
@@ -231,15 +223,21 @@ async def test_session_cleanup():
             "claude_critique_1": "orphan-uuid-claude",
         },
     })
-    node._graph = mock_graph
 
-    # 追踪清理调用
+    wrapper = SubgraphNodeWrapper(
+        graph=mock_graph,
+        node_id="debate_brainstorm",
+        graph_name="debate_gemini_first",
+        input_schema={"task": "routing_context", "knowledge_vault": "knowledge_vault"},
+        output_field="debate_conclusion",
+    )
+
+    # 追踪清理调用（替换 staticmethod 为 tracker）
     cleanup_calls = []
-    original_cleanup = node._cleanup_orphan_sessions
     def tracked_cleanup(result, original_keys):
         cleanup_calls.append((set(result.get("node_sessions", {}).keys()), original_keys))
         # 不执行真实文件删除，只验证调用
-    node._cleanup_orphan_sessions = tracked_cleanup
+    wrapper._cleanup_orphan_sessions = staticmethod(tracked_cleanup)
 
     parent_state = {
         "routing_context": "测试辩题",
@@ -247,7 +245,7 @@ async def test_session_cleanup():
         "node_sessions": {"claude_main": "existing-uuid"},
     }
 
-    result = await node(parent_state)
+    result = await wrapper(parent_state)
 
     # 验证 cleanup 被调用，且差集正确
     assert len(cleanup_calls) == 1, "cleanup 应被调用一次"
@@ -257,7 +255,7 @@ async def test_session_cleanup():
     assert "claude_critique_1" in new_keys, "claude_critique_1 应是新增 key"
     assert "claude_main" not in new_keys, "claude_main 是父图 key，不应被清理"
 
-    logger.info("✅ SubgraphRefNode session cleanup OK")
+    logger.info("✅ SubgraphNodeWrapper session cleanup OK")
 
 
 async def test_gemini_lru_eviction():
@@ -336,14 +334,14 @@ async def run():
     logger.info("=" * 50)
     print("\n✅ 全部测试通过")
     print("   state 新字段: knowledge_vault / project_docs / debate_conclusion")
-    print("   SUBGRAPH_REF 已注册")
+    print("   SUBGRAPH_NODE 子图编译成功")
     print("   debate_gemini_first / debate_claude_first 图编译成功")
     print("   hani 图含 debate_brainstorm / debate_design")
-    print("   SubgraphRefNode state 映射逻辑正确")
+    print("   SubgraphNodeWrapper input_schema/output_field 映射逻辑正确")
     print("   DebateState 使用 add_messages（消息累积）")
     print("   GeminiNode system_prompt 从 node_config 读取")
     print("   build_graph(checkpointer=None) 无需 thread_id")
-    print("   SubgraphRefNode 孤儿 session 清理正确")
+    print("   SubgraphNodeWrapper 孤儿 session 清理正确")
     print("   GeminiNode LRU 缓存淘汰正确")
     print("   gemini_session.delete_session 磁盘删除正确")
 

@@ -4,7 +4,7 @@ builds a CLI number guessing game.
 
 Strategy:
   - Master graph uses SUBGRAPH_NODE (native LangGraph subgraphs).
-  - Mock at leaf node level: ClaudeSDKNode, OllamaNode, SubgraphRefNode.
+  - Mock at leaf node level: ClaudeSDKNode, OllamaNode, SubgraphNodeWrapper.
   - DETERMINISTIC nodes run for real (validators, run_tests, e2e_route, etc).
   - Real file I/O: game code + test scripts written by mocks.
 """
@@ -30,7 +30,7 @@ import blueprints.functional_graphs.colony_coder.state  # noqa: F401
 from framework.agent_loader import AgentLoader
 from framework.nodes.llm.claude import ClaudeSDKNode
 from framework.nodes.llm.ollama import OllamaNode
-from framework.nodes.subgraph.subgraph_ref_node import SubgraphRefNode
+from framework.agent_loader import SubgraphNodeWrapper
 from langchain_core.messages import AIMessage, HumanMessage
 
 # ---------------------------------------------------------------------------
@@ -184,7 +184,7 @@ async def test_e2e_colony_coder_game(tmp_path):
     Mocking strategy (leaf-node level):
       - ClaudeSDKNode.__call__ → planner's claude_swarm, task_decompose; QA's generate_e2e
       - OllamaNode.__call__   → executor's code_gen (writes game file + test scripts)
-      - SubgraphRefNode.__call__ → planner's design_debate (SUBGRAPH_REF)
+      - SubgraphNodeWrapper.__call__ → planner's design_debate (SUBGRAPH_REF)
       - DETERMINISTIC nodes run for real (validators, run_tests, e2e_route, etc.)
     """
     tmpdir = str(tmp_path)
@@ -261,7 +261,7 @@ async def test_e2e_colony_coder_game(tmp_path):
             )],
         }
 
-    # ── 3. SubgraphRefNode mock (planner's design_debate SUBGRAPH_REF) ───
+    # ── 3. SubgraphNodeWrapper mock (planner's design_debate SUBGRAPH_REF) ───
     async def _mock_subgraph_ref_call(self, state):
         return {
             "messages": [_ai(
@@ -281,7 +281,7 @@ async def test_e2e_colony_coder_game(tmp_path):
     with (
         patch.object(ClaudeSDKNode, "__call__", _mock_claude_call),
         patch.object(OllamaNode, "__call__", _mock_ollama_call),
-        patch.object(SubgraphRefNode, "__call__", _mock_subgraph_ref_call),
+        patch.object(SubgraphNodeWrapper, "__call__", _mock_subgraph_ref_call),
     ):
         loader = AgentLoader(Path("blueprints/functional_graphs/colony_coder"))
         graph = await loader.build_graph(checkpointer=None)

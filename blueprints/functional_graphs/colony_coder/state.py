@@ -19,7 +19,7 @@ class ColonyCoderState(BaseAgentState):
     # Task management
     tasks: list                        # list of {"id", "description", "dependencies"}
     execution_order: list              # ordered list of task ids
-    refined_plan: str
+    # refined_plan: inherited from BaseAgentState
     qa_plan: str                       # (legacy) QA test design — kept for backward compat
     e2e_plan: dict                     # E2E test plan from planner: {acceptance_criteria, test_scenarios}
     working_directory: str
