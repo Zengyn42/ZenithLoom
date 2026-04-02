@@ -153,6 +153,10 @@ class LlmNode:
         self._resource_lock = node_config.get("resource_lock")
         self._resource_timeout = float(node_config.get("resource_timeout", 300))
 
+        # output_field：子图末尾节点用，把 LLM 输出自动写入指定 state 字段
+        # 如 "debate_conclusion"、"apex_conclusion"、"knowledge_result" 等
+        self._output_field: str | None = node_config.get("output_field")
+
         # 信号解析器
         self._signal_parser = get_signal_parser(
             node_config.get("signal_parser", "json_line")
@@ -372,11 +376,6 @@ class LlmNode:
         routing_target = signal.get("route", "") if signal else ""
         routing_context = signal.get("context", "") if signal else ""
 
-        # 检测是否为新用户 turn：last message 是 HumanMessage 说明刚收到用户输入
-        # 此时重置 subgraph_call_counts，防止上一轮计数跨 turn 持久化阻塞本轮路由
-        from langchain_core.messages import HumanMessage as _HumanMessage
-        _is_new_turn = bool(msgs and isinstance(msgs[-1], _HumanMessage))
-
         if routing_target:
             logger.info(f"[{self._node_id}] routing signal: target={routing_target!r}")
             result: dict = {
@@ -386,21 +385,24 @@ class LlmNode:
                 "consult_count": 0,  # 新路由请求，重置计数（防止上一轮子图的计数泄漏阻塞本轮路由）
                 "node_sessions": {self._session_key: new_session_id},
             }
-            if _is_new_turn:
-                result["subgraph_call_counts"] = {}  # 新 turn 首次路由，清空跨轮计数
         else:
             result = {
                 "messages": [AIMessage(content=raw_output)],
                 "routing_target": "",
                 "routing_context": "",
                 "consult_count": 0,
-                "subgraph_call_counts": {},  # 无路由 = 新一轮对话，重置按子图计数
                 "rollback_reason": "",
                 # 注意：不在此处重置 retry_count！
                 # retry_count 由 DETERMINISTIC validator 节点管理，
                 # LLM 节点强制归零会破坏 validator 的重试逻辑（如 colony_coder 死循环 bug）。
                 "node_sessions": {self._session_key: new_session_id},
             }
+
+        # ── output_field 映射（子图末尾节点用）──────────────────────────────
+        # 当节点配置了 output_field 时，把 LLM 输出自动写入指定 state 字段，
+        # 使子图结论通过 LangGraph 原生 state 合并传回父图。
+        if self._output_field and raw_output:
+            result[self._output_field] = raw_output
 
         return result
 

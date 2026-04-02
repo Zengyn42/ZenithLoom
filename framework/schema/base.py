@@ -38,7 +38,6 @@ class BaseAgentState(TypedDict):
     knowledge_result: str   # knowledge_shelf 子图结论
     discovery_report: str   # tool_discovery 子图结论
     refined_plan: str       # 经辩论/评审后的精炼计划（colony_coder_planner 等写入）
-    subgraph_call_counts: dict  # {"debate_brainstorm": 2, ...} — 按子图 ID 计数，用于 max_retry 限速
     connector: str              # 接口类型标识（"cli" / "discord"），由 BaseInterface 注入，LlmNode 用于动态调整 user_msg_prefix
 
 

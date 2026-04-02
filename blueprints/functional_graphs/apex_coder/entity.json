@@ -32,7 +32,8 @@
         },
         "add_dirs": [
           "blueprints/functional_graphs/apex_coder"
-        ]
+        ],
+        "output_field": "apex_conclusion"
       }
     ],
     "edges": [

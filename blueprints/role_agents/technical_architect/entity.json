@@ -93,18 +93,12 @@
       {
         "id": "debate_brainstorm",
         "type": "SUBGRAPH_NODE",
-        "agent_dir": "blueprints/functional_graphs/debate_gemini_first",
-        "max_retry": 1,
-        "input_schema": ["routing_context", "knowledge_vault", "project_docs", "workspace", "project_root"],
-        "output_field": "debate_conclusion"
+        "agent_dir": "blueprints/functional_graphs/debate_gemini_first"
       },
       {
         "id": "debate_design",
         "type": "SUBGRAPH_NODE",
-        "agent_dir": "blueprints/functional_graphs/debate_claude_first",
-        "max_retry": 1,
-        "input_schema": ["routing_context", "knowledge_vault", "project_docs", "workspace", "project_root"],
-        "output_field": "debate_conclusion"
+        "agent_dir": "blueprints/functional_graphs/debate_claude_first"
       },
       {
         "id": "gmail_reader",
@@ -136,25 +130,12 @@
       {
         "id": "apex_coder",
         "type": "SUBGRAPH_NODE",
-        "agent_dir": "blueprints/functional_graphs/apex_coder",
-        "max_retry": 1,
-        "input_schema": ["routing_context", "workspace", "project_root", "knowledge_vault", "project_docs"],
-        "output_field": "apex_conclusion"
+        "agent_dir": "blueprints/functional_graphs/apex_coder"
       },
       {
         "id": "tool_discovery",
         "type": "SUBGRAPH_NODE",
-        "agent_dir": "blueprints/functional_graphs/tool_discovery",
-        "max_retry": 1,
-        "input_schema": {
-          "user_query": "routing_context",
-          "routing_context": "routing_context",
-          "workspace": "workspace",
-          "project_root": "project_root",
-          "knowledge_vault": "knowledge_vault",
-          "project_docs": "project_docs"
-        },
-        "output_field": "discovery_report"
+        "agent_dir": "blueprints/functional_graphs/tool_discovery"
       }
     ],
     "edges": [

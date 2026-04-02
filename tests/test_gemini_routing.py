@@ -31,7 +31,6 @@ def _make_state(user_msg: str = "hello") -> dict:
         "consult_count": 0,
         "workspace": "/tmp",
         "node_sessions": {},
-        "subgraph_call_counts": {},
         "rollback_reason": "",
     }
 
@@ -108,11 +107,10 @@ class TestGeminiCLINodeRouting:
 
     @pytest.mark.asyncio
     async def test_no_routing_resets_state(self, node_with_routing):
-        """无路由信号时清空 subgraph_call_counts 和 rollback_reason。"""
+        """无路由信号时清空 rollback_reason。"""
         reply = "普通回复"
         with patch.object(node_with_routing, "call_llm", new_callable=AsyncMock, return_value=(reply, "sid_123")):
             result = await node_with_routing(_make_state())
-        assert result["subgraph_call_counts"] == {}
         assert result["rollback_reason"] == ""
 
 

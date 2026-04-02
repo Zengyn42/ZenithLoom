@@ -474,15 +474,18 @@ class GeminiCodeAssistNode(_GeminiSessionMixin, AgentNode):
                     "node_sessions": {self._session_key: new_session_id or session_id},
                 }
 
-        return {
+        result = {
             "messages": [AIMessage(content=reply)],
             "routing_target": "",
             "routing_context": "",
             "consult_count": 0,
-            "subgraph_call_counts": {},
             "rollback_reason": "",
             "node_sessions": {self._session_key: new_session_id or session_id},
         }
+        # output_field 映射（子图末尾节点用）
+        if self._output_field and reply:
+            result[self._output_field] = reply
+        return result
 
 
 # 向后兼容别名
@@ -901,12 +904,15 @@ class GeminiCLINode(AgentNode):
                     "node_sessions": {self._session_key: new_session_id or session_id},
                 }
 
-        return {
+        result = {
             "messages": [AIMessage(content=reply)],
             "routing_target": "",
             "routing_context": "",
             "consult_count": 0,
-            "subgraph_call_counts": {},
             "rollback_reason": "",
             "node_sessions": {self._session_key: new_session_id or session_id},
         }
+        # output_field 映射（子图末尾节点用）
+        if self._output_field and reply:
+            result[self._output_field] = reply
+        return result

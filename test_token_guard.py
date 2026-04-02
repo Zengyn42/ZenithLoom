@@ -68,7 +68,6 @@ def _make_state(history_chars: int = 100, routing_target: str = "") -> dict:
         "rollback_reason": "",
         "knowledge_vault": "",
         "project_docs": "",
-        "subgraph_call_counts": {},
         "consult_count": 0,
     }
 
