@@ -645,6 +645,7 @@ class _SubgraphNodeWrapper:
         original_ns_keys = set((state.get("node_sessions") or {}).keys())
 
         last_state: dict = {}
+        last_meaningful_msg: str = ""  # 最后一条非空消息内容，用于 output_field 映射
         print(f"\n{'─' * 60}", flush=True)
         print(f"  [{self._graph_name}] 子图开始", flush=True)
         print(f"{'─' * 60}", flush=True)
@@ -660,6 +661,7 @@ class _SubgraphNodeWrapper:
                         content = getattr(msg, "content", "")
                         if not content:
                             continue
+                        last_meaningful_msg = content  # 追踪最后一条非空消息
                         label = "议题" if getattr(msg, "type", "ai") == "human" else nid
                         print(f"\n  ┌─ [{label}]", flush=True)
                         for line in content.split("\n"):
@@ -673,14 +675,14 @@ class _SubgraphNodeWrapper:
         print(f"{'─' * 60}\n", flush=True)
 
         # ── 输出映射 ─────────────────────────────────────────────────────
+        # 使用 last_meaningful_msg 而非 last_state["messages"][-1]，
+        # 避免子图末尾的工具节点（如 vault_sync_push）用空消息覆盖真实结论。
         out: dict = {}
         if self._output_field:
-            msgs = last_state.get("messages", [])
-            if msgs:
-                last_msg = msgs[-1] if isinstance(msgs[-1], str) else msgs[-1].content
-                out[self._output_field] = last_msg
+            if last_meaningful_msg:
+                out[self._output_field] = last_meaningful_msg
                 out["messages"] = [AIMessage(
-                    content=f"[子图结论]\n\n{last_msg}"
+                    content=f"[子图结论]\n\n{last_meaningful_msg}"
                 )]
             else:
                 out[self._output_field] = ""
