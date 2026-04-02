@@ -16,6 +16,7 @@ import argparse
 import asyncio
 import logging
 import os
+import signal
 import sys
 import uuid
 from contextlib import asynccontextmanager
@@ -86,6 +87,23 @@ async def _init_db() -> None:
 # Lifespan
 # ---------------------------------------------------------------------------
 
+def _sigusr1_handler(signum, frame):
+    """SIGUSR1 handler for the MCP server process.
+
+    The server sends SIGUSR1 to agent processes upon mail delivery.  If a
+    stale PID entry in the agents table coincidentally refers to the server
+    process itself, or if the OS recycles a PID, the server would be killed
+    by the default SIGUSR1 action (terminate).  Installing a no-op handler
+    prevents accidental self-termination.
+    """
+    logger.debug("[agent_mail_mcp] SIGUSR1 received (ignored by server process)")
+
+
+# Install the handler at module load time so it is active regardless of
+# transport mode (stdio or SSE).
+signal.signal(signal.SIGUSR1, _sigusr1_handler)
+
+
 @asynccontextmanager
 async def lifespan(server):
     await _init_db()
@@ -136,6 +154,16 @@ async def send_mail(from_agent: str, to: str, subject: str, body: str) -> dict:
             (mail_id, from_agent, to, subject, body, created_at),
         )
         await db.commit()
+
+        # 写入后通知目标 agent：查 agents 表拿 PID，发 SIGUSR1
+        row = await db.execute("SELECT pid FROM agents WHERE name=?", (to,))
+        r = await row.fetchone()
+        if r and r[0]:
+            try:
+                os.kill(r[0], signal.SIGUSR1)
+                logger.debug(f"send_mail: SIGUSR1 → {to} pid={r[0]}")
+            except ProcessLookupError:
+                pass  # agent 已离线，邮件留在收件箱等它上线读
 
     logger.info(f"send_mail: {from_agent} → {to} [{subject}] mail_id={mail_id}")
     return {"mail_id": mail_id, "status": "sent"}
