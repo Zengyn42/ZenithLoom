@@ -64,6 +64,7 @@ class EntityLoader:
         self._controller = None
         self._session_mgr = None
         self._heartbeat_proxy = None  # HeartbeatMCPProxy | None
+        self._mcp_proxies: dict = {}  # name → proxy（由 start_mcps() 填充）
 
         if is_debug():
             logger.debug(
@@ -458,6 +459,86 @@ class EntityLoader:
             from framework.nodes.llm.heartbeat_tools import set_active_proxy
             set_active_proxy(None)
 
+    async def start_mcps(self):
+        """
+        遍历 identity.json 的 'mcps' 字段，对每个 MCP 调用
+        MCPLauncher.ensure_and_connect()，将结果存入 self._mcp_proxies。
+
+        连接成功后，若 proxy 提供 make_tools() 方法，则注册工具到框架 TOOL_REGISTRY。
+        适用于 agent_mail 等通用 MCP，与 heartbeat 完全同等地位。
+        """
+        from framework.mcp_launcher import MCPLauncher
+
+        entity_path = self._data_dir / "identity.json"
+        if not entity_path.exists():
+            logger.debug(f"[agent_loader] {self.name!r}: no identity.json, skip start_mcps")
+            return
+
+        try:
+            entity = json.loads(entity_path.read_text(encoding="utf-8"))
+        except Exception as e:
+            logger.warning(f"[agent_loader] {self.name!r}: failed to read identity.json: {e}")
+            return
+
+        mcps_conf = entity.get("mcps", [])
+        if not mcps_conf:
+            logger.debug(f"[agent_loader] {self.name!r}: no 'mcps' field, skip start_mcps")
+            return
+
+        for mcp_conf in mcps_conf:
+            mcp_name = mcp_conf.get("name", "unknown")
+            proxy_class = _resolve_proxy_class(mcp_name)
+            if proxy_class is None:
+                logger.warning(
+                    f"[agent_loader] {self.name!r}: no proxy class for MCP {mcp_name!r}, skip"
+                )
+                continue
+
+            proxy = await MCPLauncher.ensure_and_connect(mcp_conf, proxy_class)
+            if proxy is None:
+                logger.error(
+                    f"[agent_loader] {self.name!r}: failed to connect MCP {mcp_name!r}"
+                )
+                continue
+
+            self._mcp_proxies[mcp_name] = proxy
+            logger.info(f"[agent_loader] {self.name!r}: MCP {mcp_name!r} connected")
+
+            # agent_mail: 连接成功后立即注册在线状态
+            if mcp_name == "agent_mail" and hasattr(proxy, "register"):
+                try:
+                    await proxy.register(self.name)
+                except Exception as e:
+                    logger.warning(
+                        f"[agent_loader] {self.name!r}: agent_mail register failed: {e}"
+                    )
+
+            # 注册工具到框架 tool registry（若 proxy 提供工厂方法）
+            _register_mcp_tools(mcp_name, proxy)
+
+    async def stop_mcps(self) -> None:
+        """断开所有由 start_mcps() 建立的 MCP proxy 连接，并清空 _mcp_proxies。
+
+        应在 agent 关闭时调用，与 stop_heartbeat() 同等地位。
+        """
+        for mcp_name, proxy in list(self._mcp_proxies.items()):
+            # agent_mail: 注销在线状态再断连
+            if mcp_name == "agent_mail" and hasattr(proxy, "unregister"):
+                try:
+                    await proxy.unregister(self.name)
+                except Exception as e:
+                    logger.warning(
+                        f"[agent_loader] {self.name!r}: agent_mail unregister failed: {e}"
+                    )
+            try:
+                await proxy.disconnect()
+                logger.info(f"[agent_loader] {self.name!r}: MCP {mcp_name!r} disconnected")
+            except Exception as e:
+                logger.warning(
+                    f"[agent_loader] {self.name!r}: MCP {mcp_name!r} disconnect failed: {e}"
+                )
+        self._mcp_proxies.clear()
+
     def invalidate_engine(self) -> None:
         """使引擎和控制器缓存失效（compact/reset 后调用）。"""
         self._engine = None
@@ -478,6 +559,59 @@ class EntityLoader:
 
 # 向后兼容别名
 AgentLoader = EntityLoader
+
+
+# ---------------------------------------------------------------------------
+# MCP proxy 工厂：根据 MCP name 返回对应的 proxy 类
+# ---------------------------------------------------------------------------
+
+def _resolve_proxy_class(mcp_name: str):
+    """根据 MCP 名称返回对应的 proxy 类。
+
+    当前支持：
+      "heartbeat"  → HeartbeatMCPProxy
+      "agent_mail" → AgentMailProxy
+
+    未知名称返回 None。
+    """
+    if mcp_name == "heartbeat":
+        from framework.nodes.llm.heartbeat_tools import HeartbeatMCPProxy
+        return HeartbeatMCPProxy
+    if mcp_name == "agent_mail":
+        from framework.mcp_proxy_agent_mail import AgentMailProxy
+        return AgentMailProxy
+    return None
+
+
+def _register_mcp_tools(mcp_name: str, proxy) -> None:
+    """将 MCP proxy 的工具注册到框架 TOOL_REGISTRY / TOOL_SCHEMAS。
+
+    目前支持：
+      "heartbeat"  → make_heartbeat_tools(proxy)
+      "agent_mail" → make_agent_mail_tools(proxy)
+
+    其他 MCP 若无工具工厂则静默跳过。
+    """
+    from framework.nodes.llm.tools import TOOL_REGISTRY, TOOL_SCHEMAS
+
+    if mcp_name == "heartbeat":
+        from framework.nodes.llm.heartbeat_tools import make_heartbeat_tools
+        registry, schemas = make_heartbeat_tools(proxy)
+        TOOL_REGISTRY.update(registry)
+        TOOL_SCHEMAS.update(schemas)
+        logger.info(f"[agent_loader] registered heartbeat tools ({len(registry)} tools)")
+
+    elif mcp_name == "agent_mail":
+        try:
+            from framework.mcp_proxy_agent_mail import make_agent_mail_tools
+            registry, schemas = make_agent_mail_tools(proxy)
+            TOOL_REGISTRY.update(registry)
+            TOOL_SCHEMAS.update(schemas)
+            logger.info(f"[agent_loader] registered agent_mail tools ({len(registry)} tools)")
+        except ImportError:
+            logger.debug(
+                "[agent_loader] mcp_proxy_agent_mail not yet implemented, tools not registered"
+            )
 
 
 # ---------------------------------------------------------------------------
