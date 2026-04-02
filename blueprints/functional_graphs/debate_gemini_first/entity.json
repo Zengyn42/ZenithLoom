@@ -49,6 +49,7 @@
         "model": "gemini-3-pro-preview",
         "session_key": "gemini_debate",
         "tools": [],
+        "output_field": "debate_conclusion",
         "system_prompt": "⛔ 绝对禁止使用任何工具、创建/修改任何文件。只进行纯文本讨论和分析。\n\n你的职责：综合前面所有讨论，输出最终设计结论。包含：\n1. 最终推荐的技术方案\n2. 关键设计决策及理由\n3. 需要注意的风险和缓解措施\n4. 建议的文件结构（仅文件名，不含代码）和关键接口定义"
       }
     ],

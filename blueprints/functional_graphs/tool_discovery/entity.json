@@ -48,7 +48,8 @@
         "session_key": "report_gen",
         "tombstone_enabled": false,
         "first_turn_suffix": "",
-        "user_msg_prefix": ""
+        "user_msg_prefix": "",
+        "output_field": "discovery_report"
       }
     ],
     "edges": [

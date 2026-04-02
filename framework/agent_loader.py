@@ -639,7 +639,7 @@ def _collect_routing_hints(graph_spec: dict) -> str:
     遍历 graph_spec 中所有含 agent_dir 的子图节点，读取其 entity.json 的 routing_hint 字段，
     构建路由说明字符串，用于注入主节点 system_prompt。
     """
-    _ROUTABLE_TYPES = ("SUBGRAPH_NODE", "SUBGRAPH_REF", "AGENT_REF")
+    _ROUTABLE_TYPES = ("SUBGRAPH_NODE",)
     hints: list[str] = []
     for node_def in graph_spec.get("nodes", []):
         if node_def.get("type") not in _ROUTABLE_TYPES:
@@ -695,180 +695,64 @@ def _get_state_schemas() -> dict:
     return get_all_schemas()
 
 
-class _SubgraphNodeWrapper:
+async def _invoke_subgraph(state: dict, *, graph, node_id: str, graph_name: str) -> dict:
     """
-    Wraps a compiled subgraph with input-state filtering, output-field mapping,
-    max_retry limiting, streaming output, and session cleanup.
+    Thin subgraph adapter: converts routing_context to a HumanMessage,
+    streams the subgraph, and collects results.
 
-    Replaces SubgraphRefNode for SUBGRAPH_NODE nodes that declare input_schema
-    and/or output_field.  Pure SUBGRAPH_NODE (no input_schema) uses native
-    LangGraph passthrough and does not go through this wrapper.
-
-    Config params (from entity.json node definition):
-        input_schema   list[str] | dict[str,str]   Fields to pass from parent→child.
-                       list: same-named fields.  dict: {child_field: parent_field}.
-                       messages are auto-created from routing_context.
-        output_field    str   Parent state field to write subgraph's last message to.
-        max_retry       int|None   Max calls per turn (None = unlimited).
+    Replaces the old _SubgraphNodeWrapper (170 lines → ~30 lines).
+    All output_field mapping is now handled by subgraph's last LLM node
+    via the node_config["output_field"] mechanism in LlmNode.__call__().
     """
+    from langchain_core.messages import HumanMessage
+    from framework.debug import push_graph_scope, pop_graph_scope
 
-    def __init__(
-        self,
-        graph,
-        node_id: str,
-        graph_name: str,
-        input_schema=None,
-        output_field: str | None = None,
-        max_retry: int | None = None,
-    ):
-        self._graph = graph
-        self._node_id = node_id
-        self._graph_name = graph_name
-        self._input_schema = input_schema  # list or dict
-        self._output_field = output_field
-        self._max_retry = max_retry
+    # ── 构建子图入口 state（routing_context → HumanMessage）────────────
+    task = state.get("routing_context", "")
+    if not task:
+        parent_msgs = state.get("messages") or []
+        if parent_msgs:
+            task = parent_msgs[-1].content
 
-    async def __call__(self, state: dict) -> dict:
-        from langchain_core.messages import AIMessage, HumanMessage
-        from framework.debug import push_graph_scope, pop_graph_scope
+    sub_state = dict(state)
+    sub_state["messages"] = [HumanMessage(content=task)] if task else []
 
-        # ── max_retry 限速检查 ───────────────────────────────────────────
-        call_counts = dict(state.get("subgraph_call_counts") or {})
-        my_count = call_counts.get(self._node_id, 0)
+    logger.info(f"[subgraph] invoking {graph_name!r}")
 
-        if self._max_retry is not None and my_count >= self._max_retry:
-            reason = (
-                f"子图 {self._node_id} 本轮已被调用 {my_count} 次，"
-                f"达到上限 max_retry={self._max_retry}，跳过执行。"
-            )
-            logger.warning(f"[subgraph_wrapper] {reason}")
-            return {
-                "messages": [AIMessage(
-                    content=f"[子图限速] {reason}\n请换一种方式处理，或直接回复用户。"
-                )],
-                "subgraph_call_counts": call_counts,
-            }
+    # ── 流式执行子图 ─────────────────────────────────────────────────
+    result: dict = {}
+    print(f"\n{'─' * 60}", flush=True)
+    print(f"  [{graph_name}] 子图开始", flush=True)
+    print(f"{'─' * 60}", flush=True)
 
-        # ── 构建子图入口 state ────────────────────────────────────────────
-        task = state.get("routing_context", "")
-        if not task:
-            parent_msgs = state.get("messages") or []
-            if parent_msgs:
-                task = parent_msgs[-1].content
-
-        sub_state: dict = {
-            "messages": [HumanMessage(content=task)] if task else [],
-        }
-
-        if isinstance(self._input_schema, list):
-            for field in self._input_schema:
-                sub_state[field] = state.get(field, "" if isinstance(state.get(field), (str, type(None))) else state.get(field))
-        elif isinstance(self._input_schema, dict):
-            for child_key, parent_key in self._input_schema.items():
-                sub_state[child_key] = state.get(parent_key, "" if isinstance(state.get(parent_key), (str, type(None))) else state.get(parent_key))
-
-        logger.info(f"[subgraph_wrapper] invoking {self._graph_name!r} (call #{my_count + 1})")
-        if is_debug():
-            logger.debug(
-                f"[subgraph_wrapper/{self._node_id}] input_schema={self._input_schema} "
-                f"output_field={self._output_field} sub_state_keys={list(sub_state.keys())}"
-            )
-
-        # ── 流式执行子图 ─────────────────────────────────────────────────
-        # 记录进入前的 node_sessions key（用于事后清理子图产生的孤儿 session）
-        original_ns_keys = set((state.get("node_sessions") or {}).keys())
-
-        last_state: dict = {}
-        last_meaningful_msg: str = ""  # 最后一条非空消息内容，用于 output_field 映射
-        print(f"\n{'─' * 60}", flush=True)
-        print(f"  [{self._graph_name}] 子图开始", flush=True)
-        print(f"{'─' * 60}", flush=True)
-
-        push_graph_scope(self._node_id)
-        try:
-            async for event in self._graph.astream(sub_state, stream_mode="updates"):
-                for nid, update in event.items():
-                    if nid in ("__start__", "__end__") or not update:
+    push_graph_scope(node_id)
+    try:
+        async for event in graph.astream(sub_state, stream_mode="updates"):
+            for nid, update in event.items():
+                if nid in ("__start__", "__end__") or not update:
+                    continue
+                result.update(update)
+                for msg in update.get("messages", []):
+                    content = getattr(msg, "content", "")
+                    if not content:
                         continue
-                    last_state.update(update)
-                    for msg in update.get("messages", []):
-                        content = getattr(msg, "content", "")
-                        if not content:
-                            continue
-                        last_meaningful_msg = content  # 追踪最后一条非空消息
-                        label = "议题" if getattr(msg, "type", "ai") == "human" else nid
-                        print(f"\n  ┌─ [{label}]", flush=True)
-                        for line in content.split("\n"):
-                            print(f"  │ {line}", flush=True)
-                        print(f"  └─", flush=True)
-        finally:
-            pop_graph_scope()
+                    label = "议题" if getattr(msg, "type", "ai") == "human" else nid
+                    print(f"\n  ┌─ [{label}]", flush=True)
+                    for line in content.split("\n"):
+                        print(f"  │ {line}", flush=True)
+                    print(f"  └─", flush=True)
+    finally:
+        pop_graph_scope()
 
-        print(f"\n{'─' * 60}", flush=True)
-        print(f"  [{self._graph_name}] 子图结束", flush=True)
-        print(f"{'─' * 60}\n", flush=True)
+    print(f"\n{'─' * 60}", flush=True)
+    print(f"  [{graph_name}] 子图结束", flush=True)
+    print(f"{'─' * 60}\n", flush=True)
 
-        # ── 输出映射 ─────────────────────────────────────────────────────
-        # 使用 last_meaningful_msg 而非 last_state["messages"][-1]，
-        # 避免子图末尾的工具节点（如 vault_sync_push）用空消息覆盖真实结论。
-        out: dict = {}
-        if self._output_field:
-            if last_meaningful_msg:
-                out[self._output_field] = last_meaningful_msg
-                out["messages"] = [AIMessage(
-                    content=f"[子图结论]\n\n{last_meaningful_msg}"
-                )]
-            else:
-                out[self._output_field] = ""
+    # consult_count 递增（告知父图已执行一次咨询）
+    result["consult_count"] = state.get("consult_count", 0) + 1
 
-        # ── 清理子图产生的孤儿 session ───────────────────────────────────
-        self._cleanup_orphan_sessions(last_state, original_ns_keys)
-
-        # ── 更新计数 ─────────────────────────────────────────────────────
-        call_counts[self._node_id] = my_count + 1
-        out["subgraph_call_counts"] = call_counts
-        out["consult_count"] = state.get("consult_count", 0) + 1
-
-        logger.info(
-            f"[subgraph_wrapper] {self._graph_name!r} done, "
-            f"call_count={my_count + 1}, out_keys={list(out.keys())}"
-        )
-        return out
-
-    @staticmethod
-    def _cleanup_orphan_sessions(result: dict, original_keys: set[str]) -> None:
-        """清理子图运行后新增的 node_sessions（Gemini/Claude 磁盘文件）。"""
-        import shutil
-        result_ns = result.get("node_sessions") or {}
-        new_keys = set(result_ns.keys()) - original_keys
-        if not new_keys:
-            return
-
-        cleaned = 0
-        for key in new_keys:
-            sid = result_ns[key]
-            if not sid:
-                continue
-            try:
-                import framework.nodes.llm.gemini_session as gem_sess
-                if gem_sess.delete_session(sid):
-                    cleaned += 1
-            except Exception:
-                pass
-            claude_dir = Path.home() / ".claude" / "session-env" / sid
-            if claude_dir.exists():
-                try:
-                    shutil.rmtree(claude_dir)
-                    cleaned += 1
-                except Exception:
-                    pass
-
-        if cleaned:
-            logger.info(f"[subgraph_wrapper] cleaned {cleaned} orphan session(s)")
-
-
-# Backward compat alias for tests that import SubgraphRefNode behavior
-SubgraphNodeWrapper = _SubgraphNodeWrapper
+    logger.info(f"[subgraph] {graph_name!r} done, out_keys={list(result.keys())}")
+    return result
 
 
 async def _build_declarative(
@@ -928,13 +812,12 @@ async def _build_declarative(
             )
             builder.add_node(node_id, _wrap_node_for_flow_log(node_id, inner))
 
-        elif node_type in ("SUBGRAPH_NODE", "SUBGRAPH_REF", "AGENT_REF"):
-            # External agent subgraph.
-            # - Pure SUBGRAPH_NODE (no input_schema): native LangGraph passthrough
-            # - SUBGRAPH_NODE with input_schema / output_field: wrapped with
-            #   state filtering, streaming, max_retry (replaces SubgraphRefNode)
-            # - SUBGRAPH_REF / AGENT_REF: backward compat → treated as
-            #   SUBGRAPH_NODE with input_schema (auto-converted from state_in/state_out)
+        elif node_type == "SUBGRAPH_NODE":
+            # External agent subgraph — 纯原生 LangGraph 机制。
+            # output_field 由子图末尾 LLM 节点的 node_config["output_field"] 处理。
+            # routing_context → HumanMessage 转换由 _invoke_subgraph 薄适配器处理。
+            import functools
+
             raw_dir = node_def.get("agent_dir", "")
             if not raw_dir:
                 raise ValueError(
@@ -966,48 +849,14 @@ async def _build_declarative(
                 checkpointer=None, parent_persona=_pass_persona,
             )
 
-            # Determine if we need the state-mapping wrapper
-            input_schema = node_def.get("input_schema")
-            output_field = node_def.get("output_field")
-            node_max_retry = node_def.get("max_retry")
-
-            # Backward compat: auto-convert SUBGRAPH_REF state_in/state_out
-            if node_type in ("SUBGRAPH_REF", "AGENT_REF"):
-                if not input_schema:
-                    state_in = node_def.get("state_in", {})
-                    # Convert state_in {child: parent} to input_schema format
-                    input_schema = {}
-                    for child_key, parent_key in state_in.items():
-                        input_schema[child_key] = parent_key
-                    # Always pass through common fields
-                    for f in ("routing_context", "workspace", "project_root",
-                              "knowledge_vault", "project_docs"):
-                        if f not in input_schema:
-                            input_schema[f] = f
-                if not output_field:
-                    state_out = node_def.get("state_out", {})
-                    # Take the first output field that maps from "last_message"
-                    for pkey, src in state_out.items():
-                        output_field = pkey
-                        break
-                logger.info(
-                    f"[agent_loader] auto-converted {node_type} '{node_id}' → "
-                    f"SUBGRAPH_NODE with input_schema"
-                )
-
-            if input_schema or output_field:
-                # Wrapped subgraph with state filtering + output mapping
-                wrapper = _SubgraphNodeWrapper(
-                    inner_graph, node_id,
-                    graph_name=inner_loader.name,
-                    input_schema=input_schema,
-                    output_field=output_field,
-                    max_retry=node_max_retry,
-                )
-                builder.add_node(node_id, _wrap_node_for_flow_log(node_id, wrapper))
-            else:
-                # Pure native subgraph (LangGraph handles state passthrough)
-                builder.add_node(node_id, inner_graph)
+            # 使用薄适配器：routing_context → HumanMessage + 流式输出
+            adapter = functools.partial(
+                _invoke_subgraph,
+                graph=inner_graph,
+                node_id=node_id,
+                graph_name=inner_loader.name,
+            )
+            builder.add_node(node_id, _wrap_node_for_flow_log(node_id, adapter))
 
         else:
             factory = get_node_factory(node_type)
@@ -1352,7 +1201,7 @@ def _mermaid_render(spec: dict, lines: list, indent: str, prefix: str) -> None:
         ntype = node_def.get("type", "")
         full  = _mermaid_id(prefix, raw)
 
-        if ntype in ("SUBGRAPH_REF", "AGENT_REF", "SUBGRAPH_NODE"):
+        if ntype == "SUBGRAPH_NODE":
             _mermaid_agent_ref(node_def, lines, indent, full, raw)
             continue
 

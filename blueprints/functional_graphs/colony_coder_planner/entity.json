@@ -7,9 +7,7 @@
       {
         "id": "design_debate",
         "type": "SUBGRAPH_NODE",
-        "agent_dir": "blueprints/functional_graphs/debate_claude_first",
-        "input_schema": ["routing_context", "workspace", "project_root"],
-        "output_field": "refined_plan"
+        "agent_dir": "blueprints/functional_graphs/debate_claude_first"
       },
       {
         "id": "claude_swarm",

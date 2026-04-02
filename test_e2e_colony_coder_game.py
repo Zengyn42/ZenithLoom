@@ -4,7 +4,7 @@ builds a CLI number guessing game.
 
 Strategy:
   - Master graph uses SUBGRAPH_NODE (native LangGraph subgraphs).
-  - Mock at leaf node level: ClaudeSDKNode, OllamaNode, SubgraphNodeWrapper.
+  - Mock at leaf node level: ClaudeSDKNode, OllamaNode, _invoke_subgraph.
   - DETERMINISTIC nodes run for real (validators, run_tests, e2e_route, etc).
   - Real file I/O: game code + test scripts written by mocks.
 """
@@ -30,7 +30,7 @@ import blueprints.functional_graphs.colony_coder.state  # noqa: F401
 from framework.agent_loader import AgentLoader
 from framework.nodes.llm.claude import ClaudeSDKNode
 from framework.nodes.llm.ollama import OllamaNode
-from framework.agent_loader import SubgraphNodeWrapper
+import framework.agent_loader as _agent_loader_mod
 from langchain_core.messages import AIMessage, HumanMessage
 
 # ---------------------------------------------------------------------------
@@ -122,7 +122,6 @@ def _base_return(state: dict, content: str, **extra) -> dict:
         "routing_target": "",
         "routing_context": "",
         "consult_count": 0,
-        "subgraph_call_counts": {},
         "rollback_reason": "",
         "retry_count": 0,
         "node_sessions": dict(state.get("node_sessions") or {}),
@@ -184,7 +183,7 @@ async def test_e2e_colony_coder_game(tmp_path):
     Mocking strategy (leaf-node level):
       - ClaudeSDKNode.__call__ → planner's claude_swarm, task_decompose; QA's generate_e2e
       - OllamaNode.__call__   → executor's code_gen (writes game file + test scripts)
-      - SubgraphNodeWrapper.__call__ → planner's design_debate (SUBGRAPH_REF)
+      - _invoke_subgraph → planner's design_debate (SUBGRAPH_NODE)
       - DETERMINISTIC nodes run for real (validators, run_tests, e2e_route, etc.)
     """
     tmpdir = str(tmp_path)
@@ -261,27 +260,29 @@ async def test_e2e_colony_coder_game(tmp_path):
             )],
         }
 
-    # ── 3. SubgraphNodeWrapper mock (planner's design_debate SUBGRAPH_REF) ───
-    async def _mock_subgraph_ref_call(self, state):
-        return {
-            "messages": [_ai(
+    # ── 3. _invoke_subgraph mock — only intercept design_debate, pass through others ───
+    _original_invoke = _agent_loader_mod._invoke_subgraph
+
+    async def _selective_invoke_subgraph(state, *, graph, node_id, graph_name):
+        if node_id == "design_debate":
+            conclusion = (
                 "Design debate conclusion: Build a simple CLI number guessing "
                 "game. Single file approach. Random 1-100, binary search hints, "
                 "attempt counter, replay loop."
-            )],
-            "refined_plan": (
-                "Build a CLI number guessing game: random number 1-100, "
-                "higher/lower hints, attempt counting, score display, replay."
-            ),
-            "subgraph_call_counts": dict(state.get("subgraph_call_counts") or {}),
-            "consult_count": state.get("consult_count", 0) + 1,
-        }
+            )
+            return {
+                "messages": [_ai(conclusion)],
+                "debate_conclusion": conclusion,
+                "consult_count": state.get("consult_count", 0) + 1,
+            }
+        # All other subgraphs: call real implementation
+        return await _original_invoke(state, graph=graph, node_id=node_id, graph_name=graph_name)
 
     # ── 4. Build & run master graph ──────────────────────────────────────
     with (
         patch.object(ClaudeSDKNode, "__call__", _mock_claude_call),
         patch.object(OllamaNode, "__call__", _mock_ollama_call),
-        patch.object(SubgraphNodeWrapper, "__call__", _mock_subgraph_ref_call),
+        patch.object(_agent_loader_mod, "_invoke_subgraph", _selective_invoke_subgraph),
     ):
         loader = AgentLoader(Path("blueprints/functional_graphs/colony_coder"))
         graph = await loader.build_graph(checkpointer=None)
