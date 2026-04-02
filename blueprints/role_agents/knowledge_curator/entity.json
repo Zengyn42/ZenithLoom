@@ -24,16 +24,11 @@
       },
       {
         "id": "knowledge_shelf",
-        "type": "SUBGRAPH_REF",
+        "type": "SUBGRAPH_NODE",
         "agent_dir": "blueprints/functional_graphs/knowledge_shelf",
         "max_retry": 2,
-        "state_in": {
-          "task": "routing_context",
-          "knowledge_vault": "knowledge_vault"
-        },
-        "state_out": {
-          "knowledge_result": "last_message"
-        }
+        "input_schema": ["routing_context", "knowledge_vault", "workspace", "project_root", "project_docs"],
+        "output_field": "knowledge_result"
       },
       {
         "id": "render_slides",

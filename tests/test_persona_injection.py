@@ -346,19 +346,17 @@ def _make_parent_agent_dir(
     node_type: str = "SUBGRAPH_NODE",
     has_persona: bool = True,
 ) -> Path:
-    """Create a parent agent dir with a single SUBGRAPH_NODE or SUBGRAPH_REF."""
+    """Create a parent agent dir with a single SUBGRAPH_NODE (or legacy SUBGRAPH_REF)."""
     parent_dir = tmp / parent_name
     parent_dir.mkdir(parents=True)
 
     node_def = {
         "id": "child_sub",
         "type": node_type,
+        "agent_dir": str(child_dir),
     }
-    if node_type == "SUBGRAPH_NODE":
-        node_def["agent_dir"] = str(child_dir)
-    else:
-        # SUBGRAPH_REF needs agent_dir + state mapping
-        node_def["agent_dir"] = str(child_dir)
+    if node_type in ("SUBGRAPH_REF", "AGENT_REF"):
+        # Legacy format: auto-converted by agent_loader
         node_def["state_in"] = {"task": "routing_context"}
         node_def["state_out"] = {"result": "last_message"}
 

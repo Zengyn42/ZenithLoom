@@ -92,31 +92,19 @@
       },
       {
         "id": "debate_brainstorm",
-        "type": "SUBGRAPH_REF",
+        "type": "SUBGRAPH_NODE",
         "agent_dir": "blueprints/functional_graphs/debate_gemini_first",
         "max_retry": 1,
-        "state_in": {
-          "task": "routing_context",
-          "knowledge_vault": "knowledge_vault",
-          "project_docs": "project_docs"
-        },
-        "state_out": {
-          "debate_conclusion": "last_message"
-        }
+        "input_schema": ["routing_context", "knowledge_vault", "project_docs", "workspace", "project_root"],
+        "output_field": "debate_conclusion"
       },
       {
         "id": "debate_design",
-        "type": "SUBGRAPH_REF",
+        "type": "SUBGRAPH_NODE",
         "agent_dir": "blueprints/functional_graphs/debate_claude_first",
         "max_retry": 1,
-        "state_in": {
-          "task": "routing_context",
-          "knowledge_vault": "knowledge_vault",
-          "project_docs": "project_docs"
-        },
-        "state_out": {
-          "debate_conclusion": "last_message"
-        }
+        "input_schema": ["routing_context", "knowledge_vault", "project_docs", "workspace", "project_root"],
+        "output_field": "debate_conclusion"
       },
       {
         "id": "gmail_reader",
@@ -147,26 +135,18 @@
       },
       {
         "id": "apex_coder",
-        "type": "SUBGRAPH_REF",
+        "type": "SUBGRAPH_NODE",
         "agent_dir": "blueprints/functional_graphs/apex_coder",
         "max_retry": 1,
-        "state_in": {
-          "routing_context": "routing_context",
-          "workspace": "workspace",
-          "project_root": "project_root",
-          "knowledge_vault": "knowledge_vault",
-          "project_docs": "project_docs"
-        },
-        "state_out": {
-          "apex_conclusion": "last_message"
-        }
+        "input_schema": ["routing_context", "workspace", "project_root", "knowledge_vault", "project_docs"],
+        "output_field": "apex_conclusion"
       },
       {
         "id": "tool_discovery",
-        "type": "SUBGRAPH_REF",
+        "type": "SUBGRAPH_NODE",
         "agent_dir": "blueprints/functional_graphs/tool_discovery",
         "max_retry": 1,
-        "state_in": {
+        "input_schema": {
           "user_query": "routing_context",
           "routing_context": "routing_context",
           "workspace": "workspace",
@@ -174,9 +154,7 @@
           "knowledge_vault": "knowledge_vault",
           "project_docs": "project_docs"
         },
-        "state_out": {
-          "discovery_report": "last_message"
-        }
+        "output_field": "discovery_report"
       }
     ],
     "edges": [

@@ -3,9 +3,9 @@ E2E 测试：子图路由 + max_retry 限速 + 按子图独立计数
 
 覆盖：
   1.  BaseAgentState 含 subgraph_call_counts 字段
-  2.  SubgraphRefNode max_retry 参数读取
-  3.  SubgraphRefNode 首次调用正常执行
-  4.  SubgraphRefNode 达到 max_retry 后返回限速 AIMessage（不执行子图）
+  2.  SubgraphNodeWrapper max_retry 参数读取
+  3.  SubgraphNodeWrapper 首次调用正常执行
+  4.  SubgraphNodeWrapper 达到 max_retry 后返回限速 AIMessage（不执行子图）
   5.  不同子图独立计数（brainstorm count 不影响 design）
   6.  max_retry=None 时无限制
   7.  通用 state_out 映射（apex_conclusion 不再丢失）
@@ -52,7 +52,7 @@ DEBATE_GEMINI_DIR = "blueprints/functional_graphs/debate_gemini_first"
 DEBATE_CLAUDE_DIR = "blueprints/functional_graphs/debate_claude_first"
 APEX_CODER_DIR = "blueprints/functional_graphs/apex_coder"
 
-DEFAULT_STATE_OUT = {"debate_conclusion": "last_message"}
+DEFAULT_OUTPUT_FIELD = "debate_conclusion"
 
 
 # ---------------------------------------------------------------------------
@@ -74,22 +74,22 @@ def _make_mock_graph(final_state: dict, node_id: str = "mock_node"):
     return _MockGraph(final_state, node_id)
 
 
-def _make_subgraph_node(agent_dir, state_out, max_retry=None):
-    """创建 SubgraphRefNode 实例（不编译真实图）。"""
-    from framework.nodes.subgraph.subgraph_ref_node import SubgraphRefNode
-    from framework.config import AgentConfig
+def _make_subgraph_node(agent_dir, output_field=None, max_retry=None):
+    """创建 _SubgraphNodeWrapper 实例（注入 mock 图）。"""
+    from framework.agent_loader import _SubgraphNodeWrapper
 
-    cfg = AgentConfig(tools=[])
-    node_config = {
-        "id": Path(agent_dir).name.replace("/", "_"),
-        "agent_dir": agent_dir,
-        "state_in": {"task": "routing_context"},
-        "state_out": state_out,
-    }
-    if max_retry is not None:
-        node_config["max_retry"] = max_retry
+    node_id = Path(agent_dir).name.replace("/", "_")
+    if output_field is None:
+        output_field = DEFAULT_OUTPUT_FIELD
 
-    return SubgraphRefNode(cfg, node_config)
+    return _SubgraphNodeWrapper(
+        graph=None,  # Will be injected by test via wrapper._graph = ...
+        node_id=node_id,
+        graph_name=node_id,
+        input_schema=["routing_context"],
+        output_field=output_field,
+        max_retry=max_retry,
+    )
 
 
 def _default_parent_state(**overrides) -> dict:
@@ -151,20 +151,20 @@ async def test_state_has_subgraph_call_counts():
 
 @pytest.mark.asyncio
 async def test_subgraph_node_reads_max_retry():
-    """SubgraphRefNode 从 node_config 读取 max_retry。"""
-    node_with = _make_subgraph_node(DEBATE_GEMINI_DIR, DEFAULT_STATE_OUT, max_retry=3)
+    """SubgraphNodeWrapper 从 node_config 读取 max_retry。"""
+    node_with = _make_subgraph_node(DEBATE_GEMINI_DIR, DEFAULT_OUTPUT_FIELD, max_retry=3)
     assert node_with._max_retry == 3, f"max_retry 应为 3，实际: {node_with._max_retry}"
 
-    node_without = _make_subgraph_node(DEBATE_GEMINI_DIR, DEFAULT_STATE_OUT)
+    node_without = _make_subgraph_node(DEBATE_GEMINI_DIR, DEFAULT_OUTPUT_FIELD)
     assert node_without._max_retry is None, f"默认 max_retry 应为 None，实际: {node_without._max_retry}"
 
-    logger.info("PASS SubgraphRefNode max_retry 读取正确")
+    logger.info("PASS SubgraphNodeWrapper max_retry 读取正确")
 
 
 @pytest.mark.asyncio
 async def test_first_call_executes():
     """首次调用（count=0, max_retry=1）正常执行子图。"""
-    node = _make_subgraph_node(DEBATE_GEMINI_DIR, DEFAULT_STATE_OUT, max_retry=1)
+    node = _make_subgraph_node(DEBATE_GEMINI_DIR, DEFAULT_OUTPUT_FIELD, max_retry=1)
 
     fake_reply = "辩论结论：选方案A。"
     mock_graph = _make_mock_graph({"messages": [AIMessage(content=fake_reply)]})
@@ -182,7 +182,7 @@ async def test_first_call_executes():
 @pytest.mark.asyncio
 async def test_max_retry_blocks_second_call():
     """达到 max_retry 后返回限速 AIMessage，不执行子图。"""
-    node = _make_subgraph_node(DEBATE_GEMINI_DIR, DEFAULT_STATE_OUT, max_retry=1)
+    node = _make_subgraph_node(DEBATE_GEMINI_DIR, DEFAULT_OUTPUT_FIELD, max_retry=1)
 
     mock_graph = _make_mock_graph({"messages": [AIMessage(content="不应被执行")]})
     node._graph = mock_graph
@@ -200,8 +200,8 @@ async def test_max_retry_blocks_second_call():
 @pytest.mark.asyncio
 async def test_independent_counting():
     """不同子图独立计数，互不干扰。"""
-    node_brainstorm = _make_subgraph_node(DEBATE_GEMINI_DIR, DEFAULT_STATE_OUT, max_retry=1)
-    node_design = _make_subgraph_node(DEBATE_CLAUDE_DIR, DEFAULT_STATE_OUT, max_retry=1)
+    node_brainstorm = _make_subgraph_node(DEBATE_GEMINI_DIR, DEFAULT_OUTPUT_FIELD, max_retry=1)
+    node_design = _make_subgraph_node(DEBATE_CLAUDE_DIR, DEFAULT_OUTPUT_FIELD, max_retry=1)
 
     mock_graph = _make_mock_graph({"messages": [AIMessage(content="结论")]})
     node_design._graph = mock_graph
@@ -222,7 +222,7 @@ async def test_independent_counting():
 @pytest.mark.asyncio
 async def test_max_retry_none_unlimited():
     """max_retry=None 时不限次数。"""
-    node = _make_subgraph_node(DEBATE_GEMINI_DIR, DEFAULT_STATE_OUT, max_retry=None)
+    node = _make_subgraph_node(DEBATE_GEMINI_DIR, DEFAULT_OUTPUT_FIELD, max_retry=None)
 
     mock_graph = _make_mock_graph({"messages": [AIMessage(content="结论")]})
     node._graph = mock_graph
@@ -237,11 +237,11 @@ async def test_max_retry_none_unlimited():
 
 
 @pytest.mark.asyncio
-async def test_generic_state_out_mapping():
-    """通用 state_out 映射：apex_conclusion 正确写入 messages。"""
+async def test_generic_output_field_mapping():
+    """通用 output_field 映射：apex_conclusion 正确写入 messages。"""
     node = _make_subgraph_node(
         APEX_CODER_DIR,
-        {"apex_conclusion": "last_message"},
+        output_field="apex_conclusion",
         max_retry=None,
     )
 
@@ -262,7 +262,7 @@ async def test_generic_state_out_mapping():
 @pytest.mark.asyncio
 async def test_limit_message_has_actionable_content():
     """限速消息应包含足够信息让主节点做出决策。"""
-    node = _make_subgraph_node(DEBATE_GEMINI_DIR, DEFAULT_STATE_OUT, max_retry=2)
+    node = _make_subgraph_node(DEBATE_GEMINI_DIR, DEFAULT_OUTPUT_FIELD, max_retry=2)
     node._graph = _make_mock_graph({"messages": [AIMessage(content="x")]})
 
     result = await node(_default_parent_state(subgraph_call_counts={node._node_id: 2}))
@@ -331,33 +331,31 @@ async def test_main_graph_routing_edges_no_block():
 # ---------------------------------------------------------------------------
 
 @pytest.mark.asyncio
-async def test_state_out_direct_field_mapping():
-    """state_out 非 last_message 映射：按字段名直接取子图 state 值。"""
+async def test_output_field_extracts_last_message():
+    """output_field 从子图最后一条消息提取内容写入指定字段。"""
     node = _make_subgraph_node(
         APEX_CODER_DIR,
-        {"apex_conclusion": "custom_field"},  # 直接字段名，非 "last_message"
+        output_field="apex_conclusion",
         max_retry=None,
     )
 
-    # 子图返回的 state 含 custom_field
     mock_graph = _make_mock_graph({
-        "messages": [AIMessage(content="irrelevant")],
-        "custom_field": "直接映射的值",
+        "messages": [AIMessage(content="最终结论内容")],
     })
     node._graph = mock_graph
 
     result = await node(_default_parent_state())
 
-    assert result.get("apex_conclusion") == "直接映射的值", \
-        "state_out 按字段名映射应直接取子图 state 对应字段值"
+    assert result.get("apex_conclusion") == "最终结论内容", \
+        "output_field 应从子图最后一条消息提取内容"
 
-    logger.info("PASS state_out 直接字段映射")
+    logger.info("PASS output_field 提取最后消息")
 
 
 @pytest.mark.asyncio
 async def test_empty_messages_from_subgraph():
     """子图返回空 messages 时，state_out last_message 应降级为空字符串。"""
-    node = _make_subgraph_node(DEBATE_GEMINI_DIR, DEFAULT_STATE_OUT, max_retry=None)
+    node = _make_subgraph_node(DEBATE_GEMINI_DIR, DEFAULT_OUTPUT_FIELD, max_retry=None)
 
     # 子图返回空 messages 列表
     mock_graph = _make_mock_graph({"messages": []})
@@ -374,8 +372,8 @@ async def test_empty_messages_from_subgraph():
 
 @pytest.mark.asyncio
 async def test_consult_count_increments():
-    """SubgraphRefNode 每次正常执行应递增 consult_count。"""
-    node = _make_subgraph_node(DEBATE_GEMINI_DIR, DEFAULT_STATE_OUT, max_retry=None)
+    """SubgraphNodeWrapper 每次正常执行应递增 consult_count。"""
+    node = _make_subgraph_node(DEBATE_GEMINI_DIR, DEFAULT_OUTPUT_FIELD, max_retry=None)
 
     mock_graph = _make_mock_graph({"messages": [AIMessage(content="结论")]})
     node._graph = mock_graph
@@ -392,7 +390,7 @@ async def test_consult_count_increments():
 @pytest.mark.asyncio
 async def test_missing_subgraph_call_counts_key():
     """state 中完全没有 subgraph_call_counts 键时应容错处理。"""
-    node = _make_subgraph_node(DEBATE_GEMINI_DIR, DEFAULT_STATE_OUT, max_retry=2)
+    node = _make_subgraph_node(DEBATE_GEMINI_DIR, DEFAULT_OUTPUT_FIELD, max_retry=2)
 
     mock_graph = _make_mock_graph({"messages": [AIMessage(content="结论")]})
     node._graph = mock_graph
@@ -408,37 +406,34 @@ async def test_missing_subgraph_call_counts_key():
 
 
 @pytest.mark.asyncio
-async def test_multi_key_state_out():
-    """多键 state_out 同时映射：多个父图字段同时从子图提取。"""
+async def test_output_field_with_conclusion_message():
+    """output_field 映射后，messages 应含 [子图结论] 标记。"""
     node = _make_subgraph_node(
         APEX_CODER_DIR,
-        {
-            "apex_conclusion": "last_message",
-            "debate_conclusion": "summary_field",
-        },
+        output_field="apex_conclusion",
         max_retry=None,
     )
 
     mock_graph = _make_mock_graph({
         "messages": [AIMessage(content="最终消息内容")],
-        "summary_field": "摘要内容",
     })
     node._graph = mock_graph
 
     result = await node(_default_parent_state())
 
     assert result.get("apex_conclusion") == "最终消息内容", \
-        "apex_conclusion 应从 last_message 映射"
-    assert result.get("debate_conclusion") == "摘要内容", \
-        "debate_conclusion 应从 summary_field 直接映射"
+        "apex_conclusion 应从子图最终消息提取"
+    assert "messages" in result, "结果应含 messages"
+    assert "[子图结论]" in result["messages"][0].content, \
+        "messages 应含 [子图结论] 标记"
 
-    logger.info("PASS 多键 state_out 同时映射")
+    logger.info("PASS output_field + 结论消息")
 
 
 @pytest.mark.asyncio
 async def test_count_far_exceeds_max_retry():
     """count 远超 max_retry（如 count=50, max_retry=2）仍正确拦截。"""
-    node = _make_subgraph_node(DEBATE_GEMINI_DIR, DEFAULT_STATE_OUT, max_retry=2)
+    node = _make_subgraph_node(DEBATE_GEMINI_DIR, DEFAULT_OUTPUT_FIELD, max_retry=2)
 
     mock_graph = _make_mock_graph({"messages": [AIMessage(content="不应执行")]})
     node._graph = mock_graph

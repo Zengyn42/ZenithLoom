@@ -6,14 +6,10 @@
     "nodes": [
       {
         "id": "design_debate",
-        "type": "SUBGRAPH_REF",
+        "type": "SUBGRAPH_NODE",
         "agent_dir": "blueprints/functional_graphs/debate_claude_first",
-        "state_in": {
-          "task": "routing_context"
-        },
-        "state_out": {
-          "refined_plan": "last_message"
-        }
+        "input_schema": ["routing_context", "workspace", "project_root"],
+        "output_field": "refined_plan"
       },
       {
         "id": "claude_swarm",
