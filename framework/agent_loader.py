@@ -166,7 +166,7 @@ class EntityLoader:
             self._session_mgr = SessionManager(cfg.sessions_file, cfg.db_path)
         return self._session_mgr
 
-    async def build_graph(self, checkpointer=_DEFAULT, parent_persona: str = ""):
+    async def build_graph(self, checkpointer=_DEFAULT, parent_persona: str = "", is_subgraph: bool = False):
         """
         构建并返回编译好的 LangGraph 状态机。
 
@@ -174,6 +174,8 @@ class EntityLoader:
             checkpointer: LangGraph checkpointer（None=无，_DEFAULT=自动创建 SQLite）
             parent_persona: 父图透传的 persona（仅 SUBGRAPH_NODE 使用）。
                            会追加到子图自身 system_prompt 之后。
+            is_subgraph: True 时使用 SubgraphInputState 作为 input schema，
+                         原生隔离父图 messages（由 SUBGRAPH_NODE 路径传入）。
 
         优先级：
           1. agent 目录下的 graph.py（定义 build_graph(loader, checkpointer)）
@@ -213,6 +215,7 @@ class EntityLoader:
             return await _build_declarative(
                 graph_dict, config, system_prompt, checkpointer,
                 blueprint_dir=str(self._dir),
+                is_subgraph=is_subgraph,
             )
 
         # Priority 3: GraphSpec 默认图
@@ -660,32 +663,6 @@ def _get_state_schemas() -> dict:
     return get_all_schemas()
 
 
-def _make_subgraph_input_transform(reset_messages: bool):
-    """
-    创建子图 input transform。
-
-    reset_messages=True（默认，任务型）：
-        将 routing_context 转为 HumanMessage，清除父图对话历史，
-        子图只看到当前任务，不知道父图历史。
-
-    reset_messages=False（上下文型）：
-        原样透传父图 state，子图可看到完整对话历史。
-    """
-    from langchain_core.messages import HumanMessage
-    from langchain_core.runnables import RunnableLambda
-
-    def _transform(state: dict) -> dict:
-        if not reset_messages:
-            return state
-        task = state.get("routing_context", "") or (
-            state["messages"][-1].content
-            if state.get("messages")
-            else ""
-        )
-        return {**state, "messages": [HumanMessage(content=task)] if task else []}
-
-    return RunnableLambda(_transform)
-
 
 async def _build_declarative(
     graph_spec: dict,
@@ -693,11 +670,15 @@ async def _build_declarative(
     system_prompt: str,
     checkpointer,
     blueprint_dir: str = "",
+    is_subgraph: bool = False,
 ) -> object:
     """
     从 entity.json["graph"]（含 nodes + edges）构建 LangGraph 状态机。
 
     执行三步验证后再构建图，任意失败直接抛 ValueError。
+
+    is_subgraph=True：子图模式，使用 SubgraphInputState 作为 input schema，
+                      让 LangGraph 原生阻止父图的 messages 进入子图。
     """
     import framework.builtins  # 确保内置类型已注册
 
@@ -706,7 +687,7 @@ async def _build_declarative(
     from langgraph.graph import END, START, StateGraph
 
     from framework.registry import get_condition, get_node_factory, get_all_schemas
-    from framework.schema.base import BaseAgentState
+    from framework.schema.base import BaseAgentState, SubgraphInputState
 
     # ── Step 0: routing_hint 注入 system_prompt ──────────────────────────────
     if system_prompt:
@@ -730,17 +711,26 @@ async def _build_declarative(
     import framework.schema  # noqa: F401 — 确保内置 schema 已注册
     all_schemas = get_all_schemas()
     state_schema = all_schemas.get(graph_spec.get("state_schema", "base_schema"), BaseAgentState)
-    builder = StateGraph(state_schema)
+
+    # is_subgraph=True 且使用 base_schema → 子图模式，使用 SubgraphInputState 隔离父图 messages。
+    # 自定义 schema（如 colony_coder_schema）含有 base_schema 以外的字段，
+    # SubgraphInputState 不覆盖这些字段，不能应用 input 隔离（否则自定义字段会丢失）。
+    _schema_name = graph_spec.get("state_schema", "base_schema")
+    if is_subgraph and _schema_name == "base_schema":
+        builder = StateGraph(state_schema, input_schema=SubgraphInputState)
+    else:
+        builder = StateGraph(state_schema)
 
     for node_def in graph_spec.get("nodes", []):
         node_id = node_def["id"]
         node_type = node_def.get("type", "")
 
         if node_type == "SUBGRAPH":
-            # 内联子图：递归构建（无 checkpointer，父图负责）
+            # 内联子图：递归构建（无 checkpointer，父图负责；is_subgraph=True 隔离 messages）
             inner = await _build_declarative(
                 node_def["graph"], config, system_prompt, None,
                 blueprint_dir=blueprint_dir,
+                is_subgraph=True,
             )
             builder.add_node(node_id, _wrap_node_for_flow_log(node_id, inner))
 
@@ -777,14 +767,11 @@ async def _build_declarative(
             # SUBGRAPH_NODE 的节点等同于主图节点，始终透传 persona
             _pass_persona = system_prompt or ""
             inner_graph = await inner_loader.build_graph(
-                checkpointer=None, parent_persona=_pass_persona,
+                checkpointer=None, parent_persona=_pass_persona, is_subgraph=True,
             )
 
-            # 原生 LangGraph 子图接入：input_transform | compiled_subgraph
-            # reset_messages: True（默认）= 任务型，False = 上下文型（透传父图 messages）
-            _reset_messages = node_def.get("reset_messages", True)
-            _transform = _make_subgraph_input_transform(_reset_messages)
-            builder.add_node(node_id, _transform | inner_graph)
+            # 原生 LangGraph 子图接入：SubgraphInputState input schema 原生隔离父图 messages
+            builder.add_node(node_id, inner_graph)
 
         else:
             factory = get_node_factory(node_type)
