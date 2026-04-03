@@ -54,7 +54,8 @@ async def test_agent_json_structure():
     nodes = graph["nodes"]
     edges = graph["edges"]
     assert len(nodes) == 1, f"应为单节点图，实际 {len(nodes)} 个节点"
-    assert len(edges) == 2, f"应有 2 条边（start→apex, apex→end），实际 {len(edges)}"
+    # edges 可为空（框架从 entry/exit 自动生成 start→entry 和 exit→end 边）
+    assert isinstance(edges, list), f"edges 应为 list，实际: {type(edges)}"
 
     # 节点配置
     node = nodes[0]
@@ -65,10 +66,9 @@ async def test_agent_json_structure():
     assert "Agent" in node["tools"], "tools 中必须含 Agent（用于 spawn 子 agent）"
     assert node["setting_sources"] is None, "setting_sources 应为 null（节省 token）"
 
-    # 边
-    edge_pairs = {(e["from"], e["to"]) for e in edges}
-    assert ("__start__", "apex_main") in edge_pairs, "缺少 __start__ → apex_main 边"
-    assert ("apex_main", "__end__") in edge_pairs, "缺少 apex_main → __end__ 边"
+    # 边（框架通过 entry/exit 字段自动生成 start→entry 和 exit→end 边，edges 列表可为空）
+    assert graph.get("entry") == "apex_main", "graph.entry 应为 apex_main"
+    assert graph.get("exit") == "apex_main", "graph.exit 应为 apex_main"
 
     logger.info("✅ entity.json structure OK")
 

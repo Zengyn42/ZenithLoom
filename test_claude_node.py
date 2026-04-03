@@ -85,12 +85,23 @@ async def test_call_llm_with_system_prompt():
 
 # ── Test 3: resume 已有 session ────────────────────────────────────────────
 
-async def test_call_llm_resume(existing_sid: str):
-    """Resume 已有 session，验证 session 连续性。"""
-    print(f"--- Test 3: call_llm (resume sid={existing_sid[:8]}...) ---")
-    node = _make_node(system_prompt="You are a test assistant.")
+async def test_call_llm_resume():
+    """Resume 已有 session，验证 session 连续性。先建 session 再 resume。"""
+    print("--- Test 3: call_llm (resume) ---")
+    node = _make_node(system_prompt="You are a test assistant. Be brief.")
+    # 先建立 session
+    _, existing_sid = await node.call_llm(
+        prompt="Remember the word: BANANA.",
+        session_id="",
+        tools=["Read"],
+        cwd=None,
+    )
+    assert existing_sid, "Failed to get session_id for resume test"
+    print(f"   created session: {existing_sid[:8]}...")
+
+    # 再 resume
     text, new_sid = await node.call_llm(
-        prompt="What did I ask you in the previous message?",
+        prompt="What word did I ask you to remember?",
         session_id=existing_sid,
         tools=["Read"],
         cwd=None,
