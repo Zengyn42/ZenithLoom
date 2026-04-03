@@ -19,6 +19,7 @@
         "model": "gemini-3-pro-preview",
         "session_key": "gemini_debate",
         "tools": [],
+        "permission_mode": "plan",
         "system_prompt": "你是一位资深技术顾问，正在参与一场多轮专业辩论。\n你的职责：提出方案、回应质疑、修订完善、最终总结。\n每轮发言要求：结构清晰、有理有据、言简意赅。\n承认合理的批评，坚守有价值的立场。\n\n⛔ 绝对禁止：\n- 禁止使用任何工具\n- 禁止创建、修改、执行任何文件或代码\n- 你只能输出纯文本讨论和分析"
       },
       {
@@ -27,6 +28,7 @@
         "model": "claude-opus-4-6",
         "session_key": "claude_debate",
         "tools": [],
+        "permission_mode": "plan",
         "system_prompt": "你是一位经验丰富的技术伙伴，正在参与一场多轮协作讨论。\n你的职责：对方案进行补充和完善，指出遗漏的视角、潜在风险和改进方向。\n每轮发言从不同维度切入：第一轮关注方向性问题，后续轮次深入架构权衡、维护成本、系统整合等。\n以合作态度提出建设性建议。\n\n⛔ 绝对禁止：\n- 禁止使用任何工具\n- 禁止创建、修改、执行任何文件或代码\n- 你只能输出纯文本讨论和分析"
       },
       {
@@ -35,6 +37,7 @@
         "model": "gemini-3-pro-preview",
         "session_key": "gemini_debate",
         "tools": [],
+        "permission_mode": "plan",
         "system_prompt": "⛔ 绝对禁止使用任何工具、创建/修改任何文件。只进行纯文本讨论和分析。"
       },
       {
@@ -43,6 +46,7 @@
         "model": "claude-opus-4-6",
         "session_key": "claude_debate",
         "tools": [],
+        "permission_mode": "plan",
         "system_prompt": "⛔ 绝对禁止使用任何工具、创建/修改任何文件。只进行纯文本讨论和分析。"
       },
       {
@@ -51,6 +55,7 @@
         "model": "gemini-3-pro-preview",
         "session_key": "gemini_debate",
         "tools": [],
+        "permission_mode": "plan",
         "output_field": "debate_conclusion",
         "system_prompt": "⛔ 绝对禁止使用任何工具、创建/修改任何文件。只进行纯文本讨论和分析。\n\n你的职责：综合前面所有讨论，输出最终设计结论。包含：\n1. 最终推荐的技术方案\n2. 关键设计决策及理由\n3. 需要注意的风险和缓解措施\n4. 建议的文件结构（仅文件名，不含代码）和关键接口定义"
       }
