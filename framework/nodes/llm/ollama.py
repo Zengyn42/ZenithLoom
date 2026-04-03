@@ -180,7 +180,8 @@ class OllamaNode(AgentNode):
 
         # tool_rules 关键词匹配（与基类 __call__ 中的 _select_tools 一致）
         lm = (state.get("messages") or [])
-        latest_input = lm[-1].content if lm else ""
+        last = lm[-1] if lm else None
+        latest_input = (getattr(last, "content", None) or last.get("content", "") if last else "") or ""
         effective_tools = self._select_tools(latest_input) or []
 
         # 自动发现动态注册的工具（heartbeat_* 等）
