@@ -3,7 +3,7 @@ BaseInterface — 共享基类，CLI / Discord / GChat 均继承。
 
 通用命令（所有 connector 共享，在此实现）：
   !help / !topology / !debug / !stream / !tokens / !resources
-  !new / !switch / !sessions / !session / !clear
+  !new / !switch / !sessions / !session
   !memory / !compact / !reset / !setproject / !project
   !snapshots / !rollback
 
@@ -429,15 +429,6 @@ class BaseInterface:
             cur_tid  = self._resolve_thread_id()
             cur_name = self._resolve_session_name() or "（默认）"
             return f"当前 session: {cur_name} | thread_id: {cur_tid}"
-
-        if cmd == "!clear":
-            cur_name = self._resolve_session_name() or "default"
-            old_env  = session_mgr.get_envelope(cur_name)
-            workspace = old_env.workspace if old_env else ""
-            session_mgr.delete(cur_name)
-            new_env = session_mgr.create_session(cur_name, workspace=workspace)
-            controller._active_thread_id = new_env.thread_id
-            return f"Session '{cur_name}' 已重置。(new thread: {new_env.thread_id[:8]})"
 
         # ── Checkpoint 管理 ───────────────────────────────────────────────
         if cmd == "!memory":
