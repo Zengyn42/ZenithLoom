@@ -116,32 +116,21 @@ def _make_mock_graph(final_state: dict, node_id: str = "gemini_conclusion"):
 
 
 async def test_input_transform_state_mapping():
-    """_make_subgraph_input_transform 正确转换 routing_context → HumanMessage 并透传 state。"""
-    from langchain_core.messages import HumanMessage
-    from framework.agent_loader import _make_subgraph_input_transform
+    """SubgraphInputState 不含 messages，routing_context 和 state 字段正确透传。"""
+    from framework.schema.base import SubgraphInputState
 
-    transform = _make_subgraph_input_transform(reset_messages=True)
+    fields = SubgraphInputState.__annotations__
 
-    parent_state = {
-        "routing_context": "微服务 vs 单体架构选型",
-        "knowledge_vault": "/home/kingy/ObsidianVault",
-        "project_docs": "/home/kingy/Projects/Genesis/docs",
-        "debate_conclusion": "",
-        "messages": [HumanMessage(content="旧消息")],
-    }
+    # messages 字段不在 input schema 中（原生隔离父图 messages）
+    assert "messages" not in fields, "SubgraphInputState 不应含 messages 字段"
 
-    result = transform.invoke(parent_state)
+    # 相关 state 字段均在 input schema 中
+    assert "routing_context" in fields, "routing_context 应在 SubgraphInputState 中"
+    assert "knowledge_vault" in fields, "knowledge_vault 应在 SubgraphInputState 中"
+    assert "project_docs" in fields, "project_docs 应在 SubgraphInputState 中"
+    assert "debate_conclusion" in fields, "debate_conclusion 应在 SubgraphInputState 中"
 
-    # 验证 messages 被替换为来自 routing_context 的 HumanMessage
-    assert len(result["messages"]) == 1, "transform 应产生 1 条消息"
-    assert result["messages"][0].content == "微服务 vs 单体架构选型", \
-        "HumanMessage 应来自 routing_context"
-    assert result["knowledge_vault"] == "/home/kingy/ObsidianVault", \
-        "knowledge_vault 应透传"
-    assert result["project_docs"] == "/home/kingy/Projects/Genesis/docs", \
-        "project_docs 应透传"
-
-    logger.info("✅ input_transform mapping OK: routing_context → HumanMessage")
+    logger.info("✅ SubgraphInputState: routing_context 和 state 字段均正确声明，messages 已隔离")
 
 
 async def test_llm_node_output_field():

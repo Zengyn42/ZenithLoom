@@ -46,7 +46,35 @@ class BaseAgentState(TypedDict):
     connector: str              # 接口类型标识（"cli" / "discord"），由 BaseInterface 注入，LlmNode 用于动态调整 user_msg_prefix
 
 
+class SubgraphInputState(TypedDict):
+    """子图 input schema：包含除 messages 以外的所有 BaseAgentState 字段。
+
+    用于 StateGraph(BaseAgentState, input=SubgraphInputState)，
+    让 LangGraph 原生阻止父图的 messages 进入子图。
+    子图以空 messages 启动，LlmNode 从 routing_context 获取任务。
+    """
+    routing_context: str
+    routing_target: str
+    workspace: str
+    project_root: str
+    project_meta: dict
+    last_stable_commit: str
+    retry_count: int
+    rollback_reason: str
+    node_sessions: Annotated[dict, _merge_dict]
+    knowledge_vault: str
+    project_docs: str
+    debate_conclusion: str
+    apex_conclusion: str
+    knowledge_result: str
+    discovery_report: str
+    refined_plan: str
+    connector: str
+    # messages 字段故意缺失 → LangGraph 不从父图透传 messages
+
+
 # Auto-register on import
 from framework.registry import register_schema
 
 register_schema("base_schema", BaseAgentState)
+register_schema("subgraph_input_schema", SubgraphInputState)

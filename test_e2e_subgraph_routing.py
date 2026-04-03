@@ -4,11 +4,13 @@ E2E 测试：子图路由 + LlmNode output_field + 原生子图接入
 覆盖：
   1.  LlmNode output_field 把 LLM 输出自动写入指定 state 字段
   2.  output_field 为 None 时不写入额外字段
-  3.  _make_subgraph_input_transform 从 routing_context 构造 HumanMessage
-  4.  _make_subgraph_input_transform routing_context 为空时从 messages 取 fallback
-  5.  主图编译后 routing_to 边正常工作
-  6.  LlmNode 无路由时重置 rollback_reason 但不重置 retry_count
-  7.  LlmNode 有路由信号时保留路由信息
+  3.  SubgraphInputState 不含 messages（LangGraph 原生隔离父图 messages）
+  4.  SubgraphInputState 已在 schema 注册表中注册
+  5.  LlmNode 子图模式（messages 为空）直接从 routing_context 读取任务
+  6.  LlmNode 父图模式（routing_context 为空）fallback 到 messages[-1]
+  7.  主图编译后 routing_to 边正常工作
+  8.  LlmNode 无路由时重置 rollback_reason 但不重置 retry_count
+  9.  LlmNode 有路由信号时保留路由信息
 
 运行：
     pytest test_e2e_subgraph_routing.py -v
@@ -139,89 +141,102 @@ async def test_output_field_apex_conclusion():
 
 
 # ---------------------------------------------------------------------------
-# 测试用例：_make_subgraph_input_transform 原生 input transform
+# 测试用例：SubgraphInputState input schema 隔离
 # ---------------------------------------------------------------------------
 
-@pytest.mark.asyncio
-async def test_input_transform_uses_routing_context():
-    """_make_subgraph_input_transform 从 routing_context 构造 HumanMessage。"""
-    from framework.agent_loader import _make_subgraph_input_transform
+def test_subgraph_input_state_excludes_messages():
+    """SubgraphInputState 不含 messages 字段（LangGraph 原生隔离机制）。"""
+    from framework.schema.base import SubgraphInputState
 
-    transform = _make_subgraph_input_transform(reset_messages=True)
-    state = {
-        "routing_context": "微服务架构选型",
-        "messages": [HumanMessage(content="旧消息")],
-    }
+    fields = SubgraphInputState.__annotations__
+    assert "messages" not in fields, "SubgraphInputState 不应含 messages 字段"
+    assert "routing_context" in fields, "SubgraphInputState 应含 routing_context"
+    assert "workspace" in fields
+    assert "project_root" in fields
 
-    result = transform.invoke(state)
-
-    assert len(result["messages"]) == 1, "transform 应产生 1 条消息"
-    assert result["messages"][0].content == "微服务架构选型", "消息应来自 routing_context"
-    assert result["routing_context"] == "微服务架构选型", "routing_context 应透传"
-
-    logger.info("PASS input_transform 使用 routing_context")
+    logger.info("PASS SubgraphInputState 不含 messages 字段")
 
 
-@pytest.mark.asyncio
-async def test_input_transform_fallback_to_messages():
-    """routing_context 为空时从 messages[-1] 取 fallback。"""
-    from framework.agent_loader import _make_subgraph_input_transform
+def test_subgraph_input_state_registered():
+    """SubgraphInputState 已在 schema 注册表中注册。"""
+    from framework.registry import get_all_schemas
+    schemas = get_all_schemas()
+    assert "subgraph_input_schema" in schemas, "subgraph_input_schema 应在注册表中"
+    from framework.schema.base import SubgraphInputState
+    assert schemas["subgraph_input_schema"] is SubgraphInputState
 
-    transform = _make_subgraph_input_transform(reset_messages=True)
-    state = {
-        "routing_context": "",
-        "messages": [HumanMessage(content="这是用户输入")],
-    }
-
-    result = transform.invoke(state)
-
-    assert result["messages"][0].content == "这是用户输入", "应从 messages[-1] fallback"
-
-    logger.info("PASS input_transform fallback to messages")
+    logger.info("PASS subgraph_input_schema 已注册")
 
 
 @pytest.mark.asyncio
-async def test_input_transform_passes_state_fields():
-    """_make_subgraph_input_transform 透传所有 state 字段给子图。"""
-    from framework.agent_loader import _make_subgraph_input_transform
+async def test_llm_node_reads_routing_context_directly():
+    """LlmNode 在子图模式（messages 为空）时直接从 routing_context 获取任务。"""
+    captured = {}
 
-    transform = _make_subgraph_input_transform(reset_messages=True)
+    class _Impl:
+        async def call_llm(self, prompt, session_id="", tools=None, cwd=None, history=None):
+            captured["prompt"] = prompt
+            return "回复", "mock-sid"
+
+    from framework.config import AgentConfig
+    from framework.nodes.llm.llm_node import LlmNode
+
+    class _MockImpl(LlmNode):
+        async def call_llm(self, prompt, session_id="", tools=None, cwd=None, history=None):
+            captured["prompt"] = prompt
+            return "回复", "mock-sid"
+
+    node = _MockImpl(AgentConfig(tools=[]), {"id": "test_node"})
+
+    # 子图模式：messages 为空，routing_context 有值
     state = {
-        "routing_context": "议题",
-        "workspace": "/tmp/work",
-        "project_root": "/tmp/proj",
-        "knowledge_vault": "/tmp/vault",
-        "project_docs": "/tmp/docs",
         "messages": [],
+        "routing_context": "微服务架构选型",
+        "routing_target": "",
+        "node_sessions": {},
+        "rollback_reason": "",
+        "project_root": "",
+        "workspace": "",
+        "project_meta": {},
     }
+    await node(state)
+    assert "微服务架构选型" in captured["prompt"], \
+        "routing_context 应直接出现在 prompt 中"
 
-    result = transform.invoke(state)
-
-    assert result["workspace"] == "/tmp/work"
-    assert result["project_root"] == "/tmp/proj"
-    assert result["knowledge_vault"] == "/tmp/vault"
-    assert result["project_docs"] == "/tmp/docs"
-
-    logger.info("PASS state 字段透传")
+    logger.info("PASS LlmNode 直接读 routing_context")
 
 
 @pytest.mark.asyncio
-async def test_input_transform_no_reset():
-    """reset_messages=False 时原样透传 messages。"""
-    from framework.agent_loader import _make_subgraph_input_transform
+async def test_llm_node_fallback_to_messages():
+    """LlmNode 在父图模式（routing_context 为空）时从 messages[-1] 获取输入。"""
+    captured = {}
 
-    transform = _make_subgraph_input_transform(reset_messages=False)
-    original_msgs = [HumanMessage(content="历史消息1"), HumanMessage(content="历史消息2")]
+    from framework.config import AgentConfig
+    from framework.nodes.llm.llm_node import LlmNode
+
+    class _MockImpl(LlmNode):
+        async def call_llm(self, prompt, session_id="", tools=None, cwd=None, history=None):
+            captured["prompt"] = prompt
+            return "回复", "mock-sid"
+
+    node = _MockImpl(AgentConfig(tools=[]), {"id": "test_node"})
+
+    # 父图模式：messages 有内容，routing_context 为空
     state = {
-        "routing_context": "议题",
-        "messages": original_msgs,
+        "messages": [HumanMessage(content="这是用户输入")],
+        "routing_context": "",
+        "routing_target": "",
+        "node_sessions": {},
+        "rollback_reason": "",
+        "project_root": "",
+        "workspace": "",
+        "project_meta": {},
     }
+    await node(state)
+    assert "这是用户输入" in captured["prompt"], \
+        "routing_context 为空时应 fallback 到 messages[-1]"
 
-    result = transform.invoke(state)
-
-    assert result["messages"] is original_msgs, "reset_messages=False 时 messages 应原样透传"
-
-    logger.info("PASS input_transform reset_messages=False 透传 messages")
+    logger.info("PASS LlmNode fallback to messages[-1]")
 
 
 # ---------------------------------------------------------------------------

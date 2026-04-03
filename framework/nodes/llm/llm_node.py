@@ -271,8 +271,8 @@ class LlmNode:
         """
 
     async def __call__(self, state: dict) -> dict:
-        msgs = state["messages"]
-        latest_input = msgs[-1].content
+        msgs = state.get("messages") or []
+        latest_input = state.get("routing_context") or (msgs[-1].content if msgs else "")
         # project_root（!setproject）优先；退回 per-session workspace
         project_root = state.get("project_root", "") or state.get("workspace", "") or None
 
