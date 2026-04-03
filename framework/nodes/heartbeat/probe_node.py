@@ -15,6 +15,7 @@ node_config 字段：
 """
 
 import asyncio
+import json
 import logging
 import os
 import subprocess
@@ -73,7 +74,11 @@ def _probe_claude(timeout: int = 30) -> bool:
             stdin=subprocess.DEVNULL,
             env=env,
         )
-        return "ok" in r.stdout.lower()
+        data = json.loads(r.stdout)
+        if data.get("is_error"):
+            logger.warning(f"[probe] claude is_error=true: {data.get('result', '')!r}")
+            return False
+        return "ok" in data.get("result", "").lower()
     except Exception:
         return False
 
