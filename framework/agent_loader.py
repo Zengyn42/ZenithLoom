@@ -652,8 +652,11 @@ def _collect_routing_hints(graph_spec: dict) -> str:
         if not agent_json_path.exists():
             continue
         try:
-            sub_json = json.loads(agent_json_path.read_text(encoding="utf-8"))
-            hint = sub_json.get("routing_hint", "")
+            # 父节点本地声明的 routing_hint 优先（允许每个父图为同一子图定制提示）
+            hint = node_def.get("routing_hint") or ""
+            if not hint:
+                sub_json = json.loads(agent_json_path.read_text(encoding="utf-8"))
+                hint = sub_json.get("routing_hint", "")
             if hint:
                 hints.append(f'  - "{node_id}": {hint} <!-- [auto-injected from {agent_dir}/entity.json:routing_hint] -->')
         except Exception:
