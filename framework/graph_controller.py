@@ -73,6 +73,75 @@ class GraphController:
         """返回 LangGraph 调用配置（thread_id）。"""
         return {"configurable": {"thread_id": self._active_thread_id}}
 
+    async def _astream_graph(self, init_state: dict, config: dict) -> dict:
+        """
+        用 astream(subgraphs=True) 替代 ainvoke，同时：
+        1. 收集最终 state（用 values 模式最后一帧，避免手动 reducer 合并）
+        2. 在子图节点完成时通过 _stream_cb 推送进度标题
+
+        返回最终 result dict（等价于原 ainvoke 的返回值）。
+
+        LangGraph 1.x 事件格式（subgraphs=True）：
+          (namespace: tuple, mode: str, data: dict)
+          namespace 元素包含 UUID 后缀，如 "subgraph_node:3dc9ac9a-..."
+          需 strip_uuid() 清理后构造可读路径。
+        """
+        from framework.nodes.llm.llm_node import get_stream_callback
+
+        def _strip_uuid(name: str) -> str:
+            """去掉 'node_name:uuid' 中的 UUID 部分，只保留节点名。"""
+            return name.split(":")[0]
+
+        final_state: dict = {}
+        completed_subgraph_nodes: set = set()   # 去重，每个子图节点只提示一次
+
+        async for event in self._graph.astream(
+            init_state,
+            config=config,
+            stream_mode=["updates", "values"],
+            subgraphs=True,
+        ):
+            # event 格式：(namespace_tuple, mode_str, data)
+            namespace, mode, data = event
+
+            if mode == "values":
+                # 父图快照：持续更新，最后一帧即最终 state
+                if namespace == ():
+                    final_state = data
+
+            elif mode == "updates" and namespace:
+                # 子图内部节点完成事件 → 推送进度标题
+                if not isinstance(data, dict):
+                    continue
+                for node_id in data:
+                    if node_id in ("__start__", "__end__"):
+                        continue
+                    key = (namespace, node_id)
+                    if key in completed_subgraph_nodes:
+                        continue
+                    completed_subgraph_nodes.add(key)
+
+                    # 构造可读进度标题（去除 UUID 后缀）
+                    clean_ns = tuple(_strip_uuid(seg) for seg in namespace)
+                    subgraph_path = " › ".join(clean_ns)
+                    clean_node = _strip_uuid(node_id)
+                    label = f"\n⚙️ {subgraph_path} › {clean_node}\n"
+
+                    # 通过 _stream_cb 推给 Discord（若已注册）
+                    cb = get_stream_callback()
+                    if cb:
+                        try:
+                            cb(label)
+                        except Exception:
+                            pass  # 回调失败不影响主流程
+
+        # Fallback：若 values 帧为空（某些图版本不发 values 事件），用 ainvoke 补全
+        if not final_state:
+            logger.warning("[controller] _astream_graph: no values frame received, falling back to ainvoke")
+            final_state = await self._graph.ainvoke(init_state, config=config)
+
+        return final_state
+
     async def run(self, user_input: str) -> str:
         """
         执行图，返回最终 AI 消息内容。
@@ -92,7 +161,7 @@ class GraphController:
 
         push_graph_scope(self._entity_name)
         try:
-            result = await self._graph.ainvoke(
+            result = await self._astream_graph(
                 {"messages": [HumanMessage(content=user_input)], "workspace": workspace},
                 config=self.get_config(),
             )
@@ -343,7 +412,7 @@ class GraphController:
 
         push_graph_scope(self._entity_name)
         try:
-            result = await self._graph.ainvoke(
+            result = await self._astream_graph(
                 init_state,
                 config={"configurable": {"thread_id": thread_id}},
             )
