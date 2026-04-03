@@ -357,17 +357,14 @@ class LlmNode:
             }
 
         # ── LLM 调用（持资源锁）────────────────────────────────────────────
-        trace = None
         try:
             async with acquire_resource(
                 self._resource_lock,
                 timeout=self._resource_timeout,
                 holder=self._node_id,
             ):
-                from framework.nodes.llm.resilience import invoke_with_resilience
-                raw_output, new_session_id, trace = await invoke_with_resilience(
-                    self,
-                    prompt=prompt,
+                raw_output, new_session_id = await self.call_llm(
+                    prompt,
                     session_id=session_id,
                     tools=tools,
                     cwd=project_root,
@@ -390,7 +387,7 @@ class LlmNode:
 
         # ── 路由信号检测（用注册的 SignalParser）────────────────────────────
         # 信号格式：{"route": "<node_id>", "context": "<question|background>"}
-        # _enable_routing 默认 True（LlmNode 基类），子类（GeminiCLINode 等）可设为 False
+        # _enable_routing 默认 True；GeminiCLINode 等子类可设为 False 禁止路由
         _enable_routing: bool = getattr(self, "_enable_routing", True)
         signal = self._signal_parser.parse(raw_output) if _enable_routing else None
         routing_target = signal.get("route", "") if signal else ""
@@ -421,9 +418,6 @@ class LlmNode:
         # 使子图结论通过 LangGraph 原生 state 合并传回父图。
         if self._output_field and raw_output:
             result[self._output_field] = raw_output
-
-        if trace:
-            result["resilience_log"] = [trace.to_dict()]
 
         return result
 
