@@ -69,7 +69,6 @@ Vault 路径：`/home/kingy/Foundation/Vault/`
 | `!sessions` | 列出所有保存的 sessions |
 | `!new <名称>` | 创建并切换新 session |
 | `!switch <名称>` | 切换已有 session |
-| `!clear` | 重置当前 session |
 | `!memory` | 查看 checkpoint 统计 |
 | `!compact [N]` | 压缩 session，保留最近 N 条（默认 20） |
 | `!reset confirm` | 清空全部记忆（不可恢复） |
