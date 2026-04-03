@@ -1,7 +1,0 @@
-{
-  "transport": "sse",
-  "url": "http://127.0.0.1:8105/sse",
-  "command": "python -m mcp_servers.vault_sync.server --transport sse --port 8105",
-  "startup": "auto",
-  "shared": true
-}

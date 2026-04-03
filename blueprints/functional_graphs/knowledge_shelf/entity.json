@@ -7,6 +7,8 @@
   "max_retries": 0,
   "persona_files": [],
   "graph": {
+    "entry": "vault_sync_pull",
+    "exit": "vault_sync_push",
     "nodes": [
       {
         "id": "vault_sync_pull",
@@ -40,10 +42,8 @@
       }
     ],
     "edges": [
-      {"id": "e_start",      "from": "__start__",       "to": "vault_sync_pull"},
       {"id": "e_pull_2_obs",  "from": "vault_sync_pull", "to": "gemini_obsidian"},
-      {"id": "e_obs_2_push",  "from": "gemini_obsidian", "to": "vault_sync_push"},
-      {"id": "e_end",         "from": "vault_sync_push", "to": "__end__"}
+      {"id": "e_obs_2_push",  "from": "gemini_obsidian", "to": "vault_sync_push"}
     ]
   }
 }

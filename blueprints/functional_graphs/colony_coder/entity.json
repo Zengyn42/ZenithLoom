@@ -20,8 +20,8 @@
         "agent_dir": "../colony_coder_qa"
       }
     ],
+    "entry": "plan",
     "edges": [
-      {"from": "__start__", "to": "plan"},
       {"from": "plan",      "to": "execute"},
       {"from": "execute",   "to": "qa"},
       {"from": "qa",        "to": "execute",  "type": "routing_to"},

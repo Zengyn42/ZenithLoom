@@ -28,8 +28,8 @@
         "type": "DETERMINISTIC"
       }
     ],
+    "entry": "inject_task_context",
     "edges": [
-      {"from": "__start__",          "to": "inject_task_context"},
       {"from": "inject_task_context", "to": "code_gen"},
       {"from": "code_gen",           "to": "run_tests"},
       {"from": "run_tests",          "to": "test_route"},

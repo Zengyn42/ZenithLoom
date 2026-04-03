@@ -31,8 +31,8 @@
         "type": "DETERMINISTIC"
       }
     ],
+    "entry": "design_debate",
     "edges": [
-      {"from": "__start__",               "to": "design_debate"},
       {"from": "design_debate",           "to": "claude_swarm"},
       {"from": "claude_swarm",            "to": "task_decompose"},
       {"from": "task_decompose",          "to": "decomposition_validator"},

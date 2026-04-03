@@ -343,10 +343,6 @@ class EntityLoader:
 
         hb_ref = entity.get("heartbeat")
         if not hb_ref:
-            # 没有 heartbeat 配置，但如果 agent 有 EXTERNAL_TOOL 节点，
-            # 仍需连接 heartbeat proxy（提供 heartbeat_register_monitor 工具）
-            if self._has_external_tool_nodes():
-                return await self._connect_heartbeat_proxy_only()
             logger.debug(f"[agent_loader] {self.name!r}: no heartbeat configuration")
             return None
 
@@ -407,42 +403,6 @@ class EntityLoader:
         # 注册全局引用，供 ExternalToolNode 复用持久 SSE 连接
         from framework.nodes.llm.heartbeat_tools import set_active_proxy
         set_active_proxy(proxy)
-        return proxy
-
-    def _has_external_tool_nodes(self) -> bool:
-        """检查当前 agent 的 graph 中是否有 EXTERNAL_TOOL 节点。"""
-        try:
-            nodes = self.json.get("graph", {}).get("nodes", [])
-            return any(n.get("type") == "EXTERNAL_TOOL" for n in nodes)
-        except Exception:
-            return False
-
-    async def _connect_heartbeat_proxy_only(self):
-        """仅建立 heartbeat proxy 连接 + 注册工具，不加载 blueprint。
-
-        用于没有 heartbeat 配置但有 EXTERNAL_TOOL 的 agent，
-        使 LLM 能使用 heartbeat_register_monitor 工具。
-        """
-        from framework.nodes.llm.heartbeat_tools import HeartbeatMCPProxy
-        proxy = HeartbeatMCPProxy()
-        try:
-            await proxy.connect()
-        except Exception as e:
-            logger.warning(
-                f"[agent_loader] {self.name!r}: heartbeat proxy connect failed: {e}"
-            )
-            return None
-
-        from framework.nodes.llm.heartbeat_tools import make_heartbeat_tools
-        from framework.nodes.llm.tools import TOOL_REGISTRY, TOOL_SCHEMAS
-        registry, schemas = make_heartbeat_tools(proxy)
-        TOOL_REGISTRY.update(registry)
-        TOOL_SCHEMAS.update(schemas)
-
-        self._heartbeat_proxy = proxy
-        from framework.nodes.llm.heartbeat_tools import set_active_proxy
-        set_active_proxy(proxy)
-        logger.info(f"[agent_loader] {self.name!r}: heartbeat proxy connected (EXTERNAL_TOOL support)")
         return proxy
 
     async def stop_heartbeat(self):
@@ -634,10 +594,12 @@ def _maybe_limit(fn, max_retry):
 # 声明式图构建（Priority 2）
 # ---------------------------------------------------------------------------
 
-def _collect_routing_hints(graph_spec: dict) -> str:
+def _collect_routing_hints(graph_spec: dict, base_dir: str = "") -> str:
     """
     遍历 graph_spec 中所有含 agent_dir 的子图节点，读取其 entity.json 的 routing_hint 字段，
     构建路由说明字符串，用于注入主节点 system_prompt。
+
+    base_dir: blueprint 所在目录，用于解析相对 agent_dir 路径。
     """
     _ROUTABLE_TYPES = ("SUBGRAPH_NODE",)
     hints: list[str] = []
@@ -648,7 +610,12 @@ def _collect_routing_hints(graph_spec: dict) -> str:
         agent_dir = node_def.get("agent_dir", "")
         if not agent_dir:
             continue
-        agent_json_path = Path(agent_dir) / "entity.json"
+        # 相对路径优先用 base_dir 解析，再 fallback 到 cwd
+        raw = Path(agent_dir)
+        if not raw.is_absolute() and base_dir:
+            agent_json_path = Path(base_dir) / raw / "entity.json"
+        else:
+            agent_json_path = raw / "entity.json"
         if not agent_json_path.exists():
             continue
         try:
@@ -789,7 +756,7 @@ async def _build_declarative(
 
     # ── Step 0: routing_hint 注入 system_prompt ──────────────────────────────
     if system_prompt:
-        routing_section = _collect_routing_hints(graph_spec)
+        routing_section = _collect_routing_hints(graph_spec, base_dir=blueprint_dir)
         if routing_section:
             system_prompt = system_prompt + "\n\n" + routing_section
 
@@ -915,6 +882,20 @@ async def _build_declarative(
             # 命名条件边 — 从 registry 查找（on_error, no_routing, etc.）
             fn = _maybe_limit(get_condition(edge_type), max_retry)
             _named_conds[src].append((edge_type, fn, dst_node))
+
+    # 动态补 entry→START、exit→END（如 __start__/__end__ 边未声明）
+    _graph_entry = graph_spec.get("entry")
+    _graph_exit  = graph_spec.get("exit")
+    _has_start_edge = any(e["from"] == "__start__" for e in graph_spec.get("edges", []))
+    _has_end_edge   = any(e["to"]   == "__end__"   for e in graph_spec.get("edges", []))
+
+    if _graph_entry and not _has_start_edge:
+        builder.add_edge(START, _graph_entry)
+        logger.debug(f"[agent_loader] dynamic entry: START → {_graph_entry!r}")
+
+    if _graph_exit and not _has_end_edge:
+        builder.add_edge(_graph_exit, END)
+        logger.debug(f"[agent_loader] dynamic exit: {_graph_exit!r} → END")
 
     # 注册条件边（按 src 分组，每个 src 只调用一次 add_conditional_edges）
     all_cond_sources = set(_routing_targets) | set(_named_conds)
@@ -1098,15 +1079,32 @@ def _check_edge_refs(graph_spec: dict, all_ids: set) -> None:
                     f"(known: {sorted(valid_ids)})"
                 )
 
+    # 验证 entry/exit 字段引用的节点存在
+    entry = graph_spec.get("entry")
+    exit_node = graph_spec.get("exit")
+    if entry and entry not in all_ids:
+        raise ValueError(f"'entry' references unknown node: {entry!r} (known: {sorted(all_ids)})")
+    if exit_node and exit_node not in all_ids:
+        raise ValueError(f"'exit' references unknown node: {exit_node!r} (known: {sorted(all_ids)})")
+
 
 def _check_reachable(graph_spec: dict, all_ids: set) -> None:
-    """BFS 从 __start__ 出发，验证所有节点均可达。"""
+    """BFS 验证所有节点可达。支持 __start__ 边和 entry 字段两种入口声明。"""
     adjacency: dict[str, set] = defaultdict(set)
     for edge in graph_spec.get("edges", []):
         adjacency[edge["from"]].add(edge["to"])
 
-    visited = {"__start__"}
-    queue = list(adjacency["__start__"])
+    # 收集所有起始点
+    start_nodes: set[str] = {"__start__"}
+    entry = graph_spec.get("entry")
+    if entry:
+        start_nodes.add(entry)
+
+    visited = set(start_nodes)
+    queue = []
+    for s in start_nodes:
+        queue.extend(adjacency.get(s, []))
+
     while queue:
         node = queue.pop()
         if node not in visited:
@@ -1115,7 +1113,7 @@ def _check_reachable(graph_spec: dict, all_ids: set) -> None:
 
     unreachable = all_ids - visited - {"__end__"}
     if unreachable:
-        raise ValueError(f"Unreachable nodes from __start__: {unreachable}")
+        raise ValueError(f"Unreachable nodes from start: {unreachable}")
 
 
 _LLM_NODE_TYPES = frozenset({

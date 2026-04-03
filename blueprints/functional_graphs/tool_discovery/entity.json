@@ -3,6 +3,8 @@
   "routing_hint": "当用户要求发现/搜索/评估开源工具、GitHub 项目时使用。适用于 '找一个能做X的工具' 类需求。",
   "graph": {
     "state_schema": "tool_discovery_schema",
+    "entry": "query_expand",
+    "exit": "report_gen",
     "nodes": [
       {
         "id": "query_expand",
@@ -53,12 +55,10 @@
       }
     ],
     "edges": [
-      {"from": "__start__",        "to": "query_expand"},
       {"from": "query_expand",     "to": "search_aggregate"},
       {"from": "search_aggregate", "to": "candidate_filter"},
       {"from": "candidate_filter", "to": "sandbox_eval"},
-      {"from": "sandbox_eval",     "to": "report_gen"},
-      {"from": "report_gen",       "to": "__end__"}
+      {"from": "sandbox_eval",     "to": "report_gen"}
     ]
   },
   "max_retries": 1,

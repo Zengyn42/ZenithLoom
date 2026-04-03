@@ -7,6 +7,8 @@
     "PROTOCOL.md"
   ],
   "graph": {
+    "entry": "apex_main",
+    "exit": "apex_main",
     "nodes": [
       {
         "id": "apex_main",
@@ -36,18 +38,7 @@
         "output_field": "apex_conclusion"
       }
     ],
-    "edges": [
-      {
-        "id": "e_start_2_apex",
-        "from": "__start__",
-        "to": "apex_main"
-      },
-      {
-        "id": "e_apex_2_end",
-        "from": "apex_main",
-        "to": "__end__"
-      }
-    ]
+    "edges": []
   },
   "max_retries": 0,
   "db_path": "apex_coder.db",
