@@ -397,7 +397,6 @@ class LlmNode:
                 "messages": [AIMessage(content=raw_output)],
                 "routing_target": routing_target,
                 "routing_context": routing_context,
-                "consult_count": 0,  # 新路由请求，重置计数（防止上一轮子图的计数泄漏阻塞本轮路由）
                 "node_sessions": {self._session_key: new_session_id},
             }
         else:
@@ -405,7 +404,6 @@ class LlmNode:
                 "messages": [AIMessage(content=raw_output)],
                 "routing_target": "",
                 "routing_context": "",
-                "consult_count": 0,
                 "rollback_reason": "",
                 # 注意：不在此处重置 retry_count！
                 # retry_count 由 DETERMINISTIC validator 节点管理，

@@ -1,15 +1,14 @@
 """
-E2E 测试：子图路由 + LlmNode output_field + _invoke_subgraph 薄适配器
+E2E 测试：子图路由 + LlmNode output_field + 原生子图接入
 
 覆盖：
   1.  LlmNode output_field 把 LLM 输出自动写入指定 state 字段
   2.  output_field 为 None 时不写入额外字段
-  3.  _invoke_subgraph 从 routing_context 构造 HumanMessage
-  4.  _invoke_subgraph routing_context 为空时从 messages 取 fallback
-  5.  _invoke_subgraph 正确递增 consult_count
-  6.  主图编译后 routing_to 边正常工作
-  7.  LlmNode 无路由时重置 rollback_reason 但不重置 retry_count
-  8.  LlmNode 有路由信号时保留路由信息
+  3.  _make_subgraph_input_transform 从 routing_context 构造 HumanMessage
+  4.  _make_subgraph_input_transform routing_context 为空时从 messages 取 fallback
+  5.  主图编译后 routing_to 边正常工作
+  6.  LlmNode 无路由时重置 rollback_reason 但不重置 retry_count
+  7.  LlmNode 有路由信号时保留路由信息
 
 运行：
     pytest test_e2e_subgraph_routing.py -v
@@ -140,81 +139,53 @@ async def test_output_field_apex_conclusion():
 
 
 # ---------------------------------------------------------------------------
-# 测试用例：_invoke_subgraph 薄适配器
+# 测试用例：_make_subgraph_input_transform 原生 input transform
 # ---------------------------------------------------------------------------
 
 @pytest.mark.asyncio
-async def test_invoke_subgraph_uses_routing_context():
-    """_invoke_subgraph 从 routing_context 构造 HumanMessage。"""
-    from framework.agent_loader import _invoke_subgraph
+async def test_input_transform_uses_routing_context():
+    """_make_subgraph_input_transform 从 routing_context 构造 HumanMessage。"""
+    from framework.agent_loader import _make_subgraph_input_transform
 
-    mock_graph = _make_mock_graph({
-        "messages": [AIMessage(content="子图输出")],
-        "debate_conclusion": "结论",
-    })
-
+    transform = _make_subgraph_input_transform(reset_messages=True)
     state = {
         "routing_context": "微服务架构选型",
         "messages": [HumanMessage(content="旧消息")],
-        "consult_count": 0,
     }
 
-    result = await _invoke_subgraph(state, graph=mock_graph, node_id="test_sub", graph_name="test")
+    result = transform.invoke(state)
 
-    assert mock_graph._call_count == 1, "子图应被执行一次"
-    received = mock_graph._received_state
-    assert len(received["messages"]) == 1, "子图应收到 1 条消息"
-    assert received["messages"][0].content == "微服务架构选型", "消息应来自 routing_context"
-    assert received["routing_context"] == "微服务架构选型", "routing_context 应透传"
+    assert len(result["messages"]) == 1, "transform 应产生 1 条消息"
+    assert result["messages"][0].content == "微服务架构选型", "消息应来自 routing_context"
+    assert result["routing_context"] == "微服务架构选型", "routing_context 应透传"
 
-    logger.info("PASS _invoke_subgraph 使用 routing_context")
+    logger.info("PASS input_transform 使用 routing_context")
 
 
 @pytest.mark.asyncio
-async def test_invoke_subgraph_fallback_to_messages():
+async def test_input_transform_fallback_to_messages():
     """routing_context 为空时从 messages[-1] 取 fallback。"""
-    from framework.agent_loader import _invoke_subgraph
+    from framework.agent_loader import _make_subgraph_input_transform
 
-    mock_graph = _make_mock_graph({"messages": [AIMessage(content="输出")]})
-
+    transform = _make_subgraph_input_transform(reset_messages=True)
     state = {
         "routing_context": "",
         "messages": [HumanMessage(content="这是用户输入")],
-        "consult_count": 0,
     }
 
-    result = await _invoke_subgraph(state, graph=mock_graph, node_id="test_sub", graph_name="test")
+    result = transform.invoke(state)
 
-    received = mock_graph._received_state
-    assert received["messages"][0].content == "这是用户输入", "应从 messages[-1] fallback"
+    assert result["messages"][0].content == "这是用户输入", "应从 messages[-1] fallback"
 
-    logger.info("PASS _invoke_subgraph fallback to messages")
-
-
-@pytest.mark.asyncio
-async def test_invoke_subgraph_increments_consult_count():
-    """_invoke_subgraph 正确递增 consult_count。"""
-    from framework.agent_loader import _invoke_subgraph
-
-    mock_graph = _make_mock_graph({"messages": [AIMessage(content="结论")]})
-
-    state = {"routing_context": "议题", "consult_count": 3, "messages": []}
-
-    result = await _invoke_subgraph(state, graph=mock_graph, node_id="test_sub", graph_name="test")
-
-    assert result.get("consult_count") == 4, \
-        f"consult_count 应从 3 递增到 4，实际: {result.get('consult_count')}"
-
-    logger.info("PASS consult_count 递增")
+    logger.info("PASS input_transform fallback to messages")
 
 
 @pytest.mark.asyncio
-async def test_invoke_subgraph_passes_state_fields():
-    """_invoke_subgraph 透传所有 state 字段给子图。"""
-    from framework.agent_loader import _invoke_subgraph
+async def test_input_transform_passes_state_fields():
+    """_make_subgraph_input_transform 透传所有 state 字段给子图。"""
+    from framework.agent_loader import _make_subgraph_input_transform
 
-    mock_graph = _make_mock_graph({"messages": [AIMessage(content="ok")]})
-
+    transform = _make_subgraph_input_transform(reset_messages=True)
     state = {
         "routing_context": "议题",
         "workspace": "/tmp/work",
@@ -222,39 +193,35 @@ async def test_invoke_subgraph_passes_state_fields():
         "knowledge_vault": "/tmp/vault",
         "project_docs": "/tmp/docs",
         "messages": [],
-        "consult_count": 0,
     }
 
-    await _invoke_subgraph(state, graph=mock_graph, node_id="test_sub", graph_name="test")
+    result = transform.invoke(state)
 
-    received = mock_graph._received_state
-    assert received["workspace"] == "/tmp/work"
-    assert received["project_root"] == "/tmp/proj"
-    assert received["knowledge_vault"] == "/tmp/vault"
-    assert received["project_docs"] == "/tmp/docs"
+    assert result["workspace"] == "/tmp/work"
+    assert result["project_root"] == "/tmp/proj"
+    assert result["knowledge_vault"] == "/tmp/vault"
+    assert result["project_docs"] == "/tmp/docs"
 
     logger.info("PASS state 字段透传")
 
 
 @pytest.mark.asyncio
-async def test_invoke_subgraph_collects_output_field():
-    """_invoke_subgraph 收集子图节点产生的 output_field（如 debate_conclusion）。"""
-    from framework.agent_loader import _invoke_subgraph
+async def test_input_transform_no_reset():
+    """reset_messages=False 时原样透传 messages。"""
+    from framework.agent_loader import _make_subgraph_input_transform
 
-    # 模拟子图最后一个节点返回 debate_conclusion
-    mock_graph = _make_mock_graph({
-        "messages": [AIMessage(content="最终结论")],
-        "debate_conclusion": "最终结论",
-    })
+    transform = _make_subgraph_input_transform(reset_messages=False)
+    original_msgs = [HumanMessage(content="历史消息1"), HumanMessage(content="历史消息2")]
+    state = {
+        "routing_context": "议题",
+        "messages": original_msgs,
+    }
 
-    state = {"routing_context": "议题", "messages": [], "consult_count": 0}
+    result = transform.invoke(state)
 
-    result = await _invoke_subgraph(state, graph=mock_graph, node_id="test_sub", graph_name="test")
+    assert result["messages"] is original_msgs, "reset_messages=False 时 messages 应原样透传"
 
-    assert result.get("debate_conclusion") == "最终结论", \
-        "子图产生的 debate_conclusion 应被收集到结果中"
-
-    logger.info("PASS 子图 output_field 收集")
+    logger.info("PASS input_transform reset_messages=False 透传 messages")
 
 
 # ---------------------------------------------------------------------------
@@ -290,7 +257,6 @@ async def test_llm_node_no_routing_resets_fields():
 
     assert result.get("rollback_reason") == "", "无路由时 rollback_reason 应被清空"
     assert "retry_count" not in result, "LLM 节点不应在 result 中包含 retry_count（由 validator 管理）"
-    assert result.get("consult_count") == 0, "无路由时 consult_count 应被重置为 0"
     assert result.get("routing_target") == "", "routing_target 应为空"
 
     logger.info("PASS LlmNode 无路由时重置附属字段")

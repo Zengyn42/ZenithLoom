@@ -575,19 +575,14 @@ def _register_mcp_tools(mcp_name: str, proxy) -> None:
 
 
 # ---------------------------------------------------------------------------
-# 通用工具：条件边限速器（module-level，供测试直接导入）
+# 通用工具：条件边包装器（module-level，供测试直接导入）
 # ---------------------------------------------------------------------------
 
 def _maybe_limit(fn, max_retry):
     """
-    包装条件函数，当 state["consult_count"] >= max_retry 时强制返回 False。
-    max_retry=None 时直接返回原函数（不限速）。
+    向后兼容包装器。max_retry 参数已废弃，直接返回原函数。
     """
-    if max_retry is None:
-        return fn
-    def _limited(state):
-        return fn(state) and state.get("consult_count", 0) < max_retry
-    return _limited
+    return fn
 
 
 # ---------------------------------------------------------------------------
@@ -665,72 +660,31 @@ def _get_state_schemas() -> dict:
     return get_all_schemas()
 
 
-async def _invoke_subgraph(
-    state: dict,
-    *,
-    graph,
-    node_id: str,
-    graph_name: str,
-    reset_messages: bool = True,
-) -> dict:
+def _make_subgraph_input_transform(reset_messages: bool):
     """
-    Thin subgraph adapter: converts routing_context to a HumanMessage,
-    streams the subgraph, and collects results.
+    创建子图 input transform。
 
-    reset_messages=True  (default): replace parent messages with
-        [HumanMessage(routing_context)] — task-type subgraphs.
-    reset_messages=False: pass parent messages as-is — context-aware subgraphs.
+    reset_messages=True（默认，任务型）：
+        将 routing_context 转为 HumanMessage，清除父图对话历史，
+        子图只看到当前任务，不知道父图历史。
+
+    reset_messages=False（上下文型）：
+        原样透传父图 state，子图可看到完整对话历史。
     """
     from langchain_core.messages import HumanMessage
-    from framework.debug import push_graph_scope, pop_graph_scope
+    from langchain_core.runnables import RunnableLambda
 
-    sub_state = dict(state)
+    def _transform(state: dict) -> dict:
+        if not reset_messages:
+            return state
+        task = state.get("routing_context", "") or (
+            state["messages"][-1].content
+            if state.get("messages")
+            else ""
+        )
+        return {**state, "messages": [HumanMessage(content=task)] if task else []}
 
-    if reset_messages:
-        # ── 任务型：routing_context → HumanMessage，隔离父图对话历史 ──
-        task = state.get("routing_context", "")
-        if not task:
-            parent_msgs = state.get("messages") or []
-            if parent_msgs:
-                task = parent_msgs[-1].content
-        sub_state["messages"] = [HumanMessage(content=task)] if task else []
-
-    logger.info(f"[subgraph] invoking {graph_name!r}")
-
-    # ── 流式执行子图 ─────────────────────────────────────────────────
-    result: dict = {}
-    print(f"\n{'─' * 60}", flush=True)
-    print(f"  [{graph_name}] 子图开始", flush=True)
-    print(f"{'─' * 60}", flush=True)
-
-    push_graph_scope(node_id)
-    try:
-        async for event in graph.astream(sub_state, stream_mode="updates"):
-            for nid, update in event.items():
-                if nid in ("__start__", "__end__") or not update:
-                    continue
-                result.update(update)
-                for msg in update.get("messages", []):
-                    content = getattr(msg, "content", "")
-                    if not content:
-                        continue
-                    label = "议题" if getattr(msg, "type", "ai") == "human" else nid
-                    print(f"\n  ┌─ [{label}]", flush=True)
-                    for line in content.split("\n"):
-                        print(f"  │ {line}", flush=True)
-                    print(f"  └─", flush=True)
-    finally:
-        pop_graph_scope()
-
-    print(f"\n{'─' * 60}", flush=True)
-    print(f"  [{graph_name}] 子图结束", flush=True)
-    print(f"{'─' * 60}\n", flush=True)
-
-    # consult_count 递增（告知父图已执行一次咨询）
-    result["consult_count"] = state.get("consult_count", 0) + 1
-
-    logger.info(f"[subgraph] {graph_name!r} done, out_keys={list(result.keys())}")
-    return result
+    return RunnableLambda(_transform)
 
 
 async def _build_declarative(
@@ -791,10 +745,9 @@ async def _build_declarative(
             builder.add_node(node_id, _wrap_node_for_flow_log(node_id, inner))
 
         elif node_type == "SUBGRAPH_NODE":
-            # External agent subgraph — 纯原生 LangGraph 机制。
+            # External agent subgraph — 纯原生 LangGraph 子图接入。
             # output_field 由子图末尾 LLM 节点的 node_config["output_field"] 处理。
-            # routing_context → HumanMessage 转换由 _invoke_subgraph 薄适配器处理。
-            import functools
+            # routing_context → HumanMessage 转换由 _make_subgraph_input_transform 处理。
 
             raw_dir = node_def.get("agent_dir", "")
             if not raw_dir:
@@ -827,17 +780,11 @@ async def _build_declarative(
                 checkpointer=None, parent_persona=_pass_persona,
             )
 
-            # 使用薄适配器：routing_context → HumanMessage + 流式输出
+            # 原生 LangGraph 子图接入：input_transform | compiled_subgraph
             # reset_messages: True（默认）= 任务型，False = 上下文型（透传父图 messages）
             _reset_messages = node_def.get("reset_messages", True)
-            adapter = functools.partial(
-                _invoke_subgraph,
-                graph=inner_graph,
-                node_id=node_id,
-                graph_name=inner_loader.name,
-                reset_messages=_reset_messages,
-            )
-            builder.add_node(node_id, _wrap_node_for_flow_log(node_id, adapter))
+            _transform = _make_subgraph_input_transform(_reset_messages)
+            builder.add_node(node_id, _transform | inner_graph)
 
         else:
             factory = get_node_factory(node_type)

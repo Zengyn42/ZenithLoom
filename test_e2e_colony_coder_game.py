@@ -4,7 +4,9 @@ builds a CLI number guessing game.
 
 Strategy:
   - Master graph uses SUBGRAPH_NODE (native LangGraph subgraphs).
-  - Mock at leaf node level: ClaudeSDKNode, OllamaNode, _invoke_subgraph.
+  - Mock at leaf node level: ClaudeSDKNode, GeminiCLINode, OllamaNode.
+  - design_debate subgraph (debate_claude_first): ClaudeSDKNode + GeminiCLINode nodes
+    are both intercepted by the catch-all mocks.
   - DETERMINISTIC nodes run for real (validators, run_tests, e2e_route, etc).
   - Real file I/O: game code + test scripts written by mocks.
 """
@@ -29,8 +31,8 @@ import blueprints.functional_graphs.colony_coder.state  # noqa: F401
 
 from framework.agent_loader import AgentLoader
 from framework.nodes.llm.claude import ClaudeSDKNode
+from framework.nodes.llm.gemini import GeminiCLINode
 from framework.nodes.llm.ollama import OllamaNode
-import framework.agent_loader as _agent_loader_mod
 from langchain_core.messages import AIMessage, HumanMessage
 
 # ---------------------------------------------------------------------------
@@ -121,7 +123,6 @@ def _base_return(state: dict, content: str, **extra) -> dict:
         "messages": [_ai(content)],
         "routing_target": "",
         "routing_context": "",
-        "consult_count": 0,
         "rollback_reason": "",
         "retry_count": 0,
         "node_sessions": dict(state.get("node_sessions") or {}),
@@ -181,9 +182,10 @@ async def test_e2e_colony_coder_game(tmp_path):
     """Full-chain E2E: master graph (SUBGRAPH_NODE) drives Planner → Executor → QA.
 
     Mocking strategy (leaf-node level):
-      - ClaudeSDKNode.__call__ → planner's claude_swarm, task_decompose; QA's generate_e2e
+      - ClaudeSDKNode.__call__ → planner's claude_swarm, task_decompose; QA's generate_e2e;
+                                  also debate subgraph's claude_propose/revise/conclusion
+      - GeminiCLINode.__call__ → debate subgraph's gemini_critique_1/critique_2
       - OllamaNode.__call__   → executor's code_gen (writes game file + test scripts)
-      - _invoke_subgraph → planner's design_debate (SUBGRAPH_NODE)
       - DETERMINISTIC nodes run for real (validators, run_tests, e2e_route, etc.)
     """
     tmpdir = str(tmp_path)
@@ -260,29 +262,20 @@ async def test_e2e_colony_coder_game(tmp_path):
             )],
         }
 
-    # ── 3. _invoke_subgraph mock — only intercept design_debate, pass through others ───
-    _original_invoke = _agent_loader_mod._invoke_subgraph
-
-    async def _selective_invoke_subgraph(state, *, graph, node_id, graph_name):
-        if node_id == "design_debate":
-            conclusion = (
-                "Design debate conclusion: Build a simple CLI number guessing "
-                "game. Single file approach. Random 1-100, binary search hints, "
-                "attempt counter, replay loop."
-            )
-            return {
-                "messages": [_ai(conclusion)],
-                "debate_conclusion": conclusion,
-                "consult_count": state.get("consult_count", 0) + 1,
-            }
-        # All other subgraphs: call real implementation
-        return await _original_invoke(state, graph=graph, node_id=node_id, graph_name=graph_name)
+    # ── 3. GeminiCLINode mock — debate subgraph's critique nodes ─────────
+    async def _mock_gemini_call(self, state):
+        node_id = self._node_id
+        return {
+            "messages": [_ai(f"Gemini critique for {node_id}: looks good, proceed.")],
+            "routing_target": "",
+            "routing_context": "",
+        }
 
     # ── 4. Build & run master graph ──────────────────────────────────────
     with (
         patch.object(ClaudeSDKNode, "__call__", _mock_claude_call),
+        patch.object(GeminiCLINode, "__call__", _mock_gemini_call),
         patch.object(OllamaNode, "__call__", _mock_ollama_call),
-        patch.object(_agent_loader_mod, "_invoke_subgraph", _selective_invoke_subgraph),
     ):
         loader = AgentLoader(Path("blueprints/functional_graphs/colony_coder"))
         graph = await loader.build_graph(checkpointer=None)

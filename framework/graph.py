@@ -66,19 +66,13 @@ class GraphSpec:
 # Graph nodes
 # ---------------------------------------------------------------------------
 
-def _make_validate_route(max_consults: int = 1):
+def _make_validate_route():
     """工厂函数：生成 validate 后的路由函数。使用 routing_target 字段。"""
     def _validate_route(state: BaseAgentState) -> str:
         if state.get("rollback_reason"):
             return "rollback"
         routing_target = state.get("routing_target", "")
-        count = state.get("consult_count", 0)
         if routing_target:
-            if count >= max_consults:
-                logger.warning(
-                    f"[graph] consult_count={count} >= max={max_consults}，强制结束"
-                )
-                return "end"
             return "consult"
         return "end"
     return _validate_route
@@ -144,7 +138,7 @@ async def build_agent_graph(
 
         builder.add_conditional_edges(
             "validate",
-            _make_validate_route(max_consults=1),
+            _make_validate_route(),
             route_map,
         )
     else:
