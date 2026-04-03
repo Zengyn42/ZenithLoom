@@ -371,19 +371,6 @@ class GeminiCodeAssistNode(_GeminiSessionMixin, AgentNode):
         history: list | None = None,
     ) -> tuple[str, str]:
         """单轮 Gemini 对话，返回 (reply, session_id)。history 由 session 管理，忽略。"""
-        # --- 统一 prompt 构建 (从原 __call__ 下沉) ---
-        if history and len(history) > 1 and not session_id:
-            parts = []
-            for m in history[:-1]:
-                role = "议题" if getattr(m, "type", "") == "human" else "发言"
-                parts.append(f"[{role}]:\n{m.content}")
-            parts.append(f"[发言/提问]:\n{prompt}")
-            full_prompt = "\n\n---\n\n".join(parts)
-            topic = history[0].content if getattr(history[0], "type", "") == "human" else ""
-            if topic:
-                full_prompt += f"\n\n---\n\n[原始要求（请严格遵守）]:\n{topic}\n请基于以上讨论继续发言。"
-            prompt = full_prompt
-
         workspace = cwd or ""
         record, client = self._load_or_create(session_id, workspace)
         sid = record.sessionId
@@ -397,6 +384,104 @@ class GeminiCodeAssistNode(_GeminiSessionMixin, AgentNode):
             logger.error(f"[gemini.node] call_llm 失败: {e}")
             self._persist(record, client, workspace)
             return f"[Gemini 失败: {e}]", sid
+
+    async def __call__(self, state: dict) -> dict:
+        """
+        读取 routing_context 作为 prompt，调用 Gemini，清除路由信号。
+        """
+        routing_context = state.get("routing_context", "")
+        msgs = state.get("messages", [])
+
+        session_id = (state.get("node_sessions") or {}).get(self._session_key, "")
+        workspace = state.get("workspace", "")
+
+        if routing_context:
+            prompt = routing_context
+            prompt_src = "routing_context"
+        elif len(msgs) > 1 and not session_id:
+            # 无 session 的多轮（首次进入辩论）：完整历史格式化进 prompt
+            parts = []
+            for m in msgs:
+                role = "议题" if getattr(m, "type", "") == "human" else "发言"
+                parts.append(f"[{role}]:\n{m.content}")
+            prompt = "\n\n---\n\n".join(parts)
+            topic = msgs[0].content if msgs and getattr(msgs[0], "type", "") == "human" else ""
+            if topic:
+                prompt += f"\n\n---\n\n[原始要求（请严格遵守）]:\n{topic}\n请基于以上讨论继续发言。"
+            prompt_src = f"full_history ({len(msgs)} msgs)"
+        else:
+            # 有 session（resume）：只传最新消息，历史已在 session 中
+            prompt = msgs[-1].content if msgs else ""
+            prompt_src = "messages[-1]" if not session_id else f"resume({session_id[:8]})"
+
+        if is_debug():
+            logger.debug(
+                f"[{self._node_id}] prompt_src={prompt_src} "
+                f"prompt_preview={prompt[:120]!r} "
+                f"session_id={session_id[:8] if session_id else 'new'}"
+            )
+
+        # ── Token 安全阀 ──
+        # routing_context 不在 msgs 中，history 计全部；否则 prompt 已含 msgs[-1]，只取前缀避免双重计数
+        _guard_history = list(msgs) if routing_context else list(msgs[:-1]) if msgs else []
+        try:
+            check_before_llm(prompt=prompt, history=_guard_history, node_id=self._node_id, limit=self._token_limit)
+        except TokenLimitExceeded as exc:
+            logger.error(str(exc))
+            return {
+                "messages": [AIMessage(content=f"⛔ {exc}")],
+                "routing_target": "",
+                "routing_context": "",
+                "node_sessions": {self._session_key: session_id},
+            }
+
+        try:
+            async with acquire_resource(
+                self._resource_lock,
+                timeout=self._resource_timeout,
+                holder=self._node_id,
+            ):
+                reply, new_session_id = await self.call_llm(
+                    prompt, session_id=session_id, cwd=workspace or None
+                )
+        except GeminiQuotaError as e:
+            logger.error(f"[{self._node_id}] Gemini 配额耗尽，降级跳过: {e}")
+            return {
+                "messages": [AIMessage(content="[Gemini 暂不可用，已跳过本轮咨询]")],
+                "routing_target": "",
+                "routing_context": "",
+                "node_sessions": {self._session_key: session_id},
+            }
+
+        logger.info(f"[{self._node_id}] done")
+        if is_debug():
+            log_node_thinking(node_id=self._node_id, output_text=reply)
+
+        # ── 路由信号检测（enable_routing=true 时）──
+        if self._enable_routing:
+            signal = self._signal_parser.parse(reply)
+            routing_target = signal.get("route", "") if signal else ""
+            routing_context = signal.get("context", "") if signal else ""
+            if routing_target:
+                logger.info(f"[{self._node_id}] routing signal: target={routing_target!r}")
+                return {
+                    "messages": [AIMessage(content=reply)],
+                    "routing_target": routing_target,
+                    "routing_context": routing_context,
+                    "node_sessions": {self._session_key: new_session_id or session_id},
+                }
+
+        result = {
+            "messages": [AIMessage(content=reply)],
+            "routing_target": "",
+            "routing_context": "",
+            "rollback_reason": "",
+            "node_sessions": {self._session_key: new_session_id or session_id},
+        }
+        # output_field 映射（子图末尾节点用）
+        if self._output_field and reply:
+            result[self._output_field] = reply
+        return result
 
 
 # 向后兼容别名
@@ -598,19 +683,6 @@ class GeminiCLINode(AgentNode):
           对 Gemini CLI，映射为 --allowed-mcp-server-names（MCP server 粒度过滤）。
           工具名会被当作 MCP server name 直接传递。
         """
-        # --- 统一 prompt 构建 (从原 __call__ 下沉) ---
-        if history and len(history) > 1 and not session_id:
-            parts = []
-            for m in history[:-1]:
-                role = "议题" if getattr(m, "type", "") == "human" else "发言"
-                parts.append(f"[{role}]:\n{m.content}")
-            parts.append(f"[发言/提问]:\n{prompt}")
-            full_prompt = "\n\n---\n\n".join(parts)
-            topic = history[0].content if getattr(history[0], "type", "") == "human" else ""
-            if topic:
-                full_prompt += f"\n\n---\n\n[原始要求（请严格遵守）]:\n{topic}\n请基于以上讨论继续发言。"
-            prompt = full_prompt
-
         # tools → allowed_mcp_servers（Gemini CLI 按 MCP server name 过滤）
         allowed_mcp_servers = tools if tools else None
         # 首次调用（无 session）时嵌入 system prompt
@@ -741,3 +813,99 @@ class GeminiCLINode(AgentNode):
         raise RuntimeError(
             f"Gemini CLI 所有模型均不可用 (tried {len(chain)}): {last_error}"
         )
+
+    async def __call__(self, state: dict) -> dict:
+        """
+        读取 routing_context / messages 作为 prompt，调用 Gemini CLI。
+        """
+        routing_context = state.get("routing_context", "")
+        msgs = state.get("messages", [])
+
+        session_id = (state.get("node_sessions") or {}).get(self._session_key, "")
+        workspace = state.get("workspace", "")
+
+        if routing_context:
+            prompt = routing_context
+            prompt_src = "routing_context"
+        elif len(msgs) > 1 and not session_id:
+            parts = []
+            for m in msgs:
+                role = "议题" if getattr(m, "type", "") == "human" else "发言"
+                parts.append(f"[{role}]:\n{m.content}")
+            prompt = "\n\n---\n\n".join(parts)
+            topic = msgs[0].content if msgs and getattr(msgs[0], "type", "") == "human" else ""
+            if topic:
+                prompt += f"\n\n---\n\n[原始要求（请严格遵守）]:\n{topic}\n请基于以上讨论继续发言。"
+            prompt_src = f"full_history ({len(msgs)} msgs)"
+        else:
+            prompt = msgs[-1].content if msgs else ""
+            prompt_src = "messages[-1]" if not session_id else f"resume({session_id[:8]})"
+
+        if is_debug():
+            logger.debug(
+                f"[{self._node_id}] prompt_src={prompt_src} "
+                f"prompt_preview={prompt[:120]!r} "
+                f"session_id={session_id[:8] if session_id else 'new'}"
+            )
+
+        # ── Token 安全阀 ──
+        # routing_context 不在 msgs 中，history 计全部；否则 prompt 已含 msgs[-1]，只取前缀避免双重计数
+        _guard_history = list(msgs) if routing_context else list(msgs[:-1]) if msgs else []
+        try:
+            check_before_llm(prompt=prompt, history=_guard_history, node_id=self._node_id, limit=self._token_limit)
+        except TokenLimitExceeded as exc:
+            logger.error(str(exc))
+            return {
+                "messages": [AIMessage(content=f"⛔ {exc}")],
+                "routing_target": "",
+                "routing_context": "",
+                "node_sessions": {self._session_key: session_id},
+            }
+
+        try:
+            async with acquire_resource(
+                self._resource_lock,
+                timeout=self._resource_timeout,
+                holder=self._node_id,
+            ):
+                reply, new_session_id = await self.call_llm(
+                    prompt, session_id=session_id, cwd=workspace or None
+                )
+        except Exception as e:
+            logger.error(f"[{self._node_id}] Gemini CLI 失败: {e}")
+            return {
+                "messages": [AIMessage(content=f"[Gemini CLI 失败: {e}]")],
+                "routing_target": "",
+                "routing_context": "",
+                "node_sessions": {self._session_key: session_id},
+            }
+
+        logger.info(f"[{self._node_id}] done")
+        if is_debug():
+            log_node_thinking(node_id=self._node_id, output_text=reply)
+
+        # ── 路由信号检测（enable_routing=true 时）──
+        if self._enable_routing:
+            signal = self._signal_parser.parse(reply)
+            routing_target = signal.get("route", "") if signal else ""
+            routing_context = signal.get("context", "") if signal else ""
+            if routing_target:
+                logger.info(f"[{self._node_id}] routing signal: target={routing_target!r}")
+                return {
+                    "messages": [AIMessage(content=reply)],
+                    "routing_target": routing_target,
+                    "routing_context": routing_context,
+                    "node_sessions": {self._session_key: new_session_id or session_id},
+                }
+
+        result = {
+            "messages": [AIMessage(content=reply)],
+            "routing_target": "",
+            "routing_context": "",
+            "rollback_reason": "",
+            "node_sessions": {self._session_key: new_session_id or session_id},
+        }
+        # output_field 映射（子图末尾节点用）
+        if self._output_field and reply:
+            result[self._output_field] = reply
+        return result
