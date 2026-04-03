@@ -1,6 +1,15 @@
 {
   "llm": "gemini",
   "channel_history_limit": 0,
+  "mcp": [
+    {
+      "name": "obsidian-vault",
+      "module": "mcp_servers.obsidian.server",
+      "module_args": ["--transport", "sse", "--port", "8101", "--vault", "/home/kingy/Foundation/Vault"],
+      "url": "http://localhost:8101/sse",
+      "shared": true
+    }
+  ],
   "graph": {
     "nodes": [
       {
@@ -13,8 +22,7 @@
         "timeout": 120,
         "skill_files": [
           "skills/presenton/slides_skill.md",
-          "skills/pandoc/docs_skill.md",
-          "skills/heartbeat/monitor_skill.md"
+          "skills/pandoc/docs_skill.md"
         ],
         "system_prompt": "你是知识策展官，负责管理和展现知识资产。\n所有能力和路由格式详见 PROTOCOL.md。"
       },

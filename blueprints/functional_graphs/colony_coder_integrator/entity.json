@@ -21,8 +21,8 @@
         "type": "DETERMINISTIC"
       }
     ],
+    "entry": "integration_test",
     "edges": [
-      {"from": "__start__",          "to": "integration_test"},
       {"from": "integration_test",   "to": "integration_route"},
       {"from": "integration_rescue", "to": "integration_test"},
       {"from": "integration_route",  "to": "__end__",             "type": "routing_to"},

@@ -45,8 +45,8 @@
         "type": "DETERMINISTIC"
       }
     ],
+    "entry": "inject_e2e_context",
     "edges": [
-      {"from": "__start__",           "to": "inject_e2e_context"},
       {"from": "inject_e2e_context",  "to": "generate_e2e"},
       {"from": "generate_e2e",        "to": "run_e2e"},
       {"from": "run_e2e",             "to": "e2e_route"},

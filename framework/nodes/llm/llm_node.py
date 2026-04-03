@@ -50,6 +50,10 @@ node_config（来自 entity.json）驱动行为：
   signal_parser          str   信号解析器类型（默认 "json_line"）
   resume_prompt          str   共享 session 时 resume 使用的固定指令（避免重复前一节点输出）
   id                     str   节点 ID，用于 node_sessions 键名（默认 "claude_main"）
+  skills                 list  SkillRegistry skill 名称列表，如 ["blender-index", "gws-gam"]；
+                               基类在 _load_skill_content() 中自动加载并拼接到现有 parts，
+                               对 Gemini / Ollama 节点注入 system_prompt，Claude 节点由
+                               子类决定注入时机（_load_skill_content 可选调用）
 """
 
 import contextvars
@@ -190,6 +194,10 @@ class LlmNode:
         # skill_files：显式声明的 skill 文件路径列表（相对于 blueprint_dir 或绝对路径）
         self._skill_files: list[str] = node_config.get("skill_files", [])
 
+        # skills：通过 SkillRegistry 注入的 skill 名称列表（声明式，优先于 skill_files）
+        # 示例：["blender-index", "opencli-grok"]
+        self._skill_names: list[str] = node_config.get("skills", [])
+
     @property
     def is_plan_mode(self) -> bool:
         """当前节点是否处于 plan（只读/规划）模式。"""
@@ -234,6 +242,13 @@ class LlmNode:
             if skills_dir.exists():
                 for skill_md in sorted(skills_dir.rglob("SKILL.md")):
                     parts.append(skill_md.read_text(encoding="utf-8").strip())
+
+        # 3. skills（名称 → SkillRegistry）——声明式注入，兼容所有 LLM 节点
+        if self._skill_names:
+            from framework.skill_registry import SkillRegistry
+            content = SkillRegistry.get_instance().load(self._skill_names)
+            if content:
+                parts.append(content)
 
         return "\n\n---\n\n".join(parts)
 
