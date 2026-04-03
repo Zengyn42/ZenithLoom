@@ -698,27 +698,35 @@ def _get_state_schemas() -> dict:
     return get_all_schemas()
 
 
-async def _invoke_subgraph(state: dict, *, graph, node_id: str, graph_name: str) -> dict:
+async def _invoke_subgraph(
+    state: dict,
+    *,
+    graph,
+    node_id: str,
+    graph_name: str,
+    reset_messages: bool = True,
+) -> dict:
     """
     Thin subgraph adapter: converts routing_context to a HumanMessage,
     streams the subgraph, and collects results.
 
-    Replaces the old _SubgraphNodeWrapper (170 lines → ~30 lines).
-    All output_field mapping is now handled by subgraph's last LLM node
-    via the node_config["output_field"] mechanism in LlmNode.__call__().
+    reset_messages=True  (default): replace parent messages with
+        [HumanMessage(routing_context)] — task-type subgraphs.
+    reset_messages=False: pass parent messages as-is — context-aware subgraphs.
     """
     from langchain_core.messages import HumanMessage
     from framework.debug import push_graph_scope, pop_graph_scope
 
-    # ── 构建子图入口 state（routing_context → HumanMessage）────────────
-    task = state.get("routing_context", "")
-    if not task:
-        parent_msgs = state.get("messages") or []
-        if parent_msgs:
-            task = parent_msgs[-1].content
-
     sub_state = dict(state)
-    sub_state["messages"] = [HumanMessage(content=task)] if task else []
+
+    if reset_messages:
+        # ── 任务型：routing_context → HumanMessage，隔离父图对话历史 ──
+        task = state.get("routing_context", "")
+        if not task:
+            parent_msgs = state.get("messages") or []
+            if parent_msgs:
+                task = parent_msgs[-1].content
+        sub_state["messages"] = [HumanMessage(content=task)] if task else []
 
     logger.info(f"[subgraph] invoking {graph_name!r}")
 
@@ -853,11 +861,14 @@ async def _build_declarative(
             )
 
             # 使用薄适配器：routing_context → HumanMessage + 流式输出
+            # reset_messages: True（默认）= 任务型，False = 上下文型（透传父图 messages）
+            _reset_messages = node_def.get("reset_messages", True)
             adapter = functools.partial(
                 _invoke_subgraph,
                 graph=inner_graph,
                 node_id=node_id,
                 graph_name=inner_loader.name,
+                reset_messages=_reset_messages,
             )
             builder.add_node(node_id, _wrap_node_for_flow_log(node_id, adapter))
 
