@@ -14,8 +14,14 @@ from framework.schema.reducers import _merge_dict
 
 
 def _keep_last_2(existing: list, new) -> list:
-    """只保留最近 2 条消息。对话历史交给 SDK session 管理。"""
-    combined = existing + (new if isinstance(new, list) else [new])
+    """只保留最近 2 条非空消息。对话历史交给 SDK session 管理。
+    空消息（EXTERNAL_TOOL 等无输出节点）不参与竞争，保留已有有效消息。
+    """
+    new_list = new if isinstance(new, list) else [new]
+    non_empty_new = [m for m in new_list if getattr(m, "content", "").strip()]
+    if not non_empty_new:
+        return existing[-2:] if existing else []
+    combined = existing + non_empty_new
     return combined[-2:]
 
 
@@ -26,7 +32,6 @@ class BaseAgentState(TypedDict):
     workspace: str        # 当前工作目录（per-session，GraphController 注入）
     project_root: str     # 运行时覆盖目录（!setproject 设置）
     project_meta: dict    # {"plan": "path", "tasks": "path"}
-    consult_count: int    # 当轮已路由咨询次数
     last_stable_commit: str  # git 快照 hash
     retry_count: int      # 当轮回退重试次数
     rollback_reason: str  # 触发回退的原因（非空 = 需要回退）

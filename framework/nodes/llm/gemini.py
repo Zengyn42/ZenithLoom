@@ -350,7 +350,6 @@ class GeminiCodeAssistNode(_GeminiSessionMixin, AgentNode):
     重写 __call__()：
       - 读取 state["routing_context"] 作为提问
       - 清除 routing_target / routing_context
-      - 增加 consult_count
       - enable_routing=true 时，解析输出中的路由信号并写入 state
     """
 
@@ -451,7 +450,6 @@ class GeminiCodeAssistNode(_GeminiSessionMixin, AgentNode):
                 "messages": [AIMessage(content="[Gemini 暂不可用，已跳过本轮咨询]")],
                 "routing_target": "",
                 "routing_context": "",
-                "consult_count": state.get("consult_count", 0) + 1,
                 "node_sessions": {self._session_key: session_id},
             }
 
@@ -470,7 +468,6 @@ class GeminiCodeAssistNode(_GeminiSessionMixin, AgentNode):
                     "messages": [AIMessage(content=reply)],
                     "routing_target": routing_target,
                     "routing_context": routing_context,
-                    "consult_count": 0,
                     "node_sessions": {self._session_key: new_session_id or session_id},
                 }
 
@@ -478,7 +475,6 @@ class GeminiCodeAssistNode(_GeminiSessionMixin, AgentNode):
             "messages": [AIMessage(content=reply)],
             "routing_target": "",
             "routing_context": "",
-            "consult_count": 0,
             "rollback_reason": "",
             "node_sessions": {self._session_key: new_session_id or session_id},
         }
@@ -881,7 +877,6 @@ class GeminiCLINode(AgentNode):
                 "messages": [AIMessage(content=f"[Gemini CLI 失败: {e}]")],
                 "routing_target": "",
                 "routing_context": "",
-                "consult_count": state.get("consult_count", 0) + 1,
                 "node_sessions": {self._session_key: session_id},
             }
 
@@ -900,7 +895,6 @@ class GeminiCLINode(AgentNode):
                     "messages": [AIMessage(content=reply)],
                     "routing_target": routing_target,
                     "routing_context": routing_context,
-                    "consult_count": 0,
                     "node_sessions": {self._session_key: new_session_id or session_id},
                 }
 
@@ -908,7 +902,6 @@ class GeminiCLINode(AgentNode):
             "messages": [AIMessage(content=reply)],
             "routing_target": "",
             "routing_context": "",
-            "consult_count": 0,
             "rollback_reason": "",
             "node_sessions": {self._session_key: new_session_id or session_id},
         }

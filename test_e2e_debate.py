@@ -6,7 +6,7 @@ E2E 测试：辩论子图架构验证
   2. SUBGRAPH_NODE 节点类型编译正确
   3. 两个辩论子图独立编译（debate_gemini_first / debate_claude_first）
   4. Hani 主图含 debate_brainstorm / debate_design 节点
-  5. _invoke_subgraph 薄适配器正确转换 routing_context → HumanMessage
+  5. _make_subgraph_input_transform 正确转换 routing_context → HumanMessage
   6. LlmNode output_field 机制：子图末尾节点自动写入 state 字段
 
 运行：
@@ -96,6 +96,7 @@ async def test_hani_graph_with_debate():
     }
     missing = required - node_ids
     assert not missing, f"hani 图缺少节点: {missing}"
+
     logger.info(f"✅ hani nodes: {sorted(node_ids)}")
 
 
@@ -114,45 +115,33 @@ def _make_mock_graph(final_state: dict, node_id: str = "gemini_conclusion"):
     return _MockGraph(final_state, node_id)
 
 
-async def test_invoke_subgraph_state_mapping():
-    """_invoke_subgraph 薄适配器正确转换 routing_context → HumanMessage 并收集输出。"""
-    from langchain_core.messages import AIMessage
-    from framework.agent_loader import _invoke_subgraph
+async def test_input_transform_state_mapping():
+    """_make_subgraph_input_transform 正确转换 routing_context → HumanMessage 并透传 state。"""
+    from langchain_core.messages import HumanMessage
+    from framework.agent_loader import _make_subgraph_input_transform
 
-    fake_reply = "最终结论：微服务更适合这个场景。"
-    mock_graph = _make_mock_graph({
-        "messages": [AIMessage(content=fake_reply)],
-        "debate_conclusion": fake_reply,
-    })
+    transform = _make_subgraph_input_transform(reset_messages=True)
 
     parent_state = {
         "routing_context": "微服务 vs 单体架构选型",
         "knowledge_vault": "/home/kingy/ObsidianVault",
         "project_docs": "/home/kingy/Projects/Genesis/docs",
         "debate_conclusion": "",
-        "messages": [],
-        "consult_count": 0,
+        "messages": [HumanMessage(content="旧消息")],
     }
 
-    result = await _invoke_subgraph(
-        parent_state, graph=mock_graph,
-        node_id="debate_brainstorm", graph_name="debate_gemini_first",
-    )
+    result = transform.invoke(parent_state)
 
-    # 验证子图收到正确的 HumanMessage
-    call_args = mock_graph._call_args
-    assert len(call_args["messages"]) == 1, "子图应收到 1 条消息"
-    assert call_args["messages"][0].content == "微服务 vs 单体架构选型", \
+    # 验证 messages 被替换为来自 routing_context 的 HumanMessage
+    assert len(result["messages"]) == 1, "transform 应产生 1 条消息"
+    assert result["messages"][0].content == "微服务 vs 单体架构选型", \
         "HumanMessage 应来自 routing_context"
-    assert call_args["knowledge_vault"] == "/home/kingy/ObsidianVault", \
+    assert result["knowledge_vault"] == "/home/kingy/ObsidianVault", \
         "knowledge_vault 应透传"
+    assert result["project_docs"] == "/home/kingy/Projects/Genesis/docs", \
+        "project_docs 应透传"
 
-    # 验证子图输出被收集
-    assert result.get("debate_conclusion") == fake_reply, \
-        "debate_conclusion 应来自子图节点的 output_field"
-    assert result.get("consult_count") == 1, "consult_count 应递增"
-
-    logger.info(f"✅ _invoke_subgraph mapping OK: conclusion={fake_reply[:40]!r}")
+    logger.info("✅ input_transform mapping OK: routing_context → HumanMessage")
 
 
 async def test_llm_node_output_field():
@@ -288,7 +277,7 @@ async def run():
     await test_agent_ref_registered()
     await test_debate_graphs_compile()
     await test_hani_graph_with_debate()
-    await test_invoke_subgraph_state_mapping()
+    await test_input_transform_state_mapping()
     await test_llm_node_output_field()
     await test_debate_state_schema()
     await test_gemini_node_system_prompt()

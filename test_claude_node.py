@@ -117,7 +117,6 @@ async def test_agent_node_call():
         "workspace": "",
         "project_root": "",
         "project_meta": {},
-        "consult_count": 0,
         "last_stable_commit": "",
         "retry_count": 0,
         "rollback_reason": "",

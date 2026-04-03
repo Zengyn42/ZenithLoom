@@ -3,7 +3,6 @@ test_gemini_routing — Gemini 节点 enable_routing 功能测试
 
 验证 GeminiCLINode 和 GeminiCodeAssistNode 在 enable_routing=true 时：
   - 正确解析输出中的路由信号
-  - 不增加 consult_count（重置为 0）
   - enable_routing=false（默认）时清除路由信号
 """
 
@@ -28,7 +27,6 @@ def _make_state(user_msg: str = "hello") -> dict:
         "messages": [HumanMessage(content=user_msg)],
         "routing_target": "",
         "routing_context": "",
-        "consult_count": 0,
         "workspace": "/tmp",
         "node_sessions": {},
         "rollback_reason": "",
@@ -75,7 +73,6 @@ class TestGeminiCLINodeRouting:
             result = await node_with_routing(_make_state())
         assert result["routing_target"] == "knowledge_shelf"
         assert result["routing_context"] == "搜索笔记"
-        assert result["consult_count"] == 0
 
     @pytest.mark.asyncio
     async def test_no_routing_signal(self, node_with_routing):
@@ -94,16 +91,6 @@ class TestGeminiCLINodeRouting:
             result = await node_without_routing(_make_state())
         assert result["routing_target"] == ""
         assert result["routing_context"] == ""
-
-    @pytest.mark.asyncio
-    async def test_routing_resets_consult_count(self, node_with_routing):
-        """路由信号检测时 consult_count 重置为 0。"""
-        reply = '{"route": "knowledge_shelf", "context": "test"}\n'
-        state = _make_state()
-        state["consult_count"] = 5  # 模拟已有计数
-        with patch.object(node_with_routing, "call_llm", new_callable=AsyncMock, return_value=(reply, "sid_123")):
-            result = await node_with_routing(state)
-        assert result["consult_count"] == 0
 
     @pytest.mark.asyncio
     async def test_no_routing_resets_state(self, node_with_routing):

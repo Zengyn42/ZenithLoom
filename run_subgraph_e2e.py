@@ -37,7 +37,6 @@ async def run_subgraph(name: str, agent_dir: str, prompt: str, init_extra: dict 
         "messages": [HumanMessage(content=prompt)],
         "routing_target": "",
         "routing_context": prompt,
-        "consult_count": 0,
         "node_sessions": {},
         "workspace": "",
         "project_root": "",
