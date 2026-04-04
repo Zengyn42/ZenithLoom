@@ -52,11 +52,15 @@ class SubgraphInputState(TypedDict):
     """子图 input schema：控制父图 state 流入子图的字段。
 
     用于 StateGraph(BaseAgentState, input=SubgraphInputState)。
-    node_sessions 与 messages 字段均缺失：
-      - LangGraph 1.0.10 不允许 input_schema 与 state_schema 对同一字段使用不同 reducer，
-        因此不能在此声明 node_sessions（BaseAgentState 用 _merge_dict）。
-      - 字段缺失时子图从自身 checkpoint 恢复；首次运行（无 checkpoint）自然以 {} 启动。
-      - 旧 debate checkpoint 在系统初始化/清理时清除，确保跨次调用不污染。
+
+    messages 字段故意缺失：LangGraph 原生阻断父图消息进入子图。
+
+    node_sessions 使用与 BaseAgentState 完全相同的 reducer（_merge_dict）：
+      - LangGraph 1.0.10 不允许 input_schema 与 state_schema 对同字段使用【不同】reducer，
+        但允许使用【相同】reducer → _merge_dict 可以安全声明。
+      - 加入后，session_mode=inherit 的注入能穿透 input schema 到达子图节点；
+        session_mode=persistent 的 checkpoint 恢复不再被 input schema 清零；
+        session_mode=fresh_per_call/isolated 的 wrapper 注入 {} → merge({}, ...) = {} 依然 fresh。
     """
     resilience_log: Annotated[list[dict], operator.add]
     routing_context: str
@@ -67,7 +71,7 @@ class SubgraphInputState(TypedDict):
     last_stable_commit: str
     retry_count: int
     rollback_reason: str
-    # node_sessions 故意缺失 → LangGraph 1.0.10 不允许 input_schema 对同字段使用不同 reducer
+    node_sessions: Annotated[dict, _merge_dict]  # 与 BaseAgentState 相同 reducer，允许 inherit/persistent 正常工作
     knowledge_vault: str
     project_docs: str
     debate_conclusion: str
