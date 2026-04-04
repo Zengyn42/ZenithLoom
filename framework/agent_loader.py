@@ -166,7 +166,7 @@ class EntityLoader:
             self._session_mgr = SessionManager(cfg.sessions_file, cfg.db_path)
         return self._session_mgr
 
-    async def build_graph(self, checkpointer=_DEFAULT, parent_persona: str = "", is_subgraph: bool = False):
+    async def build_graph(self, checkpointer=_DEFAULT, parent_persona: str = "", is_subgraph: bool = False, force_unique_session_keys: bool = False):
         """
         构建并返回编译好的 LangGraph 状态机。
 
@@ -216,6 +216,7 @@ class EntityLoader:
                 graph_dict, config, system_prompt, checkpointer,
                 blueprint_dir=str(self._dir),
                 is_subgraph=is_subgraph,
+                force_unique_session_keys=force_unique_session_keys,
             )
 
         # Priority 3: GraphSpec 默认图
@@ -662,6 +663,20 @@ def _get_state_schemas() -> dict:
 
 
 
+def _get_subgraph_session_keys(entity_json: dict) -> set:
+    """Extract all unique session_key values from a subgraph's entity.json graph spec.
+
+    Each LLM node declares a ``session_key`` (defaults to its ``id``).
+    Used by ``session_mode: inherit`` to know which keys to inject.
+    """
+    keys: set[str] = set()
+    for nd in entity_json.get("graph", {}).get("nodes", []):
+        sk = nd.get("session_key", nd.get("id", ""))
+        if sk:
+            keys.add(sk)
+    return keys
+
+
 async def _build_declarative(
     graph_spec: dict,
     config: AgentConfig,
@@ -669,6 +684,7 @@ async def _build_declarative(
     checkpointer,
     blueprint_dir: str = "",
     is_subgraph: bool = False,
+    force_unique_session_keys: bool = False,
 ) -> object:
     """
     从 entity.json["graph"]（含 nodes + edges）构建 LangGraph 状态机。
@@ -736,6 +752,7 @@ async def _build_declarative(
             # External agent subgraph — 纯原生 LangGraph 子图接入。
             # agent_dir 字段存在且无 type 声明时自动识别为外部子图。
             # output_field 由子图末尾 LLM 节点的 node_config["output_field"] 处理。
+            # session_mode: persistent(default) | fresh_per_call | inherit | isolated
 
             raw_dir = node_def.get("agent_dir", "")
             if not raw_dir:
@@ -761,13 +778,77 @@ async def _build_declarative(
                 raise ValueError(
                     f"external subgraph '{node_id}': agent_dir not found: {inner_dir}"
                 )
+
+            session_mode = node_def.get("session_mode", "persistent")
             inner_loader = EntityLoader(inner_dir)
             _pass_persona = system_prompt or ""
+
+            _force_unique = session_mode == "isolated"
             inner_graph = await inner_loader.build_graph(
                 checkpointer=None, parent_persona=_pass_persona, is_subgraph=True,
+                force_unique_session_keys=_force_unique,
             )
 
-            builder.add_node(node_id, inner_graph)
+            if session_mode == "persistent":
+                # Default: LangGraph manages subgraph checkpoint namespace;
+                # node_sessions persist across calls.
+                builder.add_node(node_id, inner_graph)
+
+            elif session_mode == "fresh_per_call":
+                # Clear node_sessions before each invocation so every call
+                # starts fresh LLM sessions. Wrapping in an async function
+                # prevents LangGraph from creating a checkpoint namespace
+                # for the subgraph (inner_graph has checkpointer=None).
+                _inner = inner_graph  # capture for closure
+                _nid = node_id
+
+                async def _fresh_wrapper(state: dict, config=None, *, _g=_inner, _n=_nid) -> dict:
+                    patched = {**state, "node_sessions": {}}
+                    logger.debug(f"[session_mode:fresh_per_call] {_n}: clearing node_sessions")
+                    return await _g.ainvoke(patched)
+
+                builder.add_node(node_id, _fresh_wrapper)
+
+            elif session_mode == "inherit":
+                # Inject parent node's session ID into all subgraph session keys.
+                inherit_from = node_def.get("inherit_from", "claude_main")
+                _inner = inner_graph
+                _nid = node_id
+                _sub_keys = _get_subgraph_session_keys(inner_loader.json)
+
+                async def _inherit_wrapper(
+                    state: dict, config=None,
+                    *, _g=_inner, _n=_nid, _from=inherit_from, _keys=_sub_keys,
+                ) -> dict:
+                    parent_sid = (state.get("node_sessions") or {}).get(_from, "")
+                    injected = {sk: parent_sid for sk in _keys}
+                    patched = {**state, "node_sessions": injected}
+                    logger.debug(
+                        f"[session_mode:inherit] {_n}: inheriting session "
+                        f"from {_from!r} → {len(_keys)} subgraph keys"
+                    )
+                    return await _g.ainvoke(patched)
+
+                builder.add_node(node_id, _inherit_wrapper)
+
+            elif session_mode == "isolated":
+                # Each node gets its own unique session key (forced at build time)
+                # AND node_sessions is cleared per call.
+                _inner = inner_graph
+                _nid = node_id
+
+                async def _isolated_wrapper(state: dict, config=None, *, _g=_inner, _n=_nid) -> dict:
+                    patched = {**state, "node_sessions": {}}
+                    logger.debug(f"[session_mode:isolated] {_n}: clearing node_sessions (unique keys)")
+                    return await _g.ainvoke(patched)
+
+                builder.add_node(node_id, _isolated_wrapper)
+
+            else:
+                raise ValueError(
+                    f"subgraph '{node_id}': unknown session_mode {session_mode!r} "
+                    f"(valid: persistent, fresh_per_call, inherit, isolated)"
+                )
 
         else:
             factory = get_node_factory(node_type)
@@ -779,6 +860,10 @@ async def _build_declarative(
             )
             if node_type == "DETERMINISTIC" and blueprint_dir and "agent_dir" not in node_def:
                 _base["agent_dir"] = blueprint_dir
+            # force_unique_session_keys: override session_key to node_id
+            # so each node uses its own independent session (isolated mode).
+            if force_unique_session_keys and _base.get("session_key"):
+                _base["session_key"] = node_id
             effective_def = _base
             node_instance = factory(config, effective_def)
             builder.add_node(node_id, _wrap_node_for_flow_log(node_id, node_instance))
