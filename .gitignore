@@ -7,3 +7,8 @@ __pycache__/
 .venv/
 consult_log.md
 logs/
+
+# Runtime data
+data/
+.coverage
+blueprints/role_agents/*/sessions.json
