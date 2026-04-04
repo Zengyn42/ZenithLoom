@@ -704,19 +704,27 @@ class GeminiCLINode(AgentNode):
             #    session 的 projectHash 记录创建时的 project，若与当前不同说明 workspace 变了
             record = gem_sess.load_session(session_id, current_project_id)
             if record and record.projectHash != current_project_id:
-                full_prompt = (
-                    f"[重要：工作目录已变更]\n"
-                    f"你的工作目录已从旧项目切换到：{cwd}\n"
-                    f"请以新目录为准进行所有后续操作。\n\n"
-                    f"{full_prompt}"
-                )
-                # 更新 record 的 projectHash 使后续不再重复通知
-                record.projectHash = current_project_id
-                gem_sess.save_session(record, current_project_id)
-                logger.info(
-                    f"[gemini-cli] workspace changed → injected cwd notice "
-                    f"for session {session_id[:8]}"
-                )
+                if self.is_plan_mode:
+                    # plan 模式（辩论节点）：跳过 workspace 变更注入，避免干扰纯文本讨论
+                    record.projectHash = current_project_id
+                    gem_sess.save_session(record, current_project_id)
+                    logger.debug(
+                        f"[gemini-cli] plan mode → skipped cwd injection "
+                        f"for session {session_id[:8]}"
+                    )
+                else:
+                    full_prompt = (
+                        f"[重要：工作目录已变更]\n"
+                        f"你的工作目录已从旧项目切换到：{cwd}\n"
+                        f"请以新目录为准进行所有后续操作。\n\n"
+                        f"{full_prompt}"
+                    )
+                    record.projectHash = current_project_id
+                    gem_sess.save_session(record, current_project_id)
+                    logger.info(
+                        f"[gemini-cli] workspace changed → injected cwd notice "
+                        f"for session {session_id[:8]}"
+                    )
 
             effective_model = _session_effective_model.get(session_id, self._model)
             sid_short = session_id[:8]

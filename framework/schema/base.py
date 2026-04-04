@@ -1,3 +1,4 @@
+import operator
 """
 base_schema — 框架默认 state schema
 
@@ -26,6 +27,7 @@ def _keep_last_2(existing: list, new) -> list:
 
 
 class BaseAgentState(TypedDict):
+    resilience_log: Annotated[list[dict], operator.add]
     messages: Annotated[list[BaseMessage], _keep_last_2]
     routing_target: str   # 路由目标节点 ID（Claude 写入，如 "debate_brainstorm"；空 = 无路由请求）
     routing_context: str  # 路由上下文（问题/背景，目标节点读取；替代旧 gemini_context）
@@ -47,17 +49,16 @@ class BaseAgentState(TypedDict):
 
 
 class SubgraphInputState(TypedDict):
-    """子图 input schema：包含除 messages 和 node_sessions 以外的所有 BaseAgentState 字段。
+    """子图 input schema：控制父图 state 流入子图的字段。
 
-    用于 StateGraph(BaseAgentState, input=SubgraphInputState)，
-    让 LangGraph 原生阻止父图的 messages 和 node_sessions 进入子图。
-
-    排除 node_sessions 的原因：
-      父图积累的 node_sessions（如 gemini_debate session ID）若传入子图，
-      会导致子图的 LLM 节点 resume 旧 session，携带上一次调用的对话历史，
-      造成跨次调用的上下文污染（Gemini 记住了上次辩论的内容）。
-      子图每次调用应以全新 node_sessions={} 启动，保证无状态性。
+    用于 StateGraph(BaseAgentState, input=SubgraphInputState)。
+    node_sessions 与 messages 字段均缺失：
+      - LangGraph 1.0.10 不允许 input_schema 与 state_schema 对同一字段使用不同 reducer，
+        因此不能在此声明 node_sessions（BaseAgentState 用 _merge_dict）。
+      - 字段缺失时子图从自身 checkpoint 恢复；首次运行（无 checkpoint）自然以 {} 启动。
+      - 旧 debate checkpoint 在系统初始化/清理时清除，确保跨次调用不污染。
     """
+    resilience_log: Annotated[list[dict], operator.add]
     routing_context: str
     routing_target: str
     workspace: str
@@ -66,7 +67,7 @@ class SubgraphInputState(TypedDict):
     last_stable_commit: str
     retry_count: int
     rollback_reason: str
-    # node_sessions 故意缺失 → 子图每次以空 sessions 启动，避免 resume 旧 LLM session
+    # node_sessions 故意缺失 → LangGraph 1.0.10 不允许 input_schema 对同字段使用不同 reducer
     knowledge_vault: str
     project_docs: str
     debate_conclusion: str
