@@ -3,7 +3,7 @@
 builds a CLI number guessing game.
 
 Strategy:
-  - Master graph uses SUBGRAPH_NODE (native LangGraph subgraphs).
+  - Master graph uses external subgraph (native LangGraph subgraphs).
   - Mock at leaf node level: ClaudeSDKNode, GeminiCLINode, OllamaNode.
   - design_debate subgraph (debate_claude_first): ClaudeSDKNode + GeminiCLINode nodes
     are both intercepted by the catch-all mocks.
@@ -179,7 +179,7 @@ def _make_e2e_scripts(tmpdir: str) -> None:
 
 @pytest.mark.asyncio
 async def test_e2e_colony_coder_game(tmp_path):
-    """Full-chain E2E: master graph (SUBGRAPH_NODE) drives Planner → Executor → QA.
+    """Full-chain E2E: master graph (external subgraph) drives Planner → Executor → QA.
 
     Mocking strategy (leaf-node level):
       - ClaudeSDKNode.__call__ → planner's claude_swarm, task_decompose; QA's generate_e2e;

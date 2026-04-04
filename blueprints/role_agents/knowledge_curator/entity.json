@@ -32,7 +32,6 @@
       },
       {
         "id": "knowledge_shelf",
-        "type": "SUBGRAPH_NODE",
         "agent_dir": "blueprints/functional_graphs/knowledge_shelf"
       },
       {

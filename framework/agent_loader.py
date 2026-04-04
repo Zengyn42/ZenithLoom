@@ -172,10 +172,10 @@ class EntityLoader:
 
         Args:
             checkpointer: LangGraph checkpointer（None=无，_DEFAULT=自动创建 SQLite）
-            parent_persona: 父图透传的 persona（仅 SUBGRAPH_NODE 使用）。
+            parent_persona: 父图透传的 persona（仅 external subgraph 使用）。
                            会追加到子图自身 system_prompt 之后。
             is_subgraph: True 时使用 SubgraphInputState 作为 input schema，
-                         原生隔离父图 messages（由 SUBGRAPH_NODE 路径传入）。
+                         原生隔离父图 messages（由 external subgraph 路径传入）。
 
         优先级：
           1. agent 目录下的 graph.py（定义 build_graph(loader, checkpointer)）
@@ -197,7 +197,7 @@ class EntityLoader:
 
         config = self.load_config()
         system_prompt = self.load_system_prompt()
-        # 合并父图透传的 persona（SUBGRAPH_NODE 场景）
+        # 合并父图透传的 persona（external subgraph 场景）
         if parent_persona:
             if system_prompt:
                 system_prompt = system_prompt + "\n\n" + parent_persona
@@ -510,7 +510,7 @@ class EntityLoader:
 
     def build_topology_mermaid(self) -> str:
         """
-        从 entity.json 构建 Mermaid 拓扑图，展开 SUBGRAPH_NODE 子图。
+        从 entity.json 构建 Mermaid 拓扑图，展开 external subgraph 子图。
 
         弥补 LangGraph get_graph(xray=True) 无法展开 wrapped subgraph callable 的缺陷。
         """
@@ -599,15 +599,13 @@ def _collect_routing_hints(graph_spec: dict, base_dir: str = "") -> str:
 
     base_dir: blueprint 所在目录，用于解析相对 agent_dir 路径。
     """
-    _ROUTABLE_TYPES = ("SUBGRAPH_NODE",)
     hints: list[str] = []
     for node_def in graph_spec.get("nodes", []):
-        if node_def.get("type") not in _ROUTABLE_TYPES:
+        # 外部子图：有 agent_dir 且无 type（原 external subgraph）
+        agent_dir = node_def.get("agent_dir", "")
+        if not agent_dir or node_def.get("type"):
             continue
         node_id = node_def.get("id", "")
-        agent_dir = node_def.get("agent_dir", "")
-        if not agent_dir:
-            continue
         # 相对路径优先用 base_dir 解析，再 fallback 到 cwd
         raw = Path(agent_dir)
         if not raw.is_absolute() and base_dir:
@@ -734,15 +732,15 @@ async def _build_declarative(
             )
             builder.add_node(node_id, _wrap_node_for_flow_log(node_id, inner))
 
-        elif node_type == "SUBGRAPH_NODE":
+        elif node_def.get("agent_dir") and not node_type:
             # External agent subgraph — 纯原生 LangGraph 子图接入。
+            # agent_dir 字段存在且无 type 声明时自动识别为外部子图。
             # output_field 由子图末尾 LLM 节点的 node_config["output_field"] 处理。
-            # routing_context → HumanMessage 转换由 _make_subgraph_input_transform 处理。
 
             raw_dir = node_def.get("agent_dir", "")
             if not raw_dir:
                 raise ValueError(
-                    f"SUBGRAPH_NODE '{node_id}' must declare 'agent_dir'"
+                    f"subgraph node '{node_id}' must declare 'agent_dir'"
                 )
             raw_path = Path(raw_dir)
             if raw_path.is_absolute():
@@ -754,23 +752,21 @@ async def _build_declarative(
                 # Relative to blueprint_dir (e.g. "../colony_coder_executor")
                 if not blueprint_dir:
                     raise ValueError(
-                        f"SUBGRAPH_NODE '{node_id}': relative agent_dir "
+                        f"external subgraph '{node_id}': relative agent_dir "
                         f"'{raw_dir}' requires a known blueprint_dir"
                     )
                 inner_dir = Path(blueprint_dir) / raw_dir
             inner_dir = inner_dir.resolve()
             if not inner_dir.exists():
                 raise ValueError(
-                    f"SUBGRAPH_NODE '{node_id}': agent_dir not found: {inner_dir}"
+                    f"external subgraph '{node_id}': agent_dir not found: {inner_dir}"
                 )
             inner_loader = EntityLoader(inner_dir)
-            # SUBGRAPH_NODE 的节点等同于主图节点，始终透传 persona
             _pass_persona = system_prompt or ""
             inner_graph = await inner_loader.build_graph(
                 checkpointer=None, parent_persona=_pass_persona, is_subgraph=True,
             )
 
-            # 原生 LangGraph 子图接入：SubgraphInputState input schema 原生隔离父图 messages
             builder.add_node(node_id, inner_graph)
 
         else:
@@ -1147,7 +1143,8 @@ def _mermaid_render(spec: dict, lines: list, indent: str, prefix: str) -> None:
         ntype = node_def.get("type", "")
         full  = _mermaid_id(prefix, raw)
 
-        if ntype == "SUBGRAPH_NODE":
+        if node_def.get("agent_dir") and not ntype:
+            # 外部子图：agent_dir 存在且无 type（原 external subgraph）
             _mermaid_agent_ref(node_def, lines, indent, full, raw)
             continue
 
@@ -1185,7 +1182,7 @@ def _mermaid_agent_ref(
     node_def: dict, lines: list, indent: str, full_id: str, raw: str
 ) -> None:
     """
-    将 SUBGRAPH_NODE 节点展开为 Mermaid subgraph，递归加载外部 entity.json。
+    将 external subgraph 节点展开为 Mermaid subgraph，递归加载外部 entity.json。
     agent_dir 路径相对于进程 CWD。
     """
     agent_dir_str = node_def.get("agent_dir", "")

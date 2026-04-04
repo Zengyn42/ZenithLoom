@@ -85,12 +85,10 @@
       },
       {
         "id": "debate_brainstorm",
-        "type": "SUBGRAPH_NODE",
         "agent_dir": "blueprints/functional_graphs/debate_gemini_first"
       },
       {
         "id": "debate_design",
-        "type": "SUBGRAPH_NODE",
         "agent_dir": "blueprints/functional_graphs/debate_claude_first"
       },
       {
@@ -122,13 +120,11 @@
       },
       {
         "id": "apex_coder",
-        "type": "SUBGRAPH_NODE",
         "agent_dir": "blueprints/functional_graphs/apex_coder",
         "routing_hint": "当编程问题极其复杂、需要全力以赴穷举所有方案时使用。适用：多次失败仍未解决的 bug、完整架构重构、跨多文件系统变更、需要深度 debug 的环境/配置问题。\n\n路由前必须：将完整执行计划写入一个 plan.md 文件（路径自选），然后在 context 字段填写该文件的绝对路径。ApexCoder 会读取该文件作为任务输入。\n\n示例：{\"route\": \"apex_coder\", \"context\": \"/tmp/apex_plan.md\"}"
       },
       {
         "id": "tool_discovery",
-        "type": "SUBGRAPH_NODE",
         "agent_dir": "blueprints/functional_graphs/tool_discovery"
       }
     ],

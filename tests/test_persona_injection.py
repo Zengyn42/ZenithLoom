@@ -1,10 +1,10 @@
-"""Tests for persona injection: _find_persona_targets + SUBGRAPH_NODE passthrough.
+"""Tests for persona injection: _find_persona_targets + external subgraph passthrough.
 
 Rules:
   1. Prefer LLM nodes with 'main' in id (supports multiple).
   2. Fallback: reverse BFS from __end__, pick closest LLM node.
   3. No LLM node → empty list.
-  4. SUBGRAPH_NODE: parent persona passes through to child graph's LLM nodes.
+  4. external subgraph: parent persona passes through to child graph's LLM nodes.
      (Legacy SUBGRAPH_REF removed — all subgraphs now pass through parent persona.)
 """
 import asyncio
@@ -201,9 +201,9 @@ class TestRule3NoLLM:
         assert _find_persona_targets(spec) == []
 
     def test_subgraph_node_only(self):
-        """SUBGRAPH_NODE is not an LLM type."""
+        """external subgraph is not an LLM type."""
         spec = _spec(
-            [_node("sub", "SUBGRAPH_NODE")],
+            [_node("sub", "external subgraph")],
             [("__start__", "sub"), ("sub", "__end__")],
         )
         assert _find_persona_targets(spec) == []
@@ -300,9 +300,9 @@ class TestEdgeCases:
         assert _find_persona_targets(spec) == ["claude_main"]
 
     def test_real_knowledge_curator_pattern(self):
-        """Mirrors knowledge_curator: only SUBGRAPH_NODE, no LLM."""
+        """Mirrors knowledge_curator: only external subgraph, no LLM."""
         spec = _spec(
-            [_node("obsidian_manager", "SUBGRAPH_NODE")],
+            [_node("obsidian_manager", "external subgraph")],
             [
                 ("__start__", "obsidian_manager"),
                 ("obsidian_manager", "__end__"),
@@ -312,7 +312,7 @@ class TestEdgeCases:
 
 
 # =========================================================================
-# Persona passthrough: SUBGRAPH_NODE vs SUBGRAPH_REF (structural)
+# Persona passthrough: external subgraph vs SUBGRAPH_REF (structural)
 # =========================================================================
 
 def _make_child_agent_dir(tmp: Path, child_name: str, has_own_persona: bool = False) -> Path:
@@ -343,17 +343,16 @@ def _make_parent_agent_dir(
     tmp: Path,
     parent_name: str,
     child_dir: Path,
-    node_type: str = "SUBGRAPH_NODE",
+    node_type: str = "external subgraph",
     has_persona: bool = True,
 ) -> Path:
-    """Create a parent agent dir with a single SUBGRAPH_NODE."""
+    """Create a parent agent dir with a single external subgraph."""
     parent_dir = tmp / parent_name
     parent_dir.mkdir(parents=True)
 
     node_def = {
         "id": "child_sub",
-        "type": "SUBGRAPH_NODE",
-        "agent_dir": str(child_dir),
+                "agent_dir": str(child_dir),
     }
 
     agent_json = {
@@ -377,7 +376,7 @@ def _make_parent_agent_dir(
 
 
 class TestPersonaPassthrough:
-    """SUBGRAPH_NODE receives parent persona."""
+    """external subgraph receives parent persona."""
 
     def test_subgraph_node_receives_parent_persona(self):
         """Parent persona should merge into child's system_prompt via build_graph."""
@@ -385,7 +384,7 @@ class TestPersonaPassthrough:
             tmp_path = Path(tmp)
             child_dir = _make_child_agent_dir(tmp_path, "child_graph")
             parent_dir = _make_parent_agent_dir(
-                tmp_path, "parent_graph", child_dir, node_type="SUBGRAPH_NODE"
+                tmp_path, "parent_graph", child_dir, node_type="external subgraph"
             )
 
             loader = EntityLoader(parent_dir)
@@ -402,7 +401,7 @@ class TestPersonaPassthrough:
             child_dir = _make_child_agent_dir(tmp_path, "child_graph")
             parent_dir = _make_parent_agent_dir(
                 tmp_path, "parent_graph", child_dir,
-                node_type="SUBGRAPH_NODE", has_persona=False,
+                node_type="external subgraph", has_persona=False,
             )
 
             loader = EntityLoader(parent_dir)
@@ -417,7 +416,7 @@ class TestPersonaPassthrough:
             tmp_path = Path(tmp)
             child_dir = _make_child_agent_dir(tmp_path, "child_graph", has_own_persona=True)
             parent_dir = _make_parent_agent_dir(
-                tmp_path, "parent_graph", child_dir, node_type="SUBGRAPH_NODE"
+                tmp_path, "parent_graph", child_dir, node_type="external subgraph"
             )
 
             loader = EntityLoader(parent_dir)
@@ -427,7 +426,7 @@ class TestPersonaPassthrough:
             assert graph is not None
 
     def test_parent_with_own_llm_also_passes_through(self):
-        """SUBGRAPH_NODE nodes = main graph nodes, always receive persona."""
+        """external subgraph nodes = main graph nodes, always receive persona."""
         with tempfile.TemporaryDirectory() as tmp:
             tmp_path = Path(tmp)
             child_dir = _make_child_agent_dir(tmp_path, "child_graph")
@@ -441,8 +440,7 @@ class TestPersonaPassthrough:
                 "graph": {
                     "nodes": [
                         {"id": "claude_main", "type": "CLAUDE_CLI"},
-                        {"id": "child_sub", "type": "SUBGRAPH_NODE",
-                         "agent_dir": str(child_dir)},
+                        {"id": "child_sub",                          "agent_dir": str(child_dir)},
                     ],
                     "edges": [
                         {"from": "__start__", "to": "claude_main"},
@@ -467,7 +465,7 @@ class TestPersonaPassthrough:
             child_dir = _make_child_agent_dir(tmp_path, "child_graph", has_own_persona=True)
 
             loader = EntityLoader(child_dir)
-            # Simulate what SUBGRAPH_NODE does: pass parent_persona
+            # Simulate what external subgraph does: pass parent_persona
             graph = asyncio.get_event_loop().run_until_complete(
                 loader.build_graph(checkpointer=None, parent_persona="# Injected Parent Persona")
             )
@@ -640,7 +638,7 @@ class TestScenarioPersonaContent:
                     {"id": "A1_main", "type": "GEMINI_CLI", "model": "gemini-2.5-flash"},
                 ],
                 child_refs=[
-                    {"id": "sub_B", "type": "SUBGRAPH_NODE", "agent_dir": str(subB)},
+                    {"id": "sub_B", "type": "external subgraph", "agent_dir": str(subB)},
                 ],
                 edges=[
                     {"from": "__start__", "to": "A1_main"},
@@ -682,7 +680,7 @@ class TestScenarioPersonaContent:
                 tmp_path, "graph_B", _PERSONA_B,
                 own_nodes=[],
                 child_refs=[
-                    {"id": "sub_A", "type": "SUBGRAPH_NODE", "agent_dir": str(subA)},
+                    {"id": "sub_A", "type": "external subgraph", "agent_dir": str(subA)},
                 ],
                 edges=[
                     {"from": "__start__", "to": "sub_A"},
@@ -732,7 +730,7 @@ class TestScenarioPersonaContent:
                     {"id": "C2_main", "type": "CLAUDE_CLI"},
                 ],
                 child_refs=[
-                    {"id": "sub_A", "type": "SUBGRAPH_NODE", "agent_dir": str(subA)},
+                    {"id": "sub_A", "type": "external subgraph", "agent_dir": str(subA)},
                 ],
                 edges=[
                     {"from": "__start__", "to": "C1_main"},
@@ -789,8 +787,7 @@ class TestScenarioPersonaContent:
                 ],
                 child_refs=[
                     {
-                        "id": "ref_A", "type": "SUBGRAPH_NODE",
-                        "agent_dir": str(subA),
+                        "id": "ref_A",                         "agent_dir": str(subA),
                     },
                 ],
                 edges=[
@@ -844,8 +841,7 @@ class TestScenarioPersonaContent:
                 ],
                 child_refs=[
                     {
-                        "id": "ref_A", "type": "SUBGRAPH_NODE",
-                        "agent_dir": str(subA),
+                        "id": "ref_A",                         "agent_dir": str(subA),
                     },
                 ],
                 edges=[
@@ -861,7 +857,7 @@ class TestScenarioPersonaContent:
                 tmp_path, "graph_B", _PERSONA_B,
                 own_nodes=[],
                 child_refs=[
-                    {"id": "sub_C", "type": "SUBGRAPH_NODE", "agent_dir": str(c_dir)},
+                    {"id": "sub_C", "type": "external subgraph", "agent_dir": str(c_dir)},
                 ],
                 edges=[
                     {"from": "__start__", "to": "sub_C"},

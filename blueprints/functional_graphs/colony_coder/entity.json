@@ -6,17 +6,14 @@
     "nodes": [
       {
         "id": "plan",
-        "type": "SUBGRAPH_NODE",
         "agent_dir": "../colony_coder_planner"
       },
       {
         "id": "execute",
-        "type": "SUBGRAPH_NODE",
         "agent_dir": "../colony_coder_executor"
       },
       {
         "id": "qa",
-        "type": "SUBGRAPH_NODE",
         "agent_dir": "../colony_coder_qa"
       }
     ],
