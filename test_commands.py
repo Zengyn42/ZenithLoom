@@ -4,7 +4,7 @@
 覆盖所有暴露给用户的命令：
   CLI  : !new, !switch, !sessions, !session
   Discord: !help, !new, !switch, !session, !sessions, !whoami,
-           !debug, !memory, !compact, !reset, !clear, !tokens,
+           !debug, !memory, !compact, !reset, !tokens,
            !setproject, !project, !stop, !channels
   Per-channel: _ensure_channel_session, _get_channel_config,
                _get_channel_workspace, _cleanup_channel
@@ -478,11 +478,11 @@ async def test_discord_memory():
 
 
 # ─────────────────────────────────────────────
-# 10. Discord !compact / !reset / !clear (per-channel)
+# 10. Discord !compact / !reset (per-channel)
 # ─────────────────────────────────────────────
 
-async def test_discord_compact_reset_clear():
-    print("--- Discord !compact / !reset / !clear ---")
+async def test_discord_compact_reset():
+    print("--- Discord !compact / !reset ---")
     import interfaces.discord_bot as bot
 
     with tempfile.TemporaryDirectory() as tmp:
@@ -509,19 +509,7 @@ async def test_discord_compact_reset_clear():
         assert "重置" in reply3 or "Session" in reply3
         print(f"   !reset confirm: {reply3[:70]}")
 
-        # !clear → immediate reset (creates new session with same name)
-        old_tid = sm.get("discord-100")
-        ctx4 = _mock_ctx(channel_id=100)
-        await bot.clear_session(ctx4)
-        msg4 = ctx4.send.call_args[0][0]
-        assert "重置" in msg4 or "Session" in msg4
-        new_tid = sm.get("discord-100")
-        assert new_tid != old_tid, "!clear should create a new thread_id"
-        assert bot._channel_active_session[100] == "discord-100"
-        print(f"   !clear: {msg4[:70]}")
-        print(f"   old_tid={old_tid[:8]} → new_tid={new_tid[:8]}")
-
-    print("✅ Discord !compact / !reset / !clear OK\n")
+    print("✅ Discord !compact / !reset OK\n")
 
 
 # ─────────────────────────────────────────────
@@ -882,7 +870,7 @@ if __name__ == "__main__":
         await test_discord_whoami_debug()
         await test_discord_tokens()
         await test_discord_memory()
-        await test_discord_compact_reset_clear()
+        await test_discord_compact_reset()
         await test_discord_setproject_project()
         await test_discord_stop()
         await test_discord_channels()

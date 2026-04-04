@@ -857,6 +857,13 @@ async def on_message(message: discord.Message):
     user_input = message.content.strip()
     channel_id = message.channel.id
 
+    # ── 软停止关键词：stop / wait / 停 / 停止（整行，大小写不限）──────
+    _SOFT_STOP_WORDS = {"stop", "wait", "停", "停止"}
+    if user_input.lower() in _SOFT_STOP_WORDS:
+        ctx = await bot.get_context(message)
+        await stop_task(ctx)
+        return
+
     # ── 确保频道有 session ──────────────────────────────────────────
     _ensure_channel_session(channel_id)
 
@@ -1046,19 +1053,6 @@ async def whoami(ctx):
     authorized = "已授权" if _is_authorized(ctx.author) else "未授权"
     await ctx.send(f"你的 Discord ID: `{ctx.author.id}` ({authorized})")
 
-
-@bot.command(name="clear")
-async def clear_session(ctx):
-    if not await _check_auth(ctx):
-        return
-    channel_id = ctx.channel.id
-    name = _ensure_channel_session(channel_id)
-    env = _session_mgr.get_envelope(name)
-    workspace = env.workspace if env else ""
-    _session_mgr.delete(name)
-    new_env = _session_mgr.create_session(name, workspace=workspace)
-    _channel_active_session[channel_id] = name
-    await ctx.send(f"Session 已重置。(new thread: `{new_env.thread_id[:8]}`)")
 
 
 # ==========================================
