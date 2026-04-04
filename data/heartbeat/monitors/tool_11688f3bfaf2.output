@@ -1,0 +1,4 @@
+Presenton not running. Starting Docker container...
+Waiting for Presenton to be ready..... ready!
+Error: Presenton API returned HTTP 500
+{"detail":"Presentation generation failed"}

@@ -1,0 +1,20 @@
+{
+  "probe_ollama": {
+    "interval_hours": 1,
+    "status": "OK",
+    "last_run": "2026-04-03T21:05:49.892014",
+    "last_result": "ollama:OK"
+  },
+  "probe_claude": {
+    "interval_hours": 1,
+    "status": "OK",
+    "last_run": "2026-04-03T21:06:07.961363",
+    "last_result": "claude:OK"
+  },
+  "probe_gemini": {
+    "interval_hours": 1,
+    "status": "OK",
+    "last_run": "2026-04-03T21:06:31.820005",
+    "last_result": "gemini:OK"
+  }
+}

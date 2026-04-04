@@ -85,11 +85,13 @@
       },
       {
         "id": "debate_brainstorm",
-        "agent_dir": "blueprints/functional_graphs/debate_gemini_first"
+        "agent_dir": "blueprints/functional_graphs/debate_gemini_first",
+        "session_mode": "fresh_per_call"
       },
       {
         "id": "debate_design",
-        "agent_dir": "blueprints/functional_graphs/debate_claude_first"
+        "agent_dir": "blueprints/functional_graphs/debate_claude_first",
+        "session_mode": "fresh_per_call"
       },
       {
         "id": "gmail_reader",

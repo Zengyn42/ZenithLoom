@@ -1,0 +1,8 @@
+{
+  "stats_system": {
+    "interval_hours": 0.5,
+    "status": "OK",
+    "last_run": "2026-04-03T21:05:49.790685",
+    "last_result": "[SYSTEM_STATS] level=info\nCPU: 24 cores | load: 0.15/0.2/0.16\nMEM: 1.9G / 86.4G (2.2%) | avail: 84.5G\nSWAP: 1.8G / 64.0G (2.9%)\nDISK(/): 193.2G / 1006.9G (19.2%) | free: 762.4G\nUPTIME: 9h 13m"
+  }
+}
