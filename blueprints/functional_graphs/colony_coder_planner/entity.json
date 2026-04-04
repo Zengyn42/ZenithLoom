@@ -6,7 +6,6 @@
     "nodes": [
       {
         "id": "design_debate",
-        "type": "SUBGRAPH_NODE",
         "agent_dir": "blueprints/functional_graphs/debate_claude_first"
       },
       {

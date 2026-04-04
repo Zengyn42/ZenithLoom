@@ -109,7 +109,7 @@ def _(config, node_config):
 
 
 # SUBGRAPH_REF / AGENT_REF — removed; now handled inline by agent_loader
-# as SUBGRAPH_NODE with input_schema (backward compat auto-conversion).
+# as external subgraph with input_schema (backward compat auto-conversion).
 
 
 @register_node("DETERMINISTIC")

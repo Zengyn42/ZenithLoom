@@ -3,7 +3,7 @@ E2E 测试：辩论子图架构验证
 
 覆盖：
   1. BaseAgentState 含新字段（knowledge_vault / project_docs / debate_conclusion）
-  2. SUBGRAPH_NODE 节点类型编译正确
+  2. external subgraph 节点类型编译正确
   3. 两个辩论子图独立编译（debate_gemini_first / debate_claude_first）
   4. Hani 主图含 debate_brainstorm / debate_design 节点
   5. _make_subgraph_input_transform 正确转换 routing_context → HumanMessage
@@ -48,10 +48,10 @@ async def test_state_fields():
 
 
 async def test_agent_ref_registered():
-    """SUBGRAPH_NODE 由 agent_loader 直接处理（不在 registry 注册）。"""
+    """external subgraph 由 agent_loader 直接处理（不在 registry 注册）。"""
     import framework.builtins
     from framework.registry import get_node_factory
-    # SUBGRAPH_NODE 不在 registry — 由 agent_loader 内联处理
+    # external subgraph 不在 registry — 由 agent_loader 内联处理
     get_node_factory("CLAUDE_SDK")
     get_node_factory("GEMINI_API")
     get_node_factory("VALIDATE")
@@ -82,7 +82,7 @@ async def test_debate_graphs_compile():
 
 
 async def test_hani_graph_with_debate():
-    """Hani 主图含 debate_brainstorm / debate_design SUBGRAPH_NODE 节点。"""
+    """Hani 主图含 debate_brainstorm / debate_design external subgraph 节点。"""
     from framework.agent_loader import AgentLoader
 
     g = await AgentLoader(Path("blueprints/role_agents/technical_architect")).build_graph()
