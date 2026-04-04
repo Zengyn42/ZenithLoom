@@ -203,7 +203,7 @@ class TestRule3NoLLM:
     def test_subgraph_node_only(self):
         """external subgraph is not an LLM type."""
         spec = _spec(
-            [_node("sub", "external subgraph")],
+            [_node("sub", "")],
             [("__start__", "sub"), ("sub", "__end__")],
         )
         assert _find_persona_targets(spec) == []
@@ -302,7 +302,7 @@ class TestEdgeCases:
     def test_real_knowledge_curator_pattern(self):
         """Mirrors knowledge_curator: only external subgraph, no LLM."""
         spec = _spec(
-            [_node("obsidian_manager", "external subgraph")],
+            [_node("obsidian_manager", "")],
             [
                 ("__start__", "obsidian_manager"),
                 ("obsidian_manager", "__end__"),
@@ -343,7 +343,7 @@ def _make_parent_agent_dir(
     tmp: Path,
     parent_name: str,
     child_dir: Path,
-    node_type: str = "external subgraph",
+    node_type: str = "",
     has_persona: bool = True,
 ) -> Path:
     """Create a parent agent dir with a single external subgraph."""
@@ -384,7 +384,7 @@ class TestPersonaPassthrough:
             tmp_path = Path(tmp)
             child_dir = _make_child_agent_dir(tmp_path, "child_graph")
             parent_dir = _make_parent_agent_dir(
-                tmp_path, "parent_graph", child_dir, node_type="external subgraph"
+                tmp_path, "parent_graph", child_dir, node_type=""
             )
 
             loader = EntityLoader(parent_dir)
@@ -401,7 +401,7 @@ class TestPersonaPassthrough:
             child_dir = _make_child_agent_dir(tmp_path, "child_graph")
             parent_dir = _make_parent_agent_dir(
                 tmp_path, "parent_graph", child_dir,
-                node_type="external subgraph", has_persona=False,
+                node_type="", has_persona=False,
             )
 
             loader = EntityLoader(parent_dir)
@@ -416,7 +416,7 @@ class TestPersonaPassthrough:
             tmp_path = Path(tmp)
             child_dir = _make_child_agent_dir(tmp_path, "child_graph", has_own_persona=True)
             parent_dir = _make_parent_agent_dir(
-                tmp_path, "parent_graph", child_dir, node_type="external subgraph"
+                tmp_path, "parent_graph", child_dir, node_type=""
             )
 
             loader = EntityLoader(parent_dir)
@@ -638,7 +638,7 @@ class TestScenarioPersonaContent:
                     {"id": "A1_main", "type": "GEMINI_CLI", "model": "gemini-2.5-flash"},
                 ],
                 child_refs=[
-                    {"id": "sub_B", "type": "external subgraph", "agent_dir": str(subB)},
+                    {"id": "sub_B", "agent_dir": str(subB)},
                 ],
                 edges=[
                     {"from": "__start__", "to": "A1_main"},
@@ -680,7 +680,7 @@ class TestScenarioPersonaContent:
                 tmp_path, "graph_B", _PERSONA_B,
                 own_nodes=[],
                 child_refs=[
-                    {"id": "sub_A", "type": "external subgraph", "agent_dir": str(subA)},
+                    {"id": "sub_A", "agent_dir": str(subA)},
                 ],
                 edges=[
                     {"from": "__start__", "to": "sub_A"},
@@ -730,7 +730,7 @@ class TestScenarioPersonaContent:
                     {"id": "C2_main", "type": "CLAUDE_CLI"},
                 ],
                 child_refs=[
-                    {"id": "sub_A", "type": "external subgraph", "agent_dir": str(subA)},
+                    {"id": "sub_A", "agent_dir": str(subA)},
                 ],
                 edges=[
                     {"from": "__start__", "to": "C1_main"},
@@ -857,7 +857,7 @@ class TestScenarioPersonaContent:
                 tmp_path, "graph_B", _PERSONA_B,
                 own_nodes=[],
                 child_refs=[
-                    {"id": "sub_C", "type": "external subgraph", "agent_dir": str(c_dir)},
+                    {"id": "sub_C", "agent_dir": str(c_dir)},
                 ],
                 edges=[
                     {"from": "__start__", "to": "sub_C"},

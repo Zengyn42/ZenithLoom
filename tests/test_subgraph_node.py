@@ -8,7 +8,7 @@ def test_subgraph_node_type_handled_in_agent_loader():
     """external subgraph branch must exist in _build_declarative in agent_loader."""
     import framework.agent_loader as al
     src = inspect.getsource(al)
-    assert "external subgraph" in src, "external subgraph not handled in agent_loader"
+    assert "agent_dir" in src and "not node_type" in src, "agent_dir detection not in agent_loader"
 
 
 def test_no_circular_import_with_reducers():

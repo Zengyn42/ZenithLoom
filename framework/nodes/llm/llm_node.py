@@ -69,7 +69,6 @@ from langchain_core.messages import AIMessage
 from framework.config import AgentConfig
 from framework.debug import is_debug, log_node_thinking
 from framework.resource_lock import acquire_resource
-from framework.nodes.llm.resilience import invoke_with_resilience, RetryableError, FatalError
 from framework.signal_parser import get_signal_parser
 from framework.token_guard import TokenLimitExceeded, check_before_llm, get_default_limit
 
@@ -273,24 +272,7 @@ class LlmNode:
 
     async def __call__(self, state: dict) -> dict:
         msgs = state.get("messages") or []
-        routing_context = state.get("routing_context", "")
-        _ns_peek = state.get("node_sessions") or {}
-        session_id_peek = _ns_peek.get(self._session_key, "")
-
-        if routing_context:
-            latest_input = routing_context
-        elif len(msgs) > 1 and not session_id_peek and "gemini" in self.__class__.__name__.lower():
-            # For Gemini, convert history into prompt without session
-            parts = []
-            for m in msgs:
-                role = "议题" if getattr(m, "type", "") == "human" else "发言"
-                parts.append(f"[{role}]:\n{m.content}")
-            latest_input = "\n\n---\n\n".join(parts)
-            topic = msgs[0].content if msgs and getattr(msgs[0], "type", "") == "human" else ""
-            if topic:
-                latest_input += f"\n\n---\n\n[原始要求（请严格遵守）]:\n{topic}\n请基于以上讨论继续发言。"
-        else:
-            latest_input = msgs[-1].content if msgs else ""
+        latest_input = state.get("routing_context") or (msgs[-1].content if msgs else "")
         # project_root（!setproject）优先；退回 per-session workspace
         project_root = state.get("project_root", "") or state.get("workspace", "") or None
 
@@ -381,16 +363,13 @@ class LlmNode:
                 timeout=self._resource_timeout,
                 holder=self._node_id,
             ):
-                @invoke_with_resilience
-                async def _resilient_call():
-                    return await self.call_llm(
-                        prompt,
-                        session_id=session_id,
-                        tools=tools,
-                        cwd=project_root,
-                        history=list(msgs),
-                    )
-                raw_output, new_session_id = await _resilient_call()
+                raw_output, new_session_id = await self.call_llm(
+                    prompt,
+                    session_id=session_id,
+                    tools=tools,
+                    cwd=project_root,
+                    history=list(msgs),
+                )
         finally:
             # 恢复原始 callback
             if is_debug():
