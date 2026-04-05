@@ -641,24 +641,24 @@ def _collect_routing_hints(graph_spec: dict, base_dir: str = "") -> str:
         if not agent_dir or node_def.get("type"):
             continue
         node_id = node_def.get("id", "")
-        # 相对路径优先用 base_dir 解析，再 fallback 到 cwd
-        raw = Path(agent_dir)
-        if not raw.is_absolute() and base_dir:
-            agent_json_path = Path(base_dir) / raw / "entity.json"
-        else:
-            agent_json_path = raw / "entity.json"
-        if not agent_json_path.exists():
-            continue
-        try:
-            # 父节点本地声明的 routing_hint 优先（允许每个父图为同一子图定制提示）
-            hint = node_def.get("routing_hint") or ""
-            if not hint:
-                sub_json = json.loads(agent_json_path.read_text(encoding="utf-8"))
-                hint = sub_json.get("routing_hint", "")
-            if hint:
-                hints.append(f'  - "{node_id}": {hint} <!-- [auto-injected from {agent_dir}/entity.json:routing_hint] -->')
-        except Exception:
-            continue
+        # 父节点本地声明的 routing_hint 优先（允许每个父图为同一子图定制提示）
+        hint = node_def.get("routing_hint") or ""
+        if not hint:
+            # 从子图 entity.json 读取 routing_hint（路径解析：CWD 优先，再 fallback 到 base_dir）
+            raw = Path(agent_dir)
+            for candidate in [
+                raw / "entity.json",                                    # 相对 CWD
+                (Path(base_dir) / raw / "entity.json") if base_dir else None,  # 相对 blueprint_dir
+            ]:
+                if candidate and candidate.exists():
+                    try:
+                        sub_json = json.loads(candidate.read_text(encoding="utf-8"))
+                        hint = sub_json.get("routing_hint", "")
+                    except Exception:
+                        pass
+                    break
+        if hint:
+            hints.append(f'  - "{node_id}": {hint} <!-- [auto-injected routing_hint] -->')
 
     if not hints:
         return ""
