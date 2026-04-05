@@ -21,7 +21,6 @@ GraphController 和 SubgraphRefNode 自动调用。
 
 import logging
 import os
-from contextvars import ContextVar
 from datetime import datetime
 from pathlib import Path
 
@@ -32,8 +31,11 @@ _DEBUG: bool = False
 # 可选：将所有节点 LLM 输出追加写入此文件（与 _DEBUG 独立，设置即生效）
 _DEBUG_OUTPUT_FILE: str | None = None
 
-# 图层级栈：("hani",) → ("hani", "debate_brainstorm") → ...
-_graph_scope: ContextVar[tuple[str, ...]] = ContextVar("_graph_scope", default=())
+# 图层级栈：["hani"] → ["hani", "debate_brainstorm"] → ...
+# 使用普通 list 而非 ContextVar：asyncio 单线程，LangGraph 内部 create_task 导致
+# ContextVar 传播断裂（子节点看到空 scope），全局 list 可被所有协程直接读写。
+# 注意：并发多频道时 scope 可能短暂串台，但仅影响 debug 日志标签，不影响正确性。
+_graph_scope_stack: list[str] = []
 
 
 def set_debug(value: bool) -> None:
@@ -69,24 +71,22 @@ def get_debug_output_file() -> str | None:
 
 def push_graph_scope(name: str) -> None:
     """进入一个图/子图，将名称压入层级栈。"""
-    current = _graph_scope.get()
-    _graph_scope.set(current + (name,))
+    _graph_scope_stack.append(name)
     if _DEBUG:
-        logger.debug(f"[debug] push_graph_scope → {current + (name,)}")
+        logger.debug(f"[debug] push_graph_scope → {tuple(_graph_scope_stack)}")
 
 
 def pop_graph_scope() -> None:
     """退出当前图/子图，弹出层级栈顶。"""
-    current = _graph_scope.get()
-    if current:
-        _graph_scope.set(current[:-1])
-        if _DEBUG:
-            logger.debug(f"[debug] pop_graph_scope → {current[:-1]}")
+    if _graph_scope_stack:
+        _graph_scope_stack.pop()
+    if _DEBUG:
+        logger.debug(f"[debug] pop_graph_scope → {tuple(_graph_scope_stack)}")
 
 
 def get_graph_scope() -> tuple[str, ...]:
     """返回当前图层级栈（只读，供外部诊断用）。"""
-    return _graph_scope.get()
+    return tuple(_graph_scope_stack)
 
 
 # ── 日志目录 ──────────────────────────────────────────────────────────────
@@ -102,7 +102,7 @@ def _get_log_dir() -> Path:
     例：scope=("hani", "debate_brainstorm") → logs/2026-03-18/hani/debate_brainstorm/
     """
     date_str = datetime.now().strftime("%Y-%m-%d")
-    scope = _graph_scope.get()
+    scope = tuple(_graph_scope_stack)
     base = Path(os.getcwd()) / "logs" / date_str
     for part in scope:
         base = base / part
@@ -162,7 +162,7 @@ def log_node_thinking(
         return
 
     log_dir = _get_log_dir()
-    scope = _graph_scope.get()
+    scope = tuple(_graph_scope_stack)
     scope_label = " / ".join(scope) if scope else "unknown"
 
     # 首次写入时添加文件头
@@ -227,7 +227,7 @@ def log_graph_flow(
         return
 
     log_dir = _get_log_dir()
-    scope = _graph_scope.get()
+    scope = tuple(_graph_scope_stack)
     scope_label = " / ".join(scope) if scope else "unknown"
 
     # 首次写入时添加表头
@@ -300,7 +300,7 @@ def log_state_snapshot(
         return
 
     log_dir = _get_log_dir()
-    scope = _graph_scope.get()
+    scope = tuple(_graph_scope_stack)
     scope_label = " / ".join(scope) if scope else "unknown"
 
     _ensure_md_header(
@@ -365,7 +365,7 @@ def log_node_output_to_file(
     if not output_text:
         return
 
-    scope = _graph_scope.get()
+    scope = tuple(_graph_scope_stack)
     graph_label = " / ".join(scope) if scope else "root"
     timestamp = datetime.now().strftime("%Y-%m-%d %H:%M:%S.%f")[:-3]
 

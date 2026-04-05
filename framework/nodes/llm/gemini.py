@@ -37,7 +37,7 @@ from pathlib import Path
 from langchain_core.messages import AIMessage
 
 from framework.config import AgentConfig
-from framework.debug import is_debug, log_node_thinking
+from framework.debug import is_debug, log_node_thinking, get_debug_output_file, log_node_output_to_file
 from framework.nodes.llm.llm_node import LlmNode as AgentNode
 from framework.resource_lock import acquire_resource
 from framework.token_guard import TokenLimitExceeded, check_before_llm
@@ -454,8 +454,14 @@ class GeminiCodeAssistNode(_GeminiSessionMixin, AgentNode):
             }
 
         logger.info(f"[{self._node_id}] done")
+        _model_name = getattr(self, "_default_model", "")
+        _prompt_preview = prompt[:120] if prompt else ""
         if is_debug():
-            log_node_thinking(node_id=self._node_id, output_text=reply)
+            log_node_thinking(node_id=self._node_id, output_text=reply,
+                              model=_model_name, prompt_preview=_prompt_preview)
+        elif get_debug_output_file():
+            log_node_output_to_file(node_id=self._node_id, output_text=reply,
+                                    model=_model_name, prompt_preview=_prompt_preview)
 
         # ── 路由信号检测（enable_routing=true 时）──
         if self._enable_routing:
@@ -889,8 +895,14 @@ class GeminiCLINode(AgentNode):
             }
 
         logger.info(f"[{self._node_id}] done")
+        _model_name = getattr(self, "_model", "")
+        _prompt_preview = prompt[:120] if prompt else ""
         if is_debug():
-            log_node_thinking(node_id=self._node_id, output_text=reply)
+            log_node_thinking(node_id=self._node_id, output_text=reply,
+                              model=_model_name, prompt_preview=_prompt_preview)
+        elif get_debug_output_file():
+            log_node_output_to_file(node_id=self._node_id, output_text=reply,
+                                    model=_model_name, prompt_preview=_prompt_preview)
 
         # ── 路由信号检测（enable_routing=true 时）──
         if self._enable_routing:
