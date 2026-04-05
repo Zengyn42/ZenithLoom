@@ -75,84 +75,23 @@ class GraphController:
 
     async def _astream_graph(self, init_state: dict, config: dict) -> dict:
         """
-        用 astream(subgraphs=True) 替代 ainvoke，同时：
-        1. 收集最终 state（用 values 模式最后一帧，避免手动 reducer 合并）
-        2. 在子图节点完成时通过 _stream_cb 推送进度标题
+        用 astream(values 模式) 替代 ainvoke，收集最终 state。
+        子图节点内容由各节点自身（如 GeminiCLINode）通过 channel_send_cb 实时推送 Discord，
+        无需在此层处理 updates 事件。
 
         返回最终 result dict（等价于原 ainvoke 的返回值）。
-
-        LangGraph 1.x 事件格式（subgraphs=True）：
-          (namespace: tuple, mode: str, data: dict)
-          namespace 元素包含 UUID 后缀，如 "subgraph_node:3dc9ac9a-..."
-          需 strip_uuid() 清理后构造可读路径。
         """
-        from framework.nodes.llm.llm_node import get_stream_callback, get_channel_send_callback
-
-        def _strip_uuid(name: str) -> str:
-            """去掉 'node_name:uuid' 中的 UUID 部分，只保留节点名。"""
-            return name.split(":")[0]
-
         final_state: dict = {}
-        completed_subgraph_nodes: set = set()   # 去重，每个子图节点只提示一次
 
         async for event in self._graph.astream(
             init_state,
             config=config,
-            stream_mode=["updates", "values"],
-            subgraphs=True,
+            stream_mode="values",
+            subgraphs=False,
         ):
-            # event 格式：(namespace_tuple, mode_str, data)
-            namespace, mode, data = event
-
-            if mode == "values":
-                # 父图快照：持续更新，最后一帧即最终 state
-                if namespace == ():
-                    final_state = data
-
-            elif mode == "updates" and namespace:
-                # 子图内部节点完成事件 → 推送进度标题
-                if not isinstance(data, dict):
-                    continue
-                for node_id in data:
-                    if node_id in ("__start__", "__end__"):
-                        continue
-                    key = (namespace, node_id)
-                    if key in completed_subgraph_nodes:
-                        continue
-                    completed_subgraph_nodes.add(key)
-
-                    # 构造可读进度标题（去除 UUID 后缀）
-                    clean_ns = tuple(_strip_uuid(seg) for seg in namespace)
-                    subgraph_path = " › ".join(clean_ns)
-                    clean_node = _strip_uuid(node_id)
-
-                    # 提取节点输出内容（messages[-1].content）
-                    node_out = data.get(node_id) if isinstance(data, dict) else None
-                    node_content = ""
-                    if isinstance(node_out, dict):
-                        node_msgs = node_out.get("messages", [])
-                        if node_msgs:
-                            last_msg = node_msgs[-1]
-                            node_content = getattr(last_msg, "content", "") or ""
-
-                    # 优先走 channel_send_cb（async，发为独立 Discord 消息，不受 draft 覆盖）
-                    # 降级到 stream_cb（同步，推入流式草稿，最终会被 final_text 覆盖）
-                    header = f"\n⚙️ **{subgraph_path} › {clean_node}**\n"
-                    body = (header + node_content + "\n") if node_content else header
-
-                    ch_cb = get_channel_send_callback()
-                    if ch_cb:
-                        try:
-                            await ch_cb(body)
-                        except Exception:
-                            pass
-                    else:
-                        cb = get_stream_callback()
-                        if cb:
-                            try:
-                                cb(body)
-                            except Exception:
-                                pass
+            # event 格式（subgraphs=False, mode=values）：直接是 state dict
+            # 持续更新，最后一帧即最终 state
+            final_state = event
 
         # Fallback：若 values 帧为空（某些图版本不发 values 事件），用 ainvoke 补全
         if not final_state:
