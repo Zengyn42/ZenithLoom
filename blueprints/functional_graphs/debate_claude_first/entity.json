@@ -7,7 +7,6 @@
   "tools": [],
   "permission_mode": "plan",
   "max_retries": 0,
-  "persona_files": [],
   "graph": {
     "state_schema": "debate_schema",
     "entry": "claude_propose",
