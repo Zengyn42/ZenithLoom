@@ -48,6 +48,7 @@ class _CliInterface(BaseInterface):
     def __init__(self, loader):
         super().__init__(loader)
         self._in_thinking: bool = False
+        self._current_agent_task: asyncio.Task | None = None
 
     def _on_stream_reset(self) -> None:
         if self._in_thinking:
@@ -138,14 +139,33 @@ class _CliInterface(BaseInterface):
                     print(f"未知命令：{cmd}  （输入 !help 查看可用命令）")
                 continue
 
+            # --- 软停止关键词拦截 ---
+            _SOFT_STOP_WORDS = {"stop", "wait", "停", "停止"}
+            if user_input.lower() in _SOFT_STOP_WORDS:
+                print("没有正在运行的任务。")
+                continue
+
             # --- 正常对话（流式 / 非流式）---
             print(f"\n\x1b[90m[{agent_name}]\x1b[0m ", end="", flush=True)
+            agent_task = asyncio.create_task(self.invoke_agent(user_input))
+            self._current_agent_task = agent_task
             try:
-                response = await self.invoke_agent(user_input)
+                response = await agent_task
                 if not self._streaming or self._last_stream_chunk_count == 0:
                     print(response, end="", flush=True)
+            except (asyncio.CancelledError, KeyboardInterrupt):
+                if not agent_task.done():
+                    agent_task.cancel()
+                    try:
+                        await agent_task
+                    except asyncio.CancelledError:
+                        pass
+                print("\n已停止。\n")
+                continue
             except Exception as e:
                 print(f"\n[错误] {e}", file=sys.stderr)
+            finally:
+                self._current_agent_task = None
 
             print("\n")
 
