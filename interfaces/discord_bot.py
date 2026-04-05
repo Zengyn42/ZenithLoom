@@ -555,10 +555,13 @@ class _DiscordInterface(BaseInterface):
             await editor_task
             await typing_ctx.__aexit__(None, None, None)
 
-        # 用 streaming 累积的完整文本作为最终输出（覆盖 result），
-        # 避免 result 只含最后一轮 LLM 输出时丢失工具调用中间内容。
+        # 优先使用 result（LangGraph 最终 state 的最后一条消息 = 最终回复，干净无中间噪音）。
+        # fallback 到 streamed_full：仅当 result 为空时（极少情况，如 claude_main 使用工具
+        # 且工具调用内容未写入 state messages）才用累积流文本，避免丢失内容。
+        # 注意：streamed_full 含整个 invoke_agent() 期间所有节点的流式输出，
+        # 直接用会把路由 JSON、子图节点输出等中间内容一并发出，导致消息重复/冗余。
         streamed_full = "".join(text_buf) if text_buf else ""
-        final_text = streamed_full or result or ""
+        final_text = result or streamed_full or ""
 
         if not final_text:
             await message.channel.send(f"（{agent_name} 没有输出，请重试）")
