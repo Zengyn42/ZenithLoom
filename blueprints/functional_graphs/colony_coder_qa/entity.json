@@ -1,6 +1,5 @@
 {
   "name": "colony_coder_qa",
-  "persona_files": [],
   "graph": {
     "state_schema": "colony_coder_schema",
     "nodes": [

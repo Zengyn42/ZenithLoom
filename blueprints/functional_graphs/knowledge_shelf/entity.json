@@ -5,7 +5,6 @@
   "db_path": "knowledge_shelf.db",
   "sessions_file": "sessions.json",
   "max_retries": 0,
-  "persona_files": [],
   "graph": {
     "entry": "vault_sync_pull",
     "exit": "vault_sync_push",
