@@ -94,11 +94,10 @@ class OllamaNode(AgentNode):
         if tools:
             payload["tools"] = tools
 
-        # 额外 options 映射到 OpenAI 格式的顶层字段
-        if "temperature" in self._options:
-            payload["temperature"] = self._options["temperature"]
-        if "num_predict" in self._options:
-            payload["max_tokens"] = self._options["num_predict"]
+        # 额外 options 透传到 payload 顶层；仅对需改名的 key 做映射
+        _RENAMES = {"num_predict": "max_tokens"}
+        for k, v in self._options.items():
+            payload[_RENAMES.get(k, k)] = v
 
         stream_cb = get_stream_callback()
         full_content = ""
