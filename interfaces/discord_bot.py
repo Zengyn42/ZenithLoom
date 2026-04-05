@@ -518,7 +518,7 @@ class _DiscordInterface(BaseInterface):
                     else:
                         await _safe_edit(thinking_msg[0], display)
 
-                # 文字草稿（从头追加，不截尾；完成后删除）
+                # 文字草稿（从头追加，不截尾；完成后就地 edit 成最终内容，不删除）
                 if text_buf and (sentinel or now - text_last >= TEXT_THROTTLE + extra_wait):
                     text_last = now
                     preview = "".join(text_buf)
@@ -555,12 +555,6 @@ class _DiscordInterface(BaseInterface):
             await editor_task
             await typing_ctx.__aexit__(None, None, None)
 
-        if text_draft[0]:
-            try:
-                await text_draft[0].delete()
-            except Exception:
-                pass
-
         # 用 streaming 累积的完整文本作为最终输出（覆盖 result），
         # 避免 result 只含最后一轮 LLM 输出时丢失工具调用中间内容。
         streamed_full = "".join(text_buf) if text_buf else ""
@@ -571,7 +565,26 @@ class _DiscordInterface(BaseInterface):
             return
 
         clean_text, file_paths = _extract_attachments(final_text)
-        await send_to_channel(message.channel, clean_text)
+        chunks = split_fence_aware(clean_text) if clean_text else []
+
+        if text_draft[0] and chunks:
+            # 把草稿就地 edit 成完整第一段，保留消息历史；超出部分追加新消息
+            try:
+                await text_draft[0].edit(content=chunks[0])
+            except Exception:
+                await message.channel.send(chunks[0])
+            for chunk in chunks[1:]:
+                await message.channel.send(chunk)
+        elif text_draft[0]:
+            # 有草稿但 clean_text 为空（纯附件），删除草稿
+            try:
+                await text_draft[0].delete()
+            except Exception:
+                pass
+        else:
+            # 无草稿（流式未触发），直接发送
+            for chunk in chunks:
+                await message.channel.send(chunk)
         for path in file_paths:
             if not os.path.isfile(path):
                 await message.channel.send(f"⚠️ 文件不存在：`{path}`")
