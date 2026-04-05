@@ -32,7 +32,7 @@ from collections import defaultdict
 from pathlib import Path
 
 from framework.config import AgentConfig
-from framework.debug import is_debug, log_graph_flow, log_state_snapshot
+from framework.debug import is_debug, log_graph_flow, log_state_snapshot, push_graph_scope, pop_graph_scope
 
 logger = logging.getLogger(__name__)
 
@@ -844,9 +844,24 @@ async def _build_declarative(
                 _nid = node_id
 
                 async def _fresh_wrapper(state: dict, config=None, *, _g=_inner, _n=_nid) -> dict:
-                    patched = {**state, "node_sessions": {}}
-                    logger.debug(f"[session_mode:fresh_per_call] {_n}: clearing node_sessions")
-                    return await _g.ainvoke(patched)
+                    # 清空 session IDs，同时将 messages 裁剪为仅最后一条 HumanMessage。
+                    # 原因：父图 messages 跨轮次累积，若不裁剪，子图内 session_id="" 的节点
+                    # 会进入 full_history 模式（len(msgs)>1 and not session_id），将前轮
+                    # 辩论内容注入新的 prompt，导致跨轮 session 污染。
+                    # routing_context 已在 state 中独立携带当前议题，裁剪 messages 不影响首节点。
+                    msgs = state.get("messages", [])
+                    human_msgs = [m for m in reversed(msgs) if getattr(m, "type", "") == "human"]
+                    fresh_msgs = [human_msgs[0]] if human_msgs else (msgs[-1:] if msgs else [])
+                    patched = {**state, "node_sessions": {}, "messages": fresh_msgs}
+                    logger.debug(
+                        f"[session_mode:fresh_per_call] {_n}: clearing node_sessions + "
+                        f"trimming messages {len(msgs)} → {len(fresh_msgs)}"
+                    )
+                    push_graph_scope(_n)
+                    try:
+                        return await _g.ainvoke(patched)
+                    finally:
+                        pop_graph_scope()
 
                 builder.add_node(node_id, _fresh_wrapper)
 
@@ -868,7 +883,11 @@ async def _build_declarative(
                         f"[session_mode:inherit] {_n}: inheriting session "
                         f"from {_from!r} → {len(_keys)} subgraph keys"
                     )
-                    return await _g.ainvoke(patched)
+                    push_graph_scope(_n)
+                    try:
+                        return await _g.ainvoke(patched)
+                    finally:
+                        pop_graph_scope()
 
                 builder.add_node(node_id, _inherit_wrapper)
 
@@ -881,7 +900,11 @@ async def _build_declarative(
                 async def _isolated_wrapper(state: dict, config=None, *, _g=_inner, _n=_nid) -> dict:
                     patched = {**state, "node_sessions": {}}
                     logger.debug(f"[session_mode:isolated] {_n}: clearing node_sessions (unique keys)")
-                    return await _g.ainvoke(patched)
+                    push_graph_scope(_n)
+                    try:
+                        return await _g.ainvoke(patched)
+                    finally:
+                        pop_graph_scope()
 
                 builder.add_node(node_id, _isolated_wrapper)
 
