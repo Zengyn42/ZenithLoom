@@ -37,8 +37,8 @@ from pathlib import Path
 from langchain_core.messages import AIMessage
 
 from framework.config import AgentConfig
-from framework.debug import is_debug, log_node_thinking, get_debug_output_file, log_node_output_to_file
-from framework.nodes.llm.llm_node import LlmNode as AgentNode
+from framework.debug import is_debug, log_node_thinking, get_debug_output_file, log_node_output_to_file, get_graph_scope
+from framework.nodes.llm.llm_node import LlmNode as AgentNode, get_channel_send_callback
 from framework.resource_lock import acquire_resource
 from framework.token_guard import TokenLimitExceeded, check_before_llm
 import framework.nodes.llm.gemini_session as gem_sess
@@ -915,6 +915,18 @@ class GeminiCLINode(AgentNode):
             }
 
         logger.info(f"[{self._node_id}] done")
+
+        # 立即推送到 Discord（不等 outer astream updates 事件，那是在子图 ainvoke 返回后才批量触发）
+        ch_cb = get_channel_send_callback()
+        if ch_cb and reply:
+            scope = get_graph_scope()
+            scope_str = " › ".join(scope) if scope else ""
+            header = f"\n⚙️ **{scope_str} › {self._node_id}**\n" if scope_str else f"\n⚙️ **{self._node_id}**\n"
+            try:
+                await ch_cb(header + reply + "\n")
+            except Exception:
+                pass
+
         _model_name = getattr(self, "_model", "")
         _prompt_preview = prompt[:120] if prompt else ""
         if is_debug():

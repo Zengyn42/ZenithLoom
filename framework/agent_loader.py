@@ -844,17 +844,19 @@ async def _build_declarative(
                 _nid = node_id
 
                 async def _fresh_wrapper(state: dict, config=None, *, _g=_inner, _n=_nid) -> dict:
-                    # 清空 session IDs，同时将 messages 裁剪为仅最后一条 HumanMessage。
-                    # 原因：父图 messages 跨轮次累积，若不裁剪，子图内 session_id="" 的节点
-                    # 会进入 full_history 模式（len(msgs)>1 and not session_id），将前轮
-                    # 辩论内容注入新的 prompt，导致跨轮 session 污染。
-                    # routing_context 已在 state 中独立携带当前议题，裁剪 messages 不影响首节点。
+                    # 清空 session IDs、裁剪 messages（仅保留最后一条 HumanMessage）、
+                    # 同时清空 routing_context。
+                    #
+                    # routing_context 陷阱：父图路由信号的 context 字段可能是文件路径
+                    # （如 "/tmp/debate_plan.md"），子图首节点直接用它当 prompt 会接收
+                    # 到一个无意义字符串，导致 Gemini 自由发挥而非基于用户真实意图。
+                    # 清空后子图首节点回落到 messages[-1]（用户原始输入），行为更可预期。
                     msgs = state.get("messages", [])
                     human_msgs = [m for m in reversed(msgs) if getattr(m, "type", "") == "human"]
                     fresh_msgs = [human_msgs[0]] if human_msgs else (msgs[-1:] if msgs else [])
-                    patched = {**state, "node_sessions": {}, "messages": fresh_msgs}
+                    patched = {**state, "node_sessions": {}, "messages": fresh_msgs, "routing_context": ""}
                     logger.debug(
-                        f"[session_mode:fresh_per_call] {_n}: clearing node_sessions + "
+                        f"[session_mode:fresh_per_call] {_n}: clearing node_sessions + routing_context + "
                         f"trimming messages {len(msgs)} → {len(fresh_msgs)}"
                     )
                     push_graph_scope(_n)
