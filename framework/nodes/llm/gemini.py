@@ -701,6 +701,10 @@ class GeminiCLINode(AgentNode):
         """
         # tools → allowed_mcp_servers（Gemini CLI 按 MCP server name 过滤）
         allowed_mcp_servers = tools if tools else None
+        # plan 模式（辩论节点等）无 workspace 时，强制用 /tmp 作为 cwd，
+        # 避免 Gemini CLI 扫描代码库目录后把任务误解为项目编码协助
+        if self.is_plan_mode and not cwd:
+            cwd = "/tmp"
         # 首次调用（无 session）时嵌入 system prompt
         if not session_id and self._system_prompt:
             full_prompt = (
