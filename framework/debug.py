@@ -29,6 +29,9 @@ logger = logging.getLogger(__name__)
 
 _DEBUG: bool = False
 
+# 可选：将所有节点 LLM 输出追加写入此文件（与 _DEBUG 独立，设置即生效）
+_DEBUG_OUTPUT_FILE: str | None = None
+
 # 图层级栈：("hani",) → ("hani", "debate_brainstorm") → ...
 _graph_scope: ContextVar[tuple[str, ...]] = ContextVar("_graph_scope", default=())
 
@@ -42,6 +45,23 @@ def set_debug(value: bool) -> None:
 def is_debug() -> bool:
     """返回当前进程是否处于 debug 模式。"""
     return _DEBUG
+
+
+def set_debug_output_file(path: str | None) -> None:
+    """
+    设置 debug 输出文件路径。
+
+    设置后，所有 LLM 节点的完整输出都会追加写入该文件，与 is_debug() 独立。
+    传 None 或空字符串可关闭。
+    由 awaken.py 在解析 --debug-output 参数后调用。
+    """
+    global _DEBUG_OUTPUT_FILE
+    _DEBUG_OUTPUT_FILE = path if path else None
+
+
+def get_debug_output_file() -> str | None:
+    """返回当前配置的 debug 输出文件路径，未设置则返回 None。"""
+    return _DEBUG_OUTPUT_FILE
 
 
 # ── 图层级管理 ────────────────────────────────────────────────────────────
@@ -117,13 +137,25 @@ def log_node_thinking(
     node_id: str,
     thinking_text: str = "",
     output_text: str = "",
+    model: str = "",
+    prompt_preview: str = "",
 ) -> None:
     """
-    记录 LLM 节点的思考和输出内容到 thinking.md。
+    记录 LLM 节点的思考和输出内容到 thinking.md，并同步写入 debug output file。
 
-    仅在 is_debug() == True 时实际写入。
+    调用时机（来自 llm_node.py）：
+      - is_debug()=True  → 本函数被调用（负责 thinking.md + output file）
+      - is_debug()=False → llm_node.py 直接调用 log_node_output_to_file()（负责 output file）
+    因此两条路径各负其责，不会重复写入。
+
+    thinking.md 写入：仅在 _DEBUG=True 时生效。
+    debug output file 写入：只要 _DEBUG_OUTPUT_FILE 已设置即写入（_DEBUG 控制进入本函数）。
     格式：collapsible details 块，按节点分段。
     """
+    # ── debug output file：在 debug=True 路径中统一写入 ────────────────────
+    if output_text:
+        log_node_output_to_file(node_id, output_text, model=model, prompt_preview=prompt_preview)
+
     if not _DEBUG:
         return
     if not thinking_text and not output_text:
@@ -292,3 +324,72 @@ def log_state_snapshot(
         lines.append("\n\n")
 
     _append_md(log_dir, "state_snapshots.md", "".join(lines))
+
+
+# ── Debug output file（全节点输出捕获）────────────────────────────────────
+
+
+_DIVIDER = "=" * 80
+
+
+def log_node_output_to_file(
+    node_id: str,
+    output_text: str,
+    model: str = "",
+    prompt_preview: str = "",
+) -> None:
+    """
+    将 LLM 节点的完整输出追加写入 debug_output_file。
+
+    与 is_debug() 独立：只要 set_debug_output_file() 设置了路径就生效。
+    适合在辩论子图中捕获每个节点的发言，方便事后分析。
+
+    格式：
+        ================================================================================
+        [2026-04-04 14:23:45.123]  graph=hani/debate_brainstorm  node=gemini_propose  model=gemini-3-pro-preview
+        prompt_preview: "请设计一个..."（前120字符）
+        ================================================================================
+        <完整输出文本>
+
+        （空行分隔）
+
+    Args:
+        node_id:       节点 ID，如 "gemini_propose"
+        output_text:   LLM 完整输出
+        model:         模型名称（可选，便于区分 Claude / Gemini 节点）
+        prompt_preview: 输入 prompt 的前120字符（可选，便于理解上下文）
+    """
+    out_file = _DEBUG_OUTPUT_FILE
+    if not out_file:
+        return
+    if not output_text:
+        return
+
+    scope = _graph_scope.get()
+    graph_label = " / ".join(scope) if scope else "root"
+    timestamp = datetime.now().strftime("%Y-%m-%d %H:%M:%S.%f")[:-3]
+
+    header_parts = [f"[{timestamp}]", f"graph={graph_label}", f"node={node_id}"]
+    if model:
+        header_parts.append(f"model={model}")
+    header_line = "  ".join(header_parts)
+
+    lines: list[str] = [
+        f"\n{_DIVIDER}\n",
+        f"{header_line}\n",
+    ]
+    if prompt_preview:
+        safe_preview = prompt_preview[:120].replace("\n", " ")
+        lines.append(f"prompt_preview: \"{safe_preview}\"\n")
+    lines.append(f"{_DIVIDER}\n")
+    lines.append(output_text.rstrip())
+    lines.append("\n\n")
+
+    content = "".join(lines)
+    try:
+        out_path = Path(out_file)
+        out_path.parent.mkdir(parents=True, exist_ok=True)
+        with open(out_path, "a", encoding="utf-8") as f:
+            f.write(content)
+    except OSError as e:
+        logger.warning(f"[debug] 无法写入 debug_output_file {out_file}: {e}")

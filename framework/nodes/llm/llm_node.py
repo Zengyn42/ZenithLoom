@@ -375,15 +375,31 @@ class LlmNode:
             if is_debug():
                 _stream_cb.set(_original_cb)
 
+        _model = getattr(self, "_model", "")
+        _prompt_preview = prompt[:120] if prompt else ""
+
         if is_debug():
             logger.debug(f"[{self._node_id}] raw_output_preview={raw_output[:200]!r}")
-            # 记录思考内容到日志文件
+            # 记录思考内容到日志文件；log_node_thinking 内部同时处理 debug_output_file
             thinking_text = "".join(_thinking_chunks)
             log_node_thinking(
                 node_id=self._node_id,
                 thinking_text=thinking_text,
                 output_text=raw_output,
+                model=_model,
+                prompt_preview=_prompt_preview,
             )
+        else:
+            # is_debug() 关闭时 log_node_thinking 不会被调用，
+            # 但 debug_output_file 可能仍需捕获输出
+            from framework.debug import get_debug_output_file, log_node_output_to_file
+            if get_debug_output_file():
+                log_node_output_to_file(
+                    node_id=self._node_id,
+                    output_text=raw_output,
+                    model=_model,
+                    prompt_preview=_prompt_preview,
+                )
 
         # ── 路由信号检测（用注册的 SignalParser）────────────────────────────
         # 信号格式：{"route": "<node_id>", "context": "<question|background>"}
