@@ -144,7 +144,6 @@ async def _build_parent(spec: dict, checkpointer=None) -> object:
     return await _build_declarative(
         spec,
         AgentConfig(),
-        "",               # no system_prompt
         checkpointer or MemorySaver(),
     )
 

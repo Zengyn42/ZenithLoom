@@ -248,7 +248,19 @@ class OllamaNode(AgentNode):
                         f"msgs={len(messages)}")
 
             # 始终传 tools — /v1/ 端点支持 tool result + tools 同传
-            last_msg = await self._chat_completions(messages, tools=tool_schemas)
+            try:
+                last_msg = await self._chat_completions(messages, tools=tool_schemas)
+            except httpx.ConnectError as e:
+                err = (f"[Ollama 连接失败] 无法连接到 {self._endpoint}，"
+                       f"请确认 Ollama 正在运行。({e})")
+                logger.error(err)
+                from langchain_core.messages import AIMessage
+                return {"messages": [AIMessage(content=err)]}
+            except (httpx.TimeoutException, httpx.HTTPStatusError) as e:
+                err = f"[Ollama 超时] 推理超过 {self._timeout}s 未返回，请重试或简化问题。"
+                logger.error(f"{err} ({type(e).__name__}: {e})")
+                from langchain_core.messages import AIMessage
+                return {"messages": [AIMessage(content=err)]}
             messages.append(last_msg)
 
             tool_calls = last_msg.get("tool_calls") or []

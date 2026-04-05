@@ -14,7 +14,6 @@
         "tools": ["read_file", "write_file", "bash_exec", "list_dir"],
         "tool_rules": [],
         "options": {
-          "num_gpu": 0,
           "think": "medium"
         }
       }
