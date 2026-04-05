@@ -10,7 +10,7 @@
         "id": "apex_main",
         "type": "CLAUDE_CLI",
         "extra_persona": true,
-        "persona_files": ["ROLE.md", "PROTOCOL.md"],
+        "persona_files": ["./ROLE.md", "./PROTOCOL.md"],
         "model": "claude-opus-4-6",
         "session_key": "apex",
         "tools": [

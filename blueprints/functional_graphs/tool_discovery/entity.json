@@ -44,7 +44,7 @@
         "id": "report_gen",
         "type": "CLAUDE_CLI",
         "extra_persona": true,
-        "persona_files": ["ROLE.md"],
+        "persona_files": ["./ROLE.md"],
         "model": null,
         "tools": [],
         "permission_mode": "plan",

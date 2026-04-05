@@ -7,7 +7,7 @@
         "id": "llama_main",
         "type": "OLLAMA",
         "extra_persona": true,
-        "persona_files": ["ROLE.md", "PROTOCOL.md"],
+        "persona_files": ["./ROLE.md", "./PROTOCOL.md"],
         "model": "qwen3.5:9b",
         "endpoint": "http://localhost:11434",
         "first_turn_suffix": "Asa:",
