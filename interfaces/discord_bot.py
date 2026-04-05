@@ -189,6 +189,46 @@ def split_fence_aware(text: str, max_chars: int = DISCORD_MAX_CHARS) -> list[str
 
 
 # ==========================================
+# 统一消息发送工具 — send_to_channel
+# ==========================================
+async def send_to_channel(
+    channel,
+    text: str,
+    *,
+    max_chars: int = DISCORD_MAX_CHARS,
+    files: list | None = None,
+) -> None:
+    """
+    统一消息发送工具：将长文本自动分段发送，不截断任何内容。
+
+    所有需要向 Discord 频道发送文本的地方都应使用此函数，
+    而不是直接调用 channel.send() 后手动截断。
+
+    行为：
+      1. 用 split_fence_aware 把文本按 max_chars 分成多段
+         （尊重代码块边界，避免在 ``` 内部切断）
+      2. 逐段 await channel.send(chunk)
+      3. 若提供 files，在最后一段文本之后发送文件附件
+
+    Args:
+        channel:    discord.TextChannel 或任何支持 .send() 的频道对象
+        text:       待发送的完整文本（可任意长）
+        max_chars:  单条消息最大字符数（默认 DISCORD_MAX_CHARS=1900）
+        files:      discord.File 列表，发完文本后追加发送
+    """
+    chunks = split_fence_aware(text, max_chars) if text else []
+    for i, chunk in enumerate(chunks):
+        # 最后一段同时附带文件（如有）
+        if i == len(chunks) - 1 and files:
+            await channel.send(chunk, files=files)
+        else:
+            await channel.send(chunk)
+    # 如果没有文本但有文件
+    if not chunks and files:
+        await channel.send(files=files)
+
+
+# ==========================================
 # 文件发送解析（图片 / 视频）— delegated to BaseInterface
 # ==========================================
 def _extract_attachments(text: str) -> tuple[str, list[str]]:
@@ -368,8 +408,7 @@ class _DiscordInterface(BaseInterface):
             result = await self.invoke_agent(user_input)
         if result:
             clean_text, file_paths = _extract_attachments(result)
-            for chunk in (split_fence_aware(clean_text) if clean_text else []):
-                await message.channel.send(chunk)
+            await send_to_channel(message.channel, clean_text)
             for path in file_paths:
                 if not os.path.isfile(path):
                     await message.channel.send(f"⚠️ 文件不存在：`{path}`")
@@ -532,8 +571,7 @@ class _DiscordInterface(BaseInterface):
             return
 
         clean_text, file_paths = _extract_attachments(final_text)
-        for chunk in (split_fence_aware(clean_text) if clean_text else []):
-            await message.channel.send(chunk)
+        await send_to_channel(message.channel, clean_text)
         for path in file_paths:
             if not os.path.isfile(path):
                 await message.channel.send(f"⚠️ 文件不存在：`{path}`")
@@ -610,12 +648,12 @@ async def _pending_tasks_poller() -> None:
                 else:
                     header = "✅ **后台任务完成**"
 
-                msg_text = f"{header} `{task_id}`\n```\n{result[:1800]}\n```"
+                msg_text = f"{header} `{task_id}`\n```\n{result}\n```"
 
                 channel = bot.get_channel(channel_id)
                 if channel:
                     try:
-                        await channel.send(msg_text)
+                        await send_to_channel(channel, msg_text)
                         logger.info(f"[discord] sent pending task result: {task_id} → channel {channel_id}")
                     except Exception as e:
                         logger.warning(f"[discord] failed to send task result: {e}")
@@ -689,8 +727,8 @@ async def _discord_handle_alert(alert: dict):
                 header = "❌ **后台任务失败**"
             msg = f"{header} `{task_id}`"
             if content:
-                msg += f"\n```\n{content[:1800]}\n```"
-            await channel.send(msg)
+                msg += f"\n```\n{content}\n```"
+            await send_to_channel(channel, msg)
             logger.info(f"[discord_alert] TASK_MONITOR {status}: {task_id} → channel {channel_id}")
             return
         elif channel and status == "monitoring":
@@ -716,7 +754,7 @@ async def _discord_handle_alert(alert: dict):
         msg = f"{icon} `{task_id}` | 时间: `{time_}`{next_line}"
         if content:
             msg += f"\n> {content[:200]}"
-        await channel.send(msg)
+        await send_to_channel(channel, msg)
         return
 
     # ── 失败告警（error）─────────────────────────────────────────────────
@@ -734,14 +772,15 @@ async def _discord_handle_alert(alert: dict):
         try:
             iface = _DiscordInterface(_loader)
             response = await iface.invoke_agent(prompt)
-            await channel.send(
-                f"🚨 **Heartbeat Critical — {agent_name} 分析**\n{response}"
+            await send_to_channel(
+                channel,
+                f"🚨 **Heartbeat Critical — {agent_name} 分析**\n{response}",
             )
         except Exception as e:
             logger.error(f"[discord_alert] agent invocation failed: {e}")
-            await channel.send(f"⚠ **Heartbeat Alert**\n```\n{alert_text}\n```")
+            await send_to_channel(channel, f"⚠ **Heartbeat Alert**\n```\n{alert_text}\n```")
     else:
-        await channel.send(f"⚠ **Heartbeat Alert**\n```\n{alert_text}\n```")
+        await send_to_channel(channel, f"⚠ **Heartbeat Alert**\n```\n{alert_text}\n```")
 
 
 # ==========================================
@@ -833,10 +872,7 @@ async def on_message(message: discord.Message):
                 if reply is not None:
                     if cmd == "!topology":
                         # Mermaid 文本 + PNG 图片
-                        for chunk in BaseInterface.split_fence_aware(
-                            f"```mermaid\n{reply}\n```", DISCORD_MAX_CHARS
-                        ):
-                            await message.channel.send(chunk)
+                        await send_to_channel(message.channel, f"```mermaid\n{reply}\n```")
                         png = await _fetch_mermaid_png(reply)
                         if png:
                             await message.channel.send(
@@ -846,10 +882,7 @@ async def on_message(message: discord.Message):
                             await message.channel.send("⚠️ PNG 生成失败，请粘贴上方 Mermaid 文本到 https://mermaid.live 查看")
                     elif "\n" in reply:
                         # 多行回复用代码块包裹
-                        for chunk in BaseInterface.split_fence_aware(
-                            f"```\n{reply}\n```", DISCORD_MAX_CHARS
-                        ):
-                            await message.channel.send(chunk)
+                        await send_to_channel(message.channel, f"```\n{reply}\n```")
                     else:
                         await message.channel.send(reply)
         return
