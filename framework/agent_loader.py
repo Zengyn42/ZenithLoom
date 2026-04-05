@@ -166,14 +166,13 @@ class EntityLoader:
             self._session_mgr = SessionManager(cfg.sessions_file, cfg.db_path)
         return self._session_mgr
 
-    async def build_graph(self, checkpointer=_DEFAULT, parent_persona: str = "", is_subgraph: bool = False, force_unique_session_keys: bool = False):
+    async def build_graph(self, checkpointer=_DEFAULT, extra_persona_text: str = "", is_subgraph: bool = False, force_unique_session_keys: bool = False):
         """
         构建并返回编译好的 LangGraph 状态机。
 
         Args:
             checkpointer: LangGraph checkpointer（None=无，_DEFAULT=自动创建 SQLite）
-            parent_persona: 父图透传的 persona（仅 external subgraph 使用）。
-                           会追加到子图自身 system_prompt 之后。
+            extra_persona_text: 父图透传的额外 persona 文本（仅声明了 extra_persona:true 的 LLM 节点接收）。
             is_subgraph: True 时使用 SubgraphInputState 作为 input schema，
                          原生隔离父图 messages（由 external subgraph 路径传入）。
 
@@ -196,27 +195,60 @@ class EntityLoader:
                 return await mod.build_graph(self, checkpointer)
 
         config = self.load_config()
-        system_prompt = self.load_system_prompt()
-        # 合并父图透传的 persona（external subgraph 场景）
-        if parent_persona:
-            if system_prompt:
-                system_prompt = system_prompt + "\n\n" + parent_persona
-            else:
-                system_prompt = parent_persona
-            logger.info(
-                f"[agent_loader] {self.name!r}: merged parent persona "
-                f"({len(parent_persona)} chars) into system_prompt"
+
+        # 组装 instance 级 extra_persona（identity 目录的 persona_files + 自动发现的 .md）
+        # 这是上层（instance）传给 entity 的 persona，由 entity 内声明了 extra_persona:true 的节点接收
+        _instance_persona_parts: list[str] = []
+        _instance_dir = self._data_dir
+        _blueprint_dir_path = Path(self._dir)
+
+        # identity.json 中声明的 persona_files（相对于 instance 目录）
+        _identity_json_path = _instance_dir / "identity.json"
+        _instance_persona_files: list[str] = []
+        if _identity_json_path.exists():
+            try:
+                import json as _json_mod
+                _inst = _json_mod.loads(_identity_json_path.read_text(encoding="utf-8"))
+                _instance_persona_files = _inst.get("persona_files", [])
+                _instance_prompt = _inst.get("prompt", "")
+            except Exception:
+                _instance_persona_files = []
+                _instance_prompt = ""
+        else:
+            _instance_prompt = ""
+
+        if _instance_persona_files or _instance_prompt:
+            _inst_text = _load_persona_text(
+                _instance_persona_files, _instance_dir,
+                prompt=_instance_prompt, label=_instance_dir.name,
             )
+            if _inst_text:
+                _instance_persona_parts.append(_inst_text)
+
+        # instance 目录中额外的 .md 文件自动追加（非 blueprint 目录时才追加）
+        if _instance_dir != _blueprint_dir_path:
+            _seen = set(_instance_persona_files)
+            for _p in sorted(_instance_dir.glob("*.md")):
+                if _p.name not in _seen:
+                    _content = _p.read_text(encoding="utf-8").strip()
+                    _instance_persona_parts.append(
+                        f"<!-- [source: {_instance_dir.name}/{_p.name}] -->\n{_content}"
+                    )
+
+        # 合并：外部传入的 extra_persona_text（来自父图）+ instance 级 persona
+        _all_extra = "\n\n---\n\n".join(p for p in [extra_persona_text] + _instance_persona_parts if p)
+
         graph_dict = dict(self._json.get("graph") or {})
 
         # Priority 2: 声明式图
         if "nodes" in graph_dict and "edges" in graph_dict:
             logger.info(f"[agent_loader] building declarative graph for {self.name!r}")
             return await _build_declarative(
-                graph_dict, config, system_prompt, checkpointer,
+                graph_dict, config, checkpointer,
                 blueprint_dir=str(self._dir),
                 is_subgraph=is_subgraph,
                 force_unique_session_keys=force_unique_session_keys,
+                extra_persona_text=_all_extra,
             )
 
         # Priority 3: GraphSpec 默认图
@@ -229,8 +261,10 @@ class EntityLoader:
         spec = GraphSpec.from_dict(graph_dict)
 
         # ClaudeSDKNode — model 从 entity.json 顶层 claude_model 字段读（向后兼容）
+        # Priority 3 path uses load_system_prompt() for backwards compatibility
+        _p3_system_prompt = self.load_system_prompt()
         claude_node_config = {**self._json}
-        agent_node = ClaudeSDKNode(config, node_config=claude_node_config, system_prompt=system_prompt)
+        agent_node = ClaudeSDKNode(config, node_config=claude_node_config, system_prompt=_p3_system_prompt)
 
         logger.info(f"[agent_loader] building graph for {self.name!r}")
         if is_debug():
@@ -680,11 +714,11 @@ def _get_subgraph_session_keys(entity_json: dict) -> set:
 async def _build_declarative(
     graph_spec: dict,
     config: AgentConfig,
-    system_prompt: str,
     checkpointer,
     blueprint_dir: str = "",
     is_subgraph: bool = False,
     force_unique_session_keys: bool = False,
+    extra_persona_text: str = "",
 ) -> object:
     """
     从 entity.json["graph"]（含 nodes + edges）构建 LangGraph 状态机。
@@ -703,23 +737,13 @@ async def _build_declarative(
     from framework.registry import get_condition, get_node_factory, get_all_schemas
     from framework.schema.base import BaseAgentState, SubgraphInputState
 
-    # ── Step 0: routing_hint 注入 system_prompt ──────────────────────────────
-    if system_prompt:
-        routing_section = _collect_routing_hints(graph_spec, base_dir=blueprint_dir)
-        if routing_section:
-            system_prompt = system_prompt + "\n\n" + routing_section
+    # ── Step 0: routing_hint 收集（供后续节点级注入用）────────────────────────
+    routing_section = _collect_routing_hints(graph_spec, base_dir=blueprint_dir)
 
-    # ── Step 1: 三步图验证 + 主节点唯一性 ───────────────────────────────────
+    # ── Step 1: 三步图验证 ───────────────────────────────────────────────────
     all_ids = _collect_all_ids(graph_spec)
     _check_edge_refs(graph_spec, all_ids)
     _check_reachable(graph_spec, all_ids)
-    persona_targets: list[str] = []
-    if system_prompt:
-        persona_targets = _find_persona_targets(graph_spec)
-        if persona_targets:
-            logger.info(f"[agent_loader] persona injection targets: {persona_targets}")
-        else:
-            logger.warning("[agent_loader] system_prompt provided but no LLM node found for injection")
 
     # ── Step 2: 构建图节点 ────────────────────────────────────────────────
     import framework.schema  # noqa: F401 — 确保内置 schema 已注册
@@ -742,9 +766,10 @@ async def _build_declarative(
         if node_type == "SUBGRAPH":
             # 内联子图：递归构建（无 checkpointer，父图负责；is_subgraph=True 隔离 messages）
             inner = await _build_declarative(
-                node_def["graph"], config, system_prompt, None,
+                node_def["graph"], config, None,
                 blueprint_dir=blueprint_dir,
                 is_subgraph=True,
+                extra_persona_text=extra_persona_text,
             )
             builder.add_node(node_id, _wrap_node_for_flow_log(node_id, inner))
 
@@ -781,11 +806,27 @@ async def _build_declarative(
 
             session_mode = node_def.get("session_mode", "persistent")
             inner_loader = EntityLoader(inner_dir)
-            _pass_persona = ""  # 子图 persona 由子图自身 entity.json 定义，父图不透传
+
+            # extra_persona dict on subgraph node = parent passes extra persona to child
+            _child_extra_persona = ""
+            _ep_def = node_def.get("extra_persona")
+            if isinstance(_ep_def, dict):
+                _bp_path = Path(blueprint_dir) if blueprint_dir else Path(".")
+                _child_extra_persona = _load_persona_text(
+                    _ep_def.get("persona_files", []),
+                    _bp_path,
+                    prompt=_ep_def.get("prompt", ""),
+                    label=_bp_path.name,
+                )
+            elif isinstance(_ep_def, bool) and _ep_def:
+                raise ValueError(
+                    f"子图节点 '{node_id}': extra_persona:true 只能用于 LLM 节点，"
+                    f"子图节点应使用 extra_persona: {{persona_files: [...], prompt: '...'}} 格式。"
+                )
 
             _force_unique = session_mode == "isolated"
             inner_graph = await inner_loader.build_graph(
-                checkpointer=None, parent_persona=_pass_persona, is_subgraph=True,
+                checkpointer=None, extra_persona_text=_child_extra_persona, is_subgraph=True,
                 force_unique_session_keys=_force_unique,
             )
 
@@ -852,16 +893,47 @@ async def _build_declarative(
 
         else:
             factory = get_node_factory(node_type)
-            # persona 注入目标节点
-            _base = (
-                {**node_def, "system_prompt": system_prompt}
-                if system_prompt and node_id in persona_targets
-                else dict(node_def)
-            )
+            _base = dict(node_def)
+
+            # ── Per-node persona 组装 ──────────────────────────────────────
+            # 每个 LLM 节点的最终 system_prompt：
+            #   extra_persona（父层/instance 传入，仅 extra_persona:true 节点接收）
+            #   + 节点自身 persona_files（相对于 blueprint_dir）
+            #   + 节点自身 system_prompt
+            if node_type in _LLM_NODE_TYPES:
+                _node_extra = ""
+                _ep_flag = node_def.get("extra_persona", False)
+
+                # 验证：extra_persona:true 只能在 LLM 节点上
+                if _ep_flag and not isinstance(_ep_flag, bool):
+                    raise ValueError(
+                        f"节点 '{node_id}': extra_persona 在 LLM 节点上必须是 bool，"
+                        f"传入了 {type(_ep_flag).__name__}。"
+                        f"（dict 格式仅用于子图节点声明中）"
+                    )
+
+                if _ep_flag and extra_persona_text:
+                    _node_extra = extra_persona_text
+
+                # 节点自身 persona_files（相对于 blueprint_dir）
+                _node_pfiles = node_def.get("persona_files", [])
+                _bp_dir = Path(blueprint_dir) if blueprint_dir else Path(".")
+                _node_persona = _load_persona_text(_node_pfiles, _bp_dir, label=_bp_dir.name)
+
+                # routing_section 注入（仅有 routing_section 且节点是主路由节点时）
+                _node_sys = node_def.get("system_prompt", "")
+                if routing_section and _ep_flag:
+                    _node_sys = (_node_sys + "\n\n" + routing_section).strip() if _node_sys else routing_section
+
+                # 组装最终 system_prompt
+                _assembled = "\n\n---\n\n".join(
+                    p for p in [_node_extra, _node_persona, _node_sys] if p
+                )
+                if _assembled:
+                    _base["system_prompt"] = _assembled
+
             if node_type == "DETERMINISTIC" and blueprint_dir and "agent_dir" not in node_def:
                 _base["agent_dir"] = blueprint_dir
-            # force_unique_session_keys: override session_key to node_id
-            # so each node uses its own independent session (isolated mode).
             if force_unique_session_keys and _base.get("session_key"):
                 _base["session_key"] = node_id
             effective_def = _base
@@ -1137,55 +1209,29 @@ _LLM_NODE_TYPES = frozenset({
 })
 
 
-def _find_persona_targets(graph_spec: dict) -> list[str]:
-    """找到 persona/system_prompt 应注入的 LLM 节点 ID 列表。
+def _load_persona_text(
+    persona_files: list[str],
+    base_dir: Path,
+    prompt: str = "",
+    label: str = "",
+) -> str:
+    """从文件列表 + prompt 组装 persona 文本。
 
-    规则：
-      1. 优先选取所有 id 含 'main' 的 LLM 节点（可多个）。
-      2. 若无 'main' 节点，遍历图拓扑，选取离 __end__ 最近的 LLM 节点。
-      3. 若图中无任何 LLM 节点，返回空列表（不注入）。
+    persona_files 路径相对于 base_dir。
+    每段标注来源注释 <!-- [source: label/file] -->。
     """
-    nodes = graph_spec.get("nodes", [])
-    edges = graph_spec.get("edges", [])
-
-    # 所有 LLM 节点
-    llm_ids = {
-        n["id"] for n in nodes
-        if n.get("type", "") in _LLM_NODE_TYPES
-    }
-    if not llm_ids:
-        return []
-
-    # 规则 1：含 'main' 的 LLM 节点
-    main_ids = [nid for nid in llm_ids if "main" in nid]
-    if main_ids:
-        return main_ids
-
-    # 规则 2：拓扑排序，取离 __end__ 最近的 LLM 节点
-    # 构建反向邻接表（从 __end__ 反向 BFS）
-    reverse_adj: dict[str, list[str]] = defaultdict(list)
-    for edge in edges:
-        src = edge["from"]
-        dst = edge["to"]
-        reverse_adj[dst].append(src)
-
-    # 从 __end__ 反向 BFS，找到第一个 LLM 节点
-    from collections import deque
-    queue = deque(["__end__"])
-    visited: set[str] = set()
-    while queue:
-        current = queue.popleft()
-        if current in visited:
-            continue
-        visited.add(current)
-        if current in llm_ids:
-            return [current]
-        for pred in reverse_adj.get(current, []):
-            if pred not in visited:
-                queue.append(pred)
-
-    # 兜底：无法从 __end__ 回溯到 LLM 节点，取任意一个
-    return [next(iter(llm_ids))]
+    parts: list[str] = []
+    src_label = label or base_dir.name
+    for fname in persona_files:
+        p = base_dir / fname
+        if p.exists():
+            content = p.read_text(encoding="utf-8").strip()
+            parts.append(f"<!-- [source: {src_label}/{fname}] -->\n{content}")
+        else:
+            logger.warning(f"[agent_loader] persona file not found: {p}")
+    if prompt and prompt.strip():
+        parts.append(prompt.strip())
+    return "\n\n---\n\n".join(parts)
 
 
 # ---------------------------------------------------------------------------
