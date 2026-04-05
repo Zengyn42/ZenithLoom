@@ -43,6 +43,8 @@
       {
         "id": "report_gen",
         "type": "CLAUDE_CLI",
+        "extra_persona": true,
+        "persona_files": ["ROLE.md"],
         "model": null,
         "tools": [],
         "permission_mode": "plan",
@@ -61,6 +63,5 @@
       {"from": "sandbox_eval",     "to": "report_gen"}
     ]
   },
-  "max_retries": 1,
-  "persona_files": ["ROLE.md"]
+  "max_retries": 1
 }

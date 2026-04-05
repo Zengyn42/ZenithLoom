@@ -2,10 +2,6 @@
   "name": "apex_coder",
   "routing_hint": "当编程问题极其复杂、需要全力以赴穷举所有方案时使用。适用：多次失败仍未解决的 bug、完整架构重构、跨多文件系统变更、需要深度 debug 的环境/配置问题。",
   "llm": "claude",
-  "persona_files": [
-    "ROLE.md",
-    "PROTOCOL.md"
-  ],
   "graph": {
     "entry": "apex_main",
     "exit": "apex_main",
@@ -13,6 +9,8 @@
       {
         "id": "apex_main",
         "type": "CLAUDE_CLI",
+        "extra_persona": true,
+        "persona_files": ["ROLE.md", "PROTOCOL.md"],
         "model": "claude-opus-4-6",
         "session_key": "apex",
         "tools": [
