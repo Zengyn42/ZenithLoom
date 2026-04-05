@@ -547,10 +547,21 @@ class _DiscordInterface(BaseInterface):
                     break
                 await asyncio.sleep(0.1)
 
-        # 子图节点内容回调：发为独立消息，不受 draft 最终覆盖影响
+        # 子图节点内容回调：发为独立消息，排在 synthesis draft 之前
+        # 第一条子图消息到达时删除旧 draft（claude_main 路由阶段产生的），
+        # 让 synthesis 在子图内容之后重新生成，保证顺序：[节点内容...] → [synthesis]
         from framework.nodes.llm.llm_node import set_channel_send_callback
+        _subgraph_draft_cleared = [False]
 
         async def _subgraph_send(text: str) -> None:
+            if not _subgraph_draft_cleared[0] and text_draft[0]:
+                try:
+                    await text_draft[0].delete()
+                except Exception:
+                    pass
+                text_draft[0] = None
+                text_buf.clear()
+                _subgraph_draft_cleared[0] = True
             await send_to_channel(message.channel, text)
 
         set_channel_send_callback(_subgraph_send)

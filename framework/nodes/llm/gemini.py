@@ -395,6 +395,16 @@ class GeminiCodeAssistNode(_GeminiSessionMixin, AgentNode):
         session_id = (state.get("node_sessions") or {}).get(self._session_key, "")
         workspace = state.get("workspace", "")
 
+        # 若 routing_context 是文件路径，自动读取文件内容作为 prompt
+        if routing_context and routing_context.startswith("/") and "\n" not in routing_context:
+            import os as _os
+            if _os.path.isfile(routing_context):
+                try:
+                    with open(routing_context, "r", encoding="utf-8") as _f:
+                        routing_context = _f.read()
+                except Exception:
+                    pass
+
         if routing_context:
             prompt = routing_context
             prompt_src = "routing_context"
@@ -837,6 +847,16 @@ class GeminiCLINode(AgentNode):
 
         session_id = (state.get("node_sessions") or {}).get(self._session_key, "")
         workspace = state.get("workspace", "")
+
+        # 若 routing_context 是文件路径，自动读取文件内容作为 prompt
+        if routing_context and routing_context.startswith("/") and "\n" not in routing_context:
+            import os as _os
+            if _os.path.isfile(routing_context):
+                try:
+                    with open(routing_context, "r", encoding="utf-8") as _f:
+                        routing_context = _f.read()
+                except Exception:
+                    pass
 
         if routing_context:
             prompt = routing_context
