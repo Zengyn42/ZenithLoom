@@ -86,7 +86,7 @@ class GraphController:
           namespace 元素包含 UUID 后缀，如 "subgraph_node:3dc9ac9a-..."
           需 strip_uuid() 清理后构造可读路径。
         """
-        from framework.nodes.llm.llm_node import get_stream_callback
+        from framework.nodes.llm.llm_node import get_stream_callback, get_channel_send_callback
 
         def _strip_uuid(name: str) -> str:
             """去掉 'node_name:uuid' 中的 UUID 部分，只保留节点名。"""
@@ -125,15 +125,34 @@ class GraphController:
                     clean_ns = tuple(_strip_uuid(seg) for seg in namespace)
                     subgraph_path = " › ".join(clean_ns)
                     clean_node = _strip_uuid(node_id)
-                    label = f"\n⚙️ {subgraph_path} › {clean_node}\n"
 
-                    # 通过 _stream_cb 推给 Discord（若已注册）
-                    cb = get_stream_callback()
-                    if cb:
+                    # 提取节点输出内容（messages[-1].content）
+                    node_out = data.get(node_id) if isinstance(data, dict) else None
+                    node_content = ""
+                    if isinstance(node_out, dict):
+                        node_msgs = node_out.get("messages", [])
+                        if node_msgs:
+                            last_msg = node_msgs[-1]
+                            node_content = getattr(last_msg, "content", "") or ""
+
+                    # 优先走 channel_send_cb（async，发为独立 Discord 消息，不受 draft 覆盖）
+                    # 降级到 stream_cb（同步，推入流式草稿，最终会被 final_text 覆盖）
+                    header = f"\n⚙️ **{subgraph_path} › {clean_node}**\n"
+                    body = (header + node_content + "\n") if node_content else header
+
+                    ch_cb = get_channel_send_callback()
+                    if ch_cb:
                         try:
-                            cb(label)
+                            await ch_cb(body)
                         except Exception:
-                            pass  # 回调失败不影响主流程
+                            pass
+                    else:
+                        cb = get_stream_callback()
+                        if cb:
+                            try:
+                                cb(body)
+                            except Exception:
+                                pass
 
         # Fallback：若 values 帧为空（某些图版本不发 values 事件），用 ainvoke 补全
         if not final_state:

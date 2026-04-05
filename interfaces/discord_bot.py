@@ -537,6 +537,14 @@ class _DiscordInterface(BaseInterface):
                     break
                 await asyncio.sleep(0.1)
 
+        # 子图节点内容回调：发为独立消息，不受 draft 最终覆盖影响
+        from framework.nodes.llm.llm_node import set_channel_send_callback
+
+        async def _subgraph_send(text: str) -> None:
+            await send_to_channel(message.channel, text)
+
+        set_channel_send_callback(_subgraph_send)
+
         editor_task = asyncio.create_task(_editor())
         try:
             result = await self.invoke_agent(user_input)
@@ -551,6 +559,7 @@ class _DiscordInterface(BaseInterface):
                     pass
             raise
         finally:
+            set_channel_send_callback(None)
             self._event_queue.put_nowait((None, None))
             await editor_task
             await typing_ctx.__aexit__(None, None, None)
