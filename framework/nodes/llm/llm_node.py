@@ -79,6 +79,10 @@ logger = logging.getLogger(__name__)
 # Callback signature: (text: str) -> None
 _stream_cb: contextvars.ContextVar = contextvars.ContextVar("claude_stream_cb", default=None)
 
+# 独立频道发送回调：用于子图节点内容（发为独立 Discord 消息，不受 draft 覆盖影响）
+# 签名：async def fn(text: str) -> None
+_channel_send_cb: contextvars.ContextVar = contextvars.ContextVar("channel_send_cb", default=None)
+
 
 def set_stream_callback(fn) -> None:
     """Set (or clear) the streaming callback for the current async context."""
@@ -88,6 +92,16 @@ def set_stream_callback(fn) -> None:
 def get_stream_callback():
     """Return the current streaming callback, or None if not set."""
     return _stream_cb.get()
+
+
+def set_channel_send_callback(fn) -> None:
+    """Set (or clear) the channel-send callback (async fn) for the current async context."""
+    _channel_send_cb.set(fn)
+
+
+def get_channel_send_callback():
+    """Return the current channel-send callback, or None if not set."""
+    return _channel_send_cb.get()
 
 
 # project_meta 文件读取
