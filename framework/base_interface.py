@@ -282,7 +282,7 @@ class BaseInterface:
         if self._streaming:
             set_stream_callback(self._on_stream_chunk)
         try:
-            result_state = await self._controller.graph.ainvoke(init_state, config=config)
+            result_state = await self._controller._astream_graph(init_state, config)
         finally:
             if self._streaming:
                 set_stream_callback(None)

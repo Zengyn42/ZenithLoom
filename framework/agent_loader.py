@@ -781,7 +781,7 @@ async def _build_declarative(
 
             session_mode = node_def.get("session_mode", "persistent")
             inner_loader = EntityLoader(inner_dir)
-            _pass_persona = system_prompt or ""
+            _pass_persona = ""  # 子图 persona 由子图自身 entity.json 定义，父图不透传
 
             _force_unique = session_mode == "isolated"
             inner_graph = await inner_loader.build_graph(
