@@ -403,9 +403,19 @@ class _DiscordInterface(BaseInterface):
             await self._invoke_non_streaming(user_input, message)
 
     async def _invoke_non_streaming(self, user_input: str, message) -> None:
+        from framework.nodes.llm.llm_node import set_channel_send_callback
+
         agent_name = _loader.name if _loader else "Agent"
-        async with message.channel.typing():
-            result = await self.invoke_agent(user_input)
+
+        async def _subgraph_send(text: str) -> None:
+            await send_to_channel(message.channel, text)
+
+        set_channel_send_callback(_subgraph_send)
+        try:
+            async with message.channel.typing():
+                result = await self.invoke_agent(user_input)
+        finally:
+            set_channel_send_callback(None)
         if result:
             clean_text, file_paths = _extract_attachments(result)
             await send_to_channel(message.channel, clean_text)
