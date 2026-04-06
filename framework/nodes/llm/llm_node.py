@@ -517,9 +517,30 @@ class LlmNode:
         return warning
 
     def _build_gemini_section(self, state: dict) -> str:
-        # Gemini 的回复已通过 AIMessage 进入 messages，Claude 在对话历史中直接看到。
-        # 此方法保留供子类扩展；基类不再注入 routing_context。
-        return ""
+        """将子图结论字段注入到 Claude 的下一轮 prompt 中。
+
+        子图（debate_brainstorm / debate_design / apex_coder / tool_discovery）
+        执行完毕后，结论写入 state 对应字段，Claude Main 第二次进入时通过此方法读取并注入。
+        """
+        parts: list[str] = []
+
+        conclusion = state.get("debate_conclusion", "")
+        if conclusion:
+            parts.append(f"\n[辩论结论]\n{conclusion}\n")
+
+        apex = state.get("apex_conclusion", "")
+        if apex:
+            parts.append(f"\n[ApexCoder 结论]\n{apex}\n")
+
+        knowledge = state.get("knowledge_result", "")
+        if knowledge:
+            parts.append(f"\n[知识库查询结果]\n{knowledge}\n")
+
+        discovery = state.get("discovery_report", "")
+        if discovery:
+            parts.append(f"\n[工具发现报告]\n{discovery}\n")
+
+        return "".join(parts)
 
     def _build_extra_injections(self, state: dict, user_input: str) -> str:
         """耻辱柱注入（tombstone_enabled: true 时激活）。"""
