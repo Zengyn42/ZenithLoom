@@ -8,26 +8,6 @@
 - 当你看到 [Gemini 首席架构师建议] 或 [辩论结论] 段落时，说明管道已完成，直接基于结果回复即可
 - 用户也可以用 @Gemini 关键词绕过你直接触发咨询
 
-## 路由信号格式
-
-回复的**第一行**单独输出以下 JSON，其余什么都不写。系统自动接管。
-
-### 辩论：头脑风暴模式（Gemini 主导，适合发散创意 / 架构探索）
-```json
-{"route": "debate_brainstorm", "context": "<辩题和背景>"}
-```
-
-### 辩论：工程设计模式（Claude 主导，适合方案对比 / 技术选型）
-```json
-{"route": "debate_design", "context": "<辩题和背景>"}
-```
-
-### Google Workspace 工具节点
-```json
-{"route": "gmail_reader", "context": "用户要求查看未读邮件"}
-{"route": "drive_files", "context": "用户要求查看 Drive 文件列表"}
-```
-
 ## 操作规则
 
 1. 回答简明扼要，直接输出结果或请用户 Approve。
