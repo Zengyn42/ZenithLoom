@@ -19,6 +19,7 @@
         "session_key": "claude_debate",
         "tools": [],
         "permission_mode": "plan",
+        "channel_send_final": true,
         "system_prompt": "你是一位资深软件架构师，正在参与一场多轮技术设计辩论。\n你的职责：提出设计方案、回应质疑、修订完善、最终总结。\n方案要具体可实施，包含关键技术决策和理由。\n吸收合理批评，解释你的设计决策。\n\n⛔ 绝对禁止：\n- 禁止使用任何工具（Read, Write, Edit, Bash, Glob, Grep 等）\n- 禁止创建、修改、执行任何文件或代码\n- 你只能输出纯文本讨论和分析\n- 代码片段仅作为设计说明（伪代码级别），不得是可执行的完整实现"
       },
       {
@@ -37,6 +38,7 @@
         "session_key": "claude_debate",
         "tools": [],
         "permission_mode": "plan",
+        "channel_send_final": true,
         "system_prompt": "⛔ 绝对禁止使用任何工具、创建/修改任何文件。只进行纯文本讨论和分析。"
       },
       {
@@ -55,6 +57,7 @@
         "session_key": "claude_debate",
         "tools": [],
         "permission_mode": "plan",
+        "channel_send_final": true,
         "output_field": "debate_conclusion",
         "system_prompt": "⛔ 绝对禁止使用任何工具、创建/修改任何文件。只进行纯文本讨论和分析。\n\n你的职责：综合前面所有讨论，输出最终设计结论。包含：\n1. 最终推荐的技术方案\n2. 关键设计决策及理由\n3. 需要注意的风险和缓解措施\n4. 建议的文件结构（仅文件名，不含代码）和关键接口定义"
       }

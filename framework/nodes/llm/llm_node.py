@@ -54,6 +54,11 @@ node_config（来自 entity.json）驱动行为：
                                基类在 _load_skill_content() 中自动加载并拼接到现有 parts，
                                对 Gemini / Ollama 节点注入 system_prompt，Claude 节点由
                                子类决定注入时机（_load_skill_content 可选调用）
+  channel_send_final     bool  子图节点专用：抑制流式 streaming（不向 Discord 发送 token），
+                               LLM 完成后通过 channel_send_callback 把最终结果发为独立消息
+                               （格式与 GeminiCLINode 一致，含 ⚙️ 作用域前缀）。
+                               默认 false。典型用途：辩论子图中的 Claude 节点，避免中间
+                               streaming draft 占据错误位置导致消息顺序混乱。
 """
 
 import contextvars
@@ -174,6 +179,9 @@ class LlmNode:
         # output_field：子图末尾节点用，把 LLM 输出自动写入指定 state 字段
         # 如 "debate_conclusion"、"apex_conclusion"、"knowledge_result" 等
         self._output_field: str | None = node_config.get("output_field")
+
+        # channel_send_final：抑制 streaming，完成后通过 ch_cb 发送最终结果（子图节点用）
+        self._channel_send_final: bool = bool(node_config.get("channel_send_final", False))
 
         # 信号解析器
         self._signal_parser = get_signal_parser(
@@ -308,6 +316,15 @@ class LlmNode:
                 f"input_len={len(latest_input)}"
             )
 
+        # ── subgraph_topic 只读注入 ───────────────────────────────────────
+        # SubgraphMapperNode 负责写入/清空；LLM 节点只读取并注入 prompt
+        _subgraph_topic = state.get("subgraph_topic", "")
+        _topic_inject = (
+            f"【当前主题·严格围绕此展开】\n{_subgraph_topic}\n"
+            if _subgraph_topic
+            else ""
+        )
+
         # ── 框架层动态注入 ──────────────────────────────────────────────────
         rollback_warning = self._build_rollback_warning(state)
         gemini_section = self._build_gemini_section(state)
@@ -315,7 +332,7 @@ class LlmNode:
         extra = self._build_extra_injections(state, latest_input)
 
         dynamic_injections = "".join(
-            filter(None, [rollback_warning, extra, gemini_section, project_section])
+            filter(None, [_topic_inject, rollback_warning, extra, gemini_section, project_section])
         )
 
         # ── 消息格式化 ─────────────────────────────────────────────────────
@@ -333,6 +350,16 @@ class LlmNode:
 
         if is_debug():
             logger.debug(f"[{self._node_id}] prompt_len={len(prompt)} tools={tools}")
+
+        # ── channel_send_final：抑制 Discord streaming，最终结果通过 ch_cb 独立发送 ──
+        # 适用于辩论子图中的 Claude 节点，避免中间 draft 在错误位置创建消息。
+        _ch_send_final_active = (
+            self._channel_send_final and get_channel_send_callback() is not None
+        )
+        _saved_stream_cb_for_channel = None
+        if _ch_send_final_active:
+            _saved_stream_cb_for_channel = _stream_cb.get()
+            _stream_cb.set(None)  # 抑制 token 流向 Discord draft
 
         # ── Debug thinking 拦截器 ──────────────────────────────────────────
         _thinking_chunks: list[str] = []
@@ -388,6 +415,24 @@ class LlmNode:
             # 恢复原始 callback
             if is_debug():
                 _stream_cb.set(_original_cb)
+
+        # ── channel_send_final：恢复流式回调，通过 ch_cb 发送最终结果 ────────
+        if _ch_send_final_active:
+            _stream_cb.set(_saved_stream_cb_for_channel)  # 恢复 Discord streaming callback
+            ch_cb = get_channel_send_callback()
+            if ch_cb and raw_output:
+                from framework.debug import get_graph_scope
+                scope = get_graph_scope()
+                scope_str = " › ".join(scope) if scope else ""
+                header = (
+                    f"\n⚙️ **{scope_str} › {self._node_id}**\n"
+                    if scope_str else
+                    f"\n⚙️ **{self._node_id}**\n"
+                )
+                try:
+                    await ch_cb(header + raw_output + "\n")
+                except Exception:
+                    pass
 
         _model = getattr(self, "_model", "")
         _prompt_preview = prompt[:120] if prompt else ""

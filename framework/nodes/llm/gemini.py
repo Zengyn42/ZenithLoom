@@ -879,6 +879,12 @@ class GeminiCLINode(AgentNode):
             prompt = msgs[-1].content if msgs else ""
             prompt_src = "messages[-1]" if not session_id else f"resume({session_id[:8]})"
 
+        # ── subgraph_topic 只读注入 ───────────────────────────────────────
+        # SubgraphMapperNode 负责写入/清空；Gemini 节点只读取并注入 prompt
+        _subgraph_topic = state.get("subgraph_topic", "")
+        if _subgraph_topic and not routing_context:
+            prompt = f"【当前主题·严格围绕此展开】\n{_subgraph_topic}\n\n{prompt}"
+
         if is_debug():
             logger.debug(
                 f"[{self._node_id}] prompt_src={prompt_src} "

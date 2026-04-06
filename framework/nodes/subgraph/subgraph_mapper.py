@@ -65,6 +65,24 @@ class SubgraphMapperNode:
 
         result: dict = {}
 
+        # ── subgraph_topic 生命周期管理 ──────────────────────────────────
+        # 入口（in）：若 subgraph_topic 为空，从 routing_context 写入主题锚点
+        # 出口（out）：清空 subgraph_topic，防止残留污染父图
+        if self._direction == "in":
+            existing_topic = state.get("subgraph_topic", "")
+            routing_ctx = state.get("routing_context", "")
+            if not existing_topic and routing_ctx:
+                result["subgraph_topic"] = routing_ctx
+                logger.info(
+                    f"[subgraph_mapper] subgraph_topic ← routing_context "
+                    f"({len(routing_ctx)} chars)"
+                )
+        elif self._direction == "out":
+            result["subgraph_topic"] = ""
+            if is_debug():
+                logger.debug("[subgraph_mapper] subgraph_topic cleared on exit")
+
+        # ── 声明式字段映射 ────────────────────────────────────────────────
         for source_field, target_field in self._map.items():
             value = state.get(source_field)
             if value is None:

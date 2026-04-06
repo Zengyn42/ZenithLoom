@@ -601,13 +601,24 @@ class _DiscordInterface(BaseInterface):
         chunks = split_fence_aware(clean_text) if clean_text else []
 
         if text_draft[0] and chunks:
-            # 把草稿就地 edit 成完整第一段，保留消息历史；超出部分追加新消息
-            try:
-                await text_draft[0].edit(content=chunks[0])
-            except Exception:
-                await message.channel.send(chunks[0])
-            for chunk in chunks[1:]:
-                await message.channel.send(chunk)
+            if _subgraph_draft_cleared[0]:
+                # 子图已运行：draft 位置可能卡在子图消息中间，删掉它，
+                # synthesis 追加到末尾，保证顺序为 [子图节点...] → [synthesis]
+                try:
+                    await text_draft[0].delete()
+                except Exception:
+                    pass
+                text_draft[0] = None
+                for chunk in chunks:
+                    await message.channel.send(chunk)
+            else:
+                # 无子图：就地 edit draft 成最终内容（位置正确，无顺序问题）
+                try:
+                    await text_draft[0].edit(content=chunks[0])
+                except Exception:
+                    await message.channel.send(chunks[0])
+                for chunk in chunks[1:]:
+                    await message.channel.send(chunk)
         elif text_draft[0]:
             # 有草稿但 clean_text 为空（纯附件），删除草稿
             try:

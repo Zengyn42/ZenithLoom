@@ -40,6 +40,7 @@ class BaseAgentState(TypedDict):
     node_sessions: Annotated[dict, _merge_dict]  # {"claude_main": uuid, ...} — 所有节点 session UUID; merge reducer prevents parallel node writes from clobbering each other
     knowledge_vault: str    # 知识库根路径（Obsidian vault 或任意 .md 目录）；agent 用 Read/Glob/Grep 按需读取
     project_docs: str       # 当前子项目 /docs/ 路径（技术文档，随 repo 走）
+    subgraph_topic: str     # 子图主题锚点（SubgraphMapperNode 入口写入、出口清空，LLM 节点只读注入）
     debate_conclusion: str  # 辩论子图最终结论（子图写回）
     apex_conclusion: str    # ApexCoder 子图执行结论
     knowledge_result: str   # knowledge_shelf 子图结论
@@ -74,6 +75,7 @@ class SubgraphInputState(TypedDict):
     node_sessions: Annotated[dict, _merge_dict]  # 与 BaseAgentState 相同 reducer，允许 inherit/persistent 正常工作
     knowledge_vault: str
     project_docs: str
+    subgraph_topic: str
     debate_conclusion: str
     apex_conclusion: str
     knowledge_result: str
