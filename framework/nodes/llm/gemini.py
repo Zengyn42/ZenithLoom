@@ -497,6 +497,9 @@ class GeminiCodeAssistNode(_GeminiSessionMixin, AgentNode):
         # output_field 映射（子图末尾节点用）
         if self._output_field and reply:
             result[self._output_field] = reply
+        # previous_node_output：供下一节点读取上文结论
+        if reply:
+            result["previous_node_output"] = reply
         return result
 
 
@@ -885,6 +888,12 @@ class GeminiCLINode(AgentNode):
         if _subgraph_topic and not routing_context:
             prompt = f"【当前主题·严格围绕此展开】\n{_subgraph_topic}\n\n{prompt}"
 
+        # ── previous_node_output 注入（仅在子图内有效）────────────────────
+        # 跨 session_key 传递上一节点（Claude/Gemini 交替）的结论，确保辩论连续。
+        _prev_output = state.get("previous_node_output", "") if _subgraph_topic else ""
+        if _prev_output:
+            prompt = f"【前一节点输出·请基于此继续】\n{_prev_output}\n\n{prompt}"
+
         if is_debug():
             logger.debug(
                 f"[{self._node_id}] prompt_src={prompt_src} "
@@ -970,4 +979,7 @@ class GeminiCLINode(AgentNode):
         # output_field 映射（子图末尾节点用）
         if self._output_field and reply:
             result[self._output_field] = reply
+        # previous_node_output：供下一节点读取上文结论
+        if reply:
+            result["previous_node_output"] = reply
         return result
