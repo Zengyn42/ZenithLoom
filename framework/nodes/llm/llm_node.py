@@ -316,21 +316,19 @@ class LlmNode:
                 f"input_len={len(latest_input)}"
             )
 
-        # ── subgraph_topic 只读注入 ───────────────────────────────────────
-        # SubgraphMapperNode 负责写入/清空；LLM 节点只读取并注入 prompt
+        # ── subgraph_topic + previous_node_output 注入 ───────────────────
+        # 注入顺序：前节点论点在前，主题锚点在最后（recency effect 防止辩题漂移）
+        # SubgraphMapperNode 入口已清空 routing_context，subgraph_topic 锚点可靠生效
         _subgraph_topic = state.get("subgraph_topic", "")
         _topic_inject = (
-            f"【当前主题·严格围绕此展开】\n{_subgraph_topic}\n"
+            f"【辩题锚点·你的所有发言必须围绕此展开，禁止改变或升维辩题】\n{_subgraph_topic}\n"
             if _subgraph_topic
             else ""
         )
 
-        # ── previous_node_output 注入（仅在子图内有效）────────────────────
-        # 在 subgraph_topic 存在时（=处于子图上下文），将前一节点的输出注入 prompt，
-        # 确保不同 session_key 的节点（Gemini/Claude 交替）能看到上一轮的结论。
         _prev_output = state.get("previous_node_output", "") if _subgraph_topic else ""
         _prev_inject = (
-            f"【前一节点输出·请基于此继续】\n{_prev_output}\n"
+            f"【前一节点论点·这是你要回应的内容】\n{_prev_output}\n"
             if _prev_output
             else ""
         )
@@ -341,8 +339,9 @@ class LlmNode:
         project_section = _build_project_section(state)
         extra = self._build_extra_injections(state, latest_input)
 
+        # 注入顺序：前节点论点在前，主题锚点在最后（利用 recency effect 防止辩题漂移）
         dynamic_injections = "".join(
-            filter(None, [_topic_inject, _prev_inject, rollback_warning, extra, gemini_section, project_section])
+            filter(None, [_prev_inject, rollback_warning, extra, gemini_section, project_section, _topic_inject])
         )
 
         # ── 消息格式化 ─────────────────────────────────────────────────────
