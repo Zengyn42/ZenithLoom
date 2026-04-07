@@ -882,17 +882,16 @@ class GeminiCLINode(AgentNode):
             prompt = msgs[-1].content if msgs else ""
             prompt_src = "messages[-1]" if not session_id else f"resume({session_id[:8]})"
 
-        # ── subgraph_topic 只读注入 ───────────────────────────────────────
-        # SubgraphMapperNode 负责写入/清空；Gemini 节点只读取并注入 prompt
+        # ── subgraph_topic + previous_node_output 注入 ───────────────────
+        # 注入顺序：前节点论点在前，主题锚点追加到 prompt 末尾（recency effect 防止辩题漂移）
+        # SubgraphMapperNode 入口已清空 routing_context，subgraph_topic 注入不再受 routing_context 干扰
         _subgraph_topic = state.get("subgraph_topic", "")
-        if _subgraph_topic and not routing_context:
-            prompt = f"【当前主题·严格围绕此展开】\n{_subgraph_topic}\n\n{prompt}"
-
-        # ── previous_node_output 注入（仅在子图内有效）────────────────────
-        # 跨 session_key 传递上一节点（Claude/Gemini 交替）的结论，确保辩论连续。
         _prev_output = state.get("previous_node_output", "") if _subgraph_topic else ""
+
         if _prev_output:
-            prompt = f"【前一节点输出·请基于此继续】\n{_prev_output}\n\n{prompt}"
+            prompt = f"【前一节点论点·这是你要回应的内容】\n{_prev_output}\n\n{prompt}"
+        if _subgraph_topic:
+            prompt = f"{prompt}\n\n【辩题锚点·你的所有发言必须围绕此展开，禁止改变或升维辩题】\n{_subgraph_topic}"
 
         if is_debug():
             logger.debug(

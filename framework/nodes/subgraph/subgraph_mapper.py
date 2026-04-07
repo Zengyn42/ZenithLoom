@@ -77,10 +77,13 @@ class SubgraphMapperNode:
                     f"[subgraph_mapper] subgraph_topic ← routing_context "
                     f"({len(routing_ctx)} chars)"
                 )
+            # 入口清空 routing_context：防止 Gemini 节点走 routing_context 路径而跳过
+            # subgraph_topic 注入（gemini.py 条件：if _subgraph_topic and not routing_context）
+            result["routing_context"] = ""
             # 入口清空 previous_node_output，防止父图最后一条输出污染子图首节点
             result["previous_node_output"] = ""
             if is_debug():
-                logger.debug("[subgraph_mapper] previous_node_output cleared on entry")
+                logger.debug("[subgraph_mapper] routing_context + previous_node_output cleared on entry")
         elif self._direction == "out":
             result["subgraph_topic"] = ""
             result["previous_node_output"] = ""
