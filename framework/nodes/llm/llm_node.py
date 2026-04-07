@@ -325,6 +325,16 @@ class LlmNode:
             else ""
         )
 
+        # ── previous_node_output 注入（仅在子图内有效）────────────────────
+        # 在 subgraph_topic 存在时（=处于子图上下文），将前一节点的输出注入 prompt，
+        # 确保不同 session_key 的节点（Gemini/Claude 交替）能看到上一轮的结论。
+        _prev_output = state.get("previous_node_output", "") if _subgraph_topic else ""
+        _prev_inject = (
+            f"【前一节点输出·请基于此继续】\n{_prev_output}\n"
+            if _prev_output
+            else ""
+        )
+
         # ── 框架层动态注入 ──────────────────────────────────────────────────
         rollback_warning = self._build_rollback_warning(state)
         gemini_section = self._build_gemini_section(state)
@@ -332,7 +342,7 @@ class LlmNode:
         extra = self._build_extra_injections(state, latest_input)
 
         dynamic_injections = "".join(
-            filter(None, [_topic_inject, rollback_warning, extra, gemini_section, project_section])
+            filter(None, [_topic_inject, _prev_inject, rollback_warning, extra, gemini_section, project_section])
         )
 
         # ── 消息格式化 ─────────────────────────────────────────────────────
@@ -493,6 +503,11 @@ class LlmNode:
         # 使子图结论通过 LangGraph 原生 state 合并传回父图。
         if self._output_field and raw_output:
             result[self._output_field] = raw_output
+
+        # ── previous_node_output：供下一节点读取上文结论 ─────────────────
+        # 始终写入，SubgraphMapperNode 入口负责清空，防止污染父图。
+        if raw_output:
+            result["previous_node_output"] = raw_output
 
         return result
 

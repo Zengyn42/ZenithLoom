@@ -77,10 +77,15 @@ class SubgraphMapperNode:
                     f"[subgraph_mapper] subgraph_topic ← routing_context "
                     f"({len(routing_ctx)} chars)"
                 )
+            # 入口清空 previous_node_output，防止父图最后一条输出污染子图首节点
+            result["previous_node_output"] = ""
+            if is_debug():
+                logger.debug("[subgraph_mapper] previous_node_output cleared on entry")
         elif self._direction == "out":
             result["subgraph_topic"] = ""
+            result["previous_node_output"] = ""
             if is_debug():
-                logger.debug("[subgraph_mapper] subgraph_topic cleared on exit")
+                logger.debug("[subgraph_mapper] subgraph_topic + previous_node_output cleared on exit")
 
         # ── 声明式字段映射 ────────────────────────────────────────────────
         for source_field, target_field in self._map.items():
