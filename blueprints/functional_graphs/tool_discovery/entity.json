@@ -8,7 +8,7 @@
     "nodes": [
       {
         "id": "query_expand",
-        "type": "CLAUDE_CLI",
+        "type": "CLAUDE_SDK",
         "model": null,
         "tools": [],
         "permission_mode": "plan",
@@ -25,7 +25,7 @@
       },
       {
         "id": "candidate_filter",
-        "type": "CLAUDE_CLI",
+        "type": "CLAUDE_SDK",
         "model": null,
         "tools": [],
         "permission_mode": "plan",
@@ -42,7 +42,7 @@
       },
       {
         "id": "report_gen",
-        "type": "CLAUDE_CLI",
+        "type": "CLAUDE_SDK",
         "extra_persona": true,
         "persona_files": ["./ROLE.md"],
         "model": null,

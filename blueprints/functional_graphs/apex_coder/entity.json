@@ -8,7 +8,7 @@
     "nodes": [
       {
         "id": "apex_main",
-        "type": "CLAUDE_CLI",
+        "type": "CLAUDE_SDK",
         "extra_persona": true,
         "persona_files": ["./ROLE.md", "./PROTOCOL.md"],
         "model": "claude-opus-4-6",
