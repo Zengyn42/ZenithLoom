@@ -585,13 +585,16 @@ class _DiscordInterface(BaseInterface):
             await editor_task
             await typing_ctx.__aexit__(None, None, None)
 
-        # 优先使用 result（LangGraph 最终 state 的最后一条消息 = 最终回复，干净无中间噪音）。
-        # fallback 到 streamed_full：仅当 result 为空时（极少情况，如 claude_main 使用工具
-        # 且工具调用内容未写入 state messages）才用累积流文本，避免丢失内容。
-        # 注意：streamed_full 含整个 invoke_agent() 期间所有节点的流式输出，
-        # 直接用会把路由 JSON、子图节点输出等中间内容一并发出，导致消息重复/冗余。
         streamed_full = "".join(text_buf) if text_buf else ""
-        final_text = result or streamed_full or ""
+        if _subgraph_draft_cleared[0]:
+            # 子图已运行：用 result（最终 AIMessage），避免子图中间节点输出混入。
+            # 子图节点内容已通过 _subgraph_send 独立发送到 Discord。
+            final_text = result or streamed_full or ""
+        else:
+            # 无子图（claude_main 普通对话）：用流式累积的完整文本，
+            # 保留 tool use 过程中的所有输出（Read/Write/Bash 等中间结果）。
+            # fallback 到 result（流式未触发或 text_buf 为空时）。
+            final_text = streamed_full or result or ""
 
         if not final_text:
             await message.channel.send(f"（{agent_name} 没有输出，请重试）")

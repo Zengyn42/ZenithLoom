@@ -6,18 +6,9 @@
   "sessions_file": "sessions.json",
   "max_retries": 0,
   "graph": {
-    "entry": "vault_sync_pull",
+    "entry": "gemini_obsidian",
     "exit": "vault_sync_push",
     "nodes": [
-      {
-        "id": "vault_sync_pull",
-        "type": "EXTERNAL_TOOL",
-        "node_config": {
-          "command": ["rsync", "-a", "--delete", "/mnt/d/KnowledgeBase/Vault/", "/home/kingy/Foundation/Vault/"],
-          "description": "Sync vault: Windows → WSL",
-          "timeout": 30
-        }
-      },
       {
         "id": "gemini_obsidian",
         "type": "GEMINI_CLI",
@@ -34,15 +25,14 @@
         "id": "vault_sync_push",
         "type": "EXTERNAL_TOOL",
         "node_config": {
-          "command": ["rsync", "-a", "--delete", "/home/kingy/Foundation/Vault/", "/mnt/d/KnowledgeBase/Vault/"],
-          "description": "Sync vault: WSL → Windows",
+          "command": ["rsync", "-a", "--delete", "/home/kingy/Foundation/Vault/", "/mnt/c/Users/kingy/Documents/Obsidian Vault/"],
+          "description": "Sync vault: WSL (source of truth) → Windows (mirror)",
           "timeout": 30
         }
       }
     ],
     "edges": [
-      {"id": "e_pull_2_obs",  "from": "vault_sync_pull", "to": "gemini_obsidian"},
-      {"id": "e_obs_2_push",  "from": "gemini_obsidian", "to": "vault_sync_push"}
+      {"id": "e_obs_2_push", "from": "gemini_obsidian", "to": "vault_sync_push"}
     ]
   }
 }
