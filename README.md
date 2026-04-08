@@ -104,7 +104,8 @@ class BaseAgentState(TypedDict):
 
 | 类型 | 实现类 | 用途 | Session 存储 |
 |------|--------|------|-------------|
-| `CLAUDE_CLI` | ClaudeNode | Claude SDK LLM 调用（可 resume） | `~/.claude/` |
+| `CLAUDE_CLI` | ClaudeCLINode | Claude CLI subprocess（直接调用 claude 命令） | `~/.claude/` |
+| `CLAUDE_SDK` | ClaudeSDKNode | Claude Agent SDK（通过 claude_agent_sdk） | `~/.claude/` |
 | `GEMINI_CLI` | GeminiNode | Gemini API 对话 | `~/.gemini/tmp/` |
 | `LOCAL_VLLM` | LlamaNode | 本地 Ollama/vLLM（stub） | 无 |
 | `GIT_SNAPSHOT` | GitSnapshotNode | 任务前自动 git commit | 无 |
@@ -138,7 +139,7 @@ def _(state: dict) -> bool:
 ```json
 {
   "id": "claude_main",
-  "type": "CLAUDE_CLI",
+  "type": "CLAUDE_SDK",
   "model": null,
   "system_prompt": "（可选，优先级低于 persona_files）",
   "first_turn_suffix": "Hani:",
