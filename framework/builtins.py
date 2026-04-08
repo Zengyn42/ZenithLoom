@@ -5,7 +5,8 @@
 import 时自动执行注册（无副作用，幂等）。
 
 节点类型（NodeFactory：每次调用返回新实例）：
-  CLAUDE_CLI       — ClaudeSDKNode(AgentNode)，Claude Code SDK subprocess（别名 CLAUDE_SDK）
+  CLAUDE_CLI       — ClaudeCLINode(AgentNode)，Claude CLI subprocess（直接调用 claude 命令）
+  CLAUDE_SDK       — ClaudeSDKNode(AgentNode)，Claude Agent SDK（通过 claude_agent_sdk）
   GEMINI_CLI       — GeminiCLINode(AgentNode)，Gemini CLI subprocess（支持高级模型）
   GEMINI_API       — GeminiCodeAssistNode(AgentNode)，Gemini Code Assist HTTP API
   OLLAMA           — OllamaNode(AgentNode)，Ollama HTTP API（别名 LOCAL_VLLM）
@@ -44,8 +45,8 @@ logger = logging.getLogger(__name__)
 
 @register_node("CLAUDE_CLI")
 def _(config, node_config):
-    from framework.nodes.llm.claude import ClaudeSDKNode
-    return ClaudeSDKNode(config, node_config, system_prompt=node_config.get("system_prompt", ""))
+    from framework.nodes.llm.claude import ClaudeCLINode
+    return ClaudeCLINode(config, node_config, system_prompt=node_config.get("system_prompt", ""))
 
 
 @register_node("CLAUDE_SDK")

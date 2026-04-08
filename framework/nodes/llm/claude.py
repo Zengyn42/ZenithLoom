@@ -1,31 +1,39 @@
 """
-框架级 Claude SDK 节点 — framework/nodes/llm/claude.py
+框架级 Claude 节点 — framework/nodes/llm/claude.py
 
-ClaudeSDKNode 继承 LlmNode，实现 call_llm() 接口：
+两种实现：
+  ClaudeSDKNode(LlmNode)  — Agent SDK（通过 claude_agent_sdk.query()）
+  ClaudeCLINode(LlmNode)  — CLI subprocess（通过 asyncio.create_subprocess_exec）
+
+共同接口：
   call_llm(prompt, session_id, tools, cwd) -> (text, new_session_id)
     - session_id 空 -> 新建 session
     - session_id 非空 -> resume 已有 session（~/.claude/ 本地存储）
 
-实现方式：claude_agent_sdk.query()（SDK 流式协议）。
-sdk_query() 通过 wait_for_result_and_end_input() 关闭 stdin，
-让子进程优雅退出，确保会话历史（user/assistant 条目）写入 JSONL 文件。
+ClaudeSDKNode：
+  sdk_query() 通过 wait_for_result_and_end_input() 关闭 stdin，
+  让子进程优雅退出，确保会话历史写入 JSONL 文件。
+  SDK 内部 ProcessError 被包装为普通 Exception，需检测消息内容。
 
-注意：SDK 内部 Query._read_messages_task 会将 ProcessError 包装成
-普通 Exception 再推入消息流，因此异常捕获需检测消息内容而非类型。
+ClaudeCLINode：
+  通过 `claude -p --output-format stream-json --verbose --include-partial-messages`
+  子进程调用，逐行解析 JSON streaming events，实时回调 _stream_cb。
+  不依赖 claude_agent_sdk Python 包。
 
 基类 LlmNode.__call__() 处理所有图协议逻辑（路由、注入、信号检测）；
-ClaudeSDKNode 只负责 Claude SDK 调用。
+两个子类只负责 call_llm() 实现。
 
 permission_mode 实现：
-  Claude SDK 原生支持全部四种模式（default / plan / acceptEdits / bypassPermissions）。
-  - self._permission_mode  → 直传给 ClaudeAgentOptions(permission_mode=...)
-  - self._get_disallowed_tools() → 直传给 ClaudeAgentOptions(disallowed_tools=...)
-    plan 模式时，基类自动将 _WRITE_TOOLS 合并到 disallowed_tools 列表中。
-  两个值均来自 LlmNode 基类，ClaudeSDKNode 无需自行处理 permission_mode 逻辑。
+  两个子类均原生支持全部模式（default / plan / acceptEdits / bypassPermissions）。
+  ClaudeSDKNode：直传 ClaudeAgentOptions(permission_mode=...)
+  ClaudeCLINode：直传 --permission-mode 标志
+  基类 _get_disallowed_tools() 自动处理 plan 模式的工具禁用。
 """
 
+import asyncio
 import json
 import logging
+import os
 
 from claude_agent_sdk import (
     ClaudeAgentOptions,
@@ -241,10 +249,14 @@ class ClaudeSDKNode(AgentNode):
                 )
                 try:
                     result_text, new_session_id, is_error = await _run_once("", prompt)
-                except Exception:
-                    # Retry also failed; new_session_id stays ""
-                    # llm_node will write "" which clears the session → fresh start next turn
-                    raise
+                except Exception as retry_err:
+                    # 重试也失败：返回错误文本 + 空 session ID，
+                    # 确保 llm_node.__call__ 正常写入 state 清掉坏 session，
+                    # 避免 checkpoint 保留坏 session ID 导致无限 resume 失败循环。
+                    logger.error(f"[claude] 新 session 重试也失败: {retry_err}")
+                    result_text = f"[Claude 暂时不可用] {retry_err}"
+                    new_session_id = ""
+                    is_error = True
             else:
                 raise
 
@@ -279,3 +291,299 @@ class ClaudeSDKNode(AgentNode):
 
 # 向后兼容别名
 ClaudeNode = ClaudeSDKNode
+
+
+class ClaudeCLINode(AgentNode):
+    """
+    Claude CLI subprocess 节点（CLAUDE_CLI 节点类型）。
+
+    通过 `claude -p --output-format stream-json --verbose --include-partial-messages`
+    子进程调用，逐行解析 JSON streaming events。
+
+    功能对齐 ClaudeSDKNode：
+      - 实时 streaming（text_delta / thinking_delta → _stream_cb）
+      - Session resume（--resume session_id）
+      - Resume 失败自动重试（新 session）
+      - Permission mode（--permission-mode 直传）
+      - Token usage 统计（从 result event 提取）
+
+    与 ClaudeSDKNode 的区别：
+      - 不依赖 claude_agent_sdk Python 包
+      - 直接管理子进程 stdout/stderr
+      - 无 get_recent_history / list_sessions 方法
+    """
+
+    _DEFAULT_TIMEOUT = 120
+    _MAX_TIMEOUT = 600
+    _TIMEOUT_CHARS_PER_SEC = 200
+
+    def __init__(
+        self,
+        config: AgentConfig,
+        node_config: dict,
+        system_prompt: str = "",
+    ):
+        super().__init__(config, node_config)
+        self.system_prompt = system_prompt
+
+    def _build_cmd(self, session_id: str = "") -> list[str]:
+        """构建 claude CLI 命令行参数列表。"""
+        cmd = [
+            "claude", "-p",
+            "--output-format", "stream-json",
+            "--verbose",
+            "--include-partial-messages",
+        ]
+
+        # model
+        model = (
+            self.node_config.get("model")
+            or self.node_config.get("claude_model")
+            or None
+        )
+        if model:
+            cmd.extend(["--model", model])
+
+        # permission_mode
+        cmd.extend(["--permission-mode", self._permission_mode])
+
+        # system_prompt
+        sp = self.node_config.get("system_prompt") or self.system_prompt or None
+        if sp:
+            cmd.extend(["--system-prompt", sp])
+
+        # allowed_tools
+        node_tools = self.node_config.get("tools")
+        if node_tools is not None:
+            _allowed = node_tools
+        else:
+            _allowed = self.config.tools
+        if _allowed:
+            cmd.extend(["--allowedTools"] + list(_allowed))
+
+        # disallowed_tools
+        _disallowed = self._get_disallowed_tools()
+        if _disallowed:
+            cmd.extend(["--disallowedTools"] + list(_disallowed))
+
+        # resume
+        if session_id:
+            cmd.extend(["--resume", session_id])
+
+        # add_dirs
+        for d in self._add_dirs:
+            cmd.extend(["--add-dir", str(d)])
+
+        # setting_sources
+        _MISSING = object()
+        _node_sources = self.node_config.get("setting_sources", _MISSING)
+        setting_sources = (
+            _node_sources if _node_sources is not _MISSING else self.config.setting_sources
+        )
+        if setting_sources is not None:
+            if isinstance(setting_sources, list):
+                cmd.extend(["--setting-sources", ",".join(setting_sources)])
+            else:
+                cmd.extend(["--setting-sources", str(setting_sources)])
+
+        # settings override
+        settings_override = (
+            self.node_config.get("settings_override") or self.config.settings_override
+        )
+        if settings_override:
+            cmd.extend(["--settings", json.dumps(settings_override)])
+
+        # MCP servers
+        try:
+            from framework.mcp_manager import MCPManager
+            _mgr = MCPManager.get_instance()
+            _mcp_names = self.node_config.get("mcp_names")
+            if _mcp_names is not None:
+                _mcp_configs = _mgr.get_sse_configs(_mcp_names)
+            else:
+                _mcp_configs = _mgr.get_all_configs()
+            if _mcp_configs:
+                cmd.extend(["--mcp-config", json.dumps({"mcpServers": _mcp_configs})])
+        except Exception as _mcp_err:
+            logger.debug(f"[claude-cli] mcp_manager lookup failed: {_mcp_err}")
+
+        return cmd
+
+    async def _run_cli(
+        self,
+        prompt: str,
+        session_id: str = "",
+        tools: list[str] | None = None,
+        cwd: str | None = None,
+    ) -> tuple[str, str, bool]:
+        """
+        执行单次 Claude CLI 调用，流式解析 stdout。
+
+        返回 (result_text, session_id, is_error)。
+        """
+        cmd = self._build_cmd(session_id=session_id)
+
+        # tools 参数覆盖 _build_cmd 中的默认值
+        if tools is not None:
+            # 移除 _build_cmd 已添加的 --allowedTools 段
+            try:
+                idx = cmd.index("--allowedTools")
+                end = idx + 1
+                while end < len(cmd) and not cmd[end].startswith("--"):
+                    end += 1
+                cmd[idx:end] = (["--allowedTools"] + list(tools)) if tools else []
+            except ValueError:
+                if tools:
+                    cmd.extend(["--allowedTools"] + list(tools))
+
+        effective_timeout = min(
+            self._MAX_TIMEOUT,
+            max(self._DEFAULT_TIMEOUT, len(prompt) // self._TIMEOUT_CHARS_PER_SEC),
+        )
+
+        env = dict(os.environ)
+        env["CLAUDE_AGENT_SDK"] = "1"
+
+        model = self.node_config.get("model") or self.node_config.get("claude_model") or "default"
+        sid_short = session_id[:8] if session_id else "new"
+        logger.info(f"[claude-cli] model={model} sid={sid_short} timeout={effective_timeout}s")
+        if is_debug():
+            logger.debug(f"[claude-cli] cmd={cmd}")
+            logger.debug(f"[claude-cli] prompt_len={len(prompt)} cwd={cwd!r}")
+
+        proc = await asyncio.create_subprocess_exec(
+            *cmd,
+            stdin=asyncio.subprocess.PIPE,
+            stdout=asyncio.subprocess.PIPE,
+            stderr=asyncio.subprocess.PIPE,
+            cwd=cwd or None,
+            env=env,
+        )
+
+        # Write prompt to stdin and close
+        proc.stdin.write(prompt.encode())
+        await proc.stdin.drain()
+        proc.stdin.close()
+        await proc.stdin.wait_closed()
+
+        result_text = ""
+        new_session_id = session_id
+        is_error = False
+        text_chunks: list[str] = []
+        stderr_lines: list[str] = []
+
+        cb = _stream_cb.get()
+
+        try:
+            async def _read_stderr():
+                async for raw in proc.stderr:
+                    line = raw.decode(errors="replace").rstrip()
+                    stderr_lines.append(line)
+                    logger.debug(f"[claude-cli/stderr] {line}")
+
+            stderr_task = asyncio.create_task(_read_stderr())
+
+            async def _read_stdout():
+                nonlocal result_text, new_session_id, is_error
+                async for raw in proc.stdout:
+                    line = raw.decode(errors="replace").rstrip()
+                    if not line:
+                        continue
+                    try:
+                        data = json.loads(line)
+                    except json.JSONDecodeError:
+                        logger.debug(f"[claude-cli] skip non-JSON: {line[:100]}")
+                        continue
+
+                    msg_type = data.get("type")
+
+                    if msg_type == "stream_event":
+                        ev = data.get("event", {})
+                        etype = ev.get("type")
+                        if etype == "content_block_delta":
+                            delta = ev.get("delta", {})
+                            dtype = delta.get("type")
+                            if dtype == "text_delta":
+                                text = delta.get("text", "")
+                                text_chunks.append(text)
+                                if cb:
+                                    cb(text, False)
+                            elif dtype == "thinking_delta":
+                                thinking_text = delta.get("thinking", "")
+                                if cb and thinking_text:
+                                    cb(thinking_text, True)
+
+                    elif msg_type == "result":
+                        result_text = data.get("result", "").strip()
+                        new_session_id = data.get("session_id", session_id) or ""
+                        is_error = data.get("is_error", False)
+                        usage = data.get("usage")
+                        if usage:
+                            update_token_stats(usage)
+
+            stdout_task = asyncio.create_task(_read_stdout())
+
+            await asyncio.wait_for(proc.wait(), timeout=effective_timeout)
+            await stdout_task
+            await stderr_task
+
+        except asyncio.TimeoutError:
+            proc.kill()
+            await proc.wait()
+            raise RuntimeError(
+                f"Claude CLI 超时 ({effective_timeout}s, prompt_len={len(prompt)})"
+            )
+
+        if proc.returncode != 0 and not result_text:
+            stderr_text = "\n".join(stderr_lines[-20:]) if stderr_lines else ""
+            raise RuntimeError(
+                f"Claude CLI 退出码 {proc.returncode}: {stderr_text[:500]}"
+            )
+
+        # Fallback: if result event was missing, use accumulated text
+        if not result_text and text_chunks:
+            result_text = "".join(text_chunks).strip()
+
+        return result_text, new_session_id, is_error
+
+    async def call_llm(
+        self,
+        prompt: str,
+        session_id: str = "",
+        tools: list[str] | None = None,
+        cwd: str | None = None,
+        history: list | None = None,
+    ) -> tuple[str, str]:
+        """调用 Claude CLI subprocess，返回 (text, new_session_id)。history 由 CLI session 管理，忽略。"""
+        result_text = ""
+        new_session_id = ""
+
+        try:
+            result_text, new_session_id, is_error = await self._run_cli(
+                prompt, session_id=session_id, tools=tools, cwd=cwd,
+            )
+        except Exception as e:
+            # resume 失败 → 以新 session 重试
+            if session_id:
+                logger.warning(
+                    f"[claude-cli] resume sid={session_id[:8]} 失败，以新 session 重试: {e}"
+                )
+                try:
+                    result_text, new_session_id, is_error = await self._run_cli(
+                        prompt, session_id="", tools=tools, cwd=cwd,
+                    )
+                except Exception as retry_err:
+                    logger.error(f"[claude-cli] 新 session 重试也失败: {retry_err}")
+                    result_text = f"[Claude CLI 暂时不可用] {retry_err}"
+                    new_session_id = ""
+            else:
+                raise
+
+        new_sid_short = new_session_id[:8] if new_session_id else "none"
+        logger.info(f"[claude-cli] done sid={new_sid_short} output_len={len(result_text)}")
+        if is_debug():
+            logger.debug(f"[claude-cli] output_preview={result_text[:200]!r}")
+        return result_text, new_session_id
+
+    # 向后兼容别名
+    call_claude = call_llm

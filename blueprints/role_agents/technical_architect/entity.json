@@ -21,10 +21,10 @@
     "nodes": [
       {
         "id": "claude_main",
-        "type": "CLAUDE_CLI",
+        "type": "CLAUDE_SDK",
         "extra_persona": true,
         "persona_files": ["./ROLE.md", "./PROTOCOL.md"],
-        "model": "claude-sonnet-4-6",
+        "model": null,
         "tools": [
           "Read",
           "Write",
