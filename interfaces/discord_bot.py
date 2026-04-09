@@ -1047,8 +1047,13 @@ async def show_session(ctx):
     channel_id = ctx.channel.id
     name = _ensure_channel_session(channel_id)
     env = _session_mgr.get_envelope(name)
-    display = name.replace(_channel_prefix(channel_id), "").lstrip("-") or "default"
-    await ctx.send(f"当前 session: `{display}`\nthread: `{env.thread_id}`")
+    ns = env.node_sessions if env else {}
+    ns_display = ", ".join(f"{k}={v[:8]}" for k, v in ns.items() if v) if ns else "（无）"
+    await ctx.send(
+        f"session: `{name}`\n"
+        f"thread: `{env.thread_id}`\n"
+        f"node_sessions: `{ns_display}`"
+    )
 
 
 @bot.command(name="sessions")
@@ -1064,9 +1069,8 @@ async def list_sessions_cmd(ctx):
     active = _channel_active_session.get(channel_id, _channel_default_session(channel_id))
     lines = []
     for name, env in sessions.items():
-        display = name.replace(prefix, "").lstrip("-") or "default"
         marker = " ◀" if name == active else ""
-        lines.append(f"  {display:<20} thread={env.thread_id}{marker}")
+        lines.append(f"  {name:<40} thread={env.thread_id}{marker}")
     await ctx.send(f"**频道 Sessions**\n```\n" + "\n".join(lines) + "\n```")
 
 
