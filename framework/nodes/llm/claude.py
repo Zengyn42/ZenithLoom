@@ -2,7 +2,7 @@
 框架级 Claude 节点 — framework/nodes/llm/claude.py
 
 两种实现：
-  ClaudeSDKNode(LlmNode)  — Agent SDK（通过 ClaudeSDKClient 持久连接）
+  ClaudeSDKNode(LlmNode)  — Agent SDK（通过 claude_agent_sdk.query()）
   ClaudeCLINode(LlmNode)  — CLI subprocess（通过 asyncio.create_subprocess_exec）
 
 共同接口：
@@ -11,10 +11,9 @@
     - session_id 非空 -> resume 已有 session（~/.claude/ 本地存储）
 
 ClaudeSDKNode：
-  使用 ClaudeSDKClient 维持一个持久化 CLI 子进程。
-  client.query(prompt, session_id=...) 按频道 session_id 路由。
-  CLI 内部自动管理 context（auto-compact），避免 session 历史无限膨胀。
-  asyncio.Lock 保证并发 query 串行执行（CLI 子进程单线程）。
+  sdk_query() 通过 wait_for_result_and_end_input() 关闭 stdin，
+  让子进程优雅退出，确保会话历史写入 JSONL 文件。
+  SDK 内部 ProcessError 被包装为普通 Exception，需检测消息内容。
 
 ClaudeCLINode：
   通过 `claude -p --output-format stream-json --verbose --include-partial-messages`
@@ -35,17 +34,16 @@ import asyncio
 import json
 import logging
 import os
-from uuid import uuid4
 
 from claude_agent_sdk import (
     ClaudeAgentOptions,
-    ClaudeSDKClient,
     ResultMessage,
     get_session_messages,
     list_sessions as sdk_list_sessions,
+    query as sdk_query,
 )
 from claude_agent_sdk.types import StreamEvent
-from claude_agent_sdk._errors import ProcessError, CLIConnectionError
+from claude_agent_sdk._errors import ProcessError
 
 from framework.config import AgentConfig
 from framework.debug import is_debug
@@ -58,16 +56,16 @@ logger = logging.getLogger(__name__)
 
 class ClaudeSDKNode(AgentNode):
     """
-    Claude SDK LLM 节点（持久连接模式）。
+    Claude SDK LLM 节点。
 
     继承 AgentNode，实现 call_llm()。
-    通过 ClaudeSDKClient 维持一个持久化 CLI 子进程，避免每次调用 spawn 新进程。
-    CLI 内部自动管理 context（auto-compact），防止 session 历史无限膨胀。
-    asyncio.Lock 保证并发频道的 query 串行执行。
+    使用 sdk_query() 流式调用，每次调用 spawn 新 CLI 子进程。
+
+    Auto-compact：监测每次调用后的 context 大小，超过 _COMPACT_THRESHOLD 时
+    下一次调用前先发送 /compact 让 CLI 压缩 session 历史，再执行实际请求。
     """
 
-    # 类级别：跟踪所有活跃实例，供 reset_all_clients() 断开全部持久连接
-    _instances: list["ClaudeSDKNode"] = []
+    _COMPACT_THRESHOLD = 100_000  # tokens
 
     def __init__(
         self,
@@ -77,19 +75,31 @@ class ClaudeSDKNode(AgentNode):
     ):
         super().__init__(config, node_config)
         self.system_prompt = system_prompt
-        self._client: ClaudeSDKClient | None = None
-        ClaudeSDKNode._instances.append(self)
-        self._query_lock = asyncio.Lock()
-        self._client_cwd: str | None = None
-        self._stderr_lines: list[str] = []
+        # session_id → 上次 context 大小（tokens），用于 auto-compact 判断
+        self._last_context_size: dict[str, int] = {}
 
-    def _build_client_options(self, cwd: str | None = None) -> ClaudeAgentOptions:
-        """构建 ClaudeSDKClient 选项（一次性，不含 per-query 字段）。"""
-        sp = self.node_config.get("system_prompt") or self.system_prompt or None
-        node_tools = self.node_config.get("tools")
-        _allowed = node_tools if node_tools is not None else self.config.tools
-        _disallowed = self._get_disallowed_tools()
+    async def call_llm(
+        self,
+        prompt: str,
+        session_id: str = "",
+        tools: list[str] | None = None,
+        cwd: str | None = None,
+        history: list | None = None,
+    ) -> tuple[str, str]:
+        """调用 Claude SDK，返回 (text, new_session_id)。history 由 SDK session 管理，忽略。"""
+        model = self.node_config.get("model") or self.node_config.get("claude_model") or "default"
+        sid_short = session_id[:8] if session_id else "new"
+        logger.info(f"[claude] model={model} sid={sid_short}")
+        if is_debug():
+            logger.debug(f"[claude] prompt_len={len(prompt)} cwd={cwd!r}")
 
+        stderr_lines: list[str] = []
+
+        def _on_stderr(line: str) -> None:
+            stderr_lines.append(line)
+            logger.debug(f"[claude/stderr] {line.rstrip()}")
+
+        # setting_sources / settings_override：node_config 优先，退回到顶层 AgentConfig
         _MISSING = object()
         _node_sources = self.node_config.get("setting_sources", _MISSING)
         setting_sources = (
@@ -100,6 +110,7 @@ class ClaudeSDKNode(AgentNode):
         )
         settings_val = json.dumps(settings_override) if settings_override else None
 
+        # Optional extended thinking: node_config["thinking"] = "adaptive" | "disabled" | {"type":..., "budget_tokens":...}
         _thinking_raw = self.node_config.get("thinking")
         _thinking_cfg = None
         if _thinking_raw:
@@ -108,203 +119,192 @@ class ClaudeSDKNode(AgentNode):
             elif isinstance(_thinking_raw, dict):
                 _thinking_cfg = _thinking_raw
 
-        _max_buf = self.node_config.get("max_buffer_size", 10 * 1024 * 1024)
+        # permission_mode + disallowed_tools 统一由基类 LlmNode 管理
+        # Claude SDK 原生支持 permission_mode，直接传入
+        # disallowed_tools 由基类 _get_disallowed_tools() 根据 mode 自动计算
+        _disallowed = self._get_disallowed_tools()
 
-        _mcp_servers: dict = {}
-        try:
-            from framework.mcp_manager import MCPManager
-            _mgr = MCPManager.get_instance()
-            _mcp_names = self.node_config.get("mcp_names")
-            if _mcp_names is not None:
-                _mcp_servers = _mgr.get_sse_configs(_mcp_names)
+        def _make_options(sid: str) -> ClaudeAgentOptions:
+            sp = self.node_config.get("system_prompt") or self.system_prompt or None
+            node_tools = self.node_config.get("tools")
+            if tools is not None:
+                _allowed = tools
+            elif node_tools is not None:
+                _allowed = node_tools
             else:
-                _mcp_servers = _mgr.get_all_configs()
-        except Exception as _mcp_err:
-            logger.debug(f"[claude] mcp_manager lookup failed: {_mcp_err}")
+                _allowed = self.config.tools
 
-        def _on_stderr(line: str) -> None:
-            self._stderr_lines.append(line)
-            logger.debug(f"[claude/stderr] {line.rstrip()}")
+            # max_buffer_size: node_config 可配置, 默认 10MB (SDK 默认仅 1MB,
+            # ColonyCoder QA/rescue 注入大量源码+测试输出时容易超限)
+            _max_buf = self.node_config.get("max_buffer_size", 10 * 1024 * 1024)
 
-        return ClaudeAgentOptions(
-            system_prompt=sp,
-            cwd=cwd or None,
-            allowed_tools=_allowed,
-            disallowed_tools=_disallowed,
-            permission_mode=self._permission_mode,
-            model=self.node_config.get("model") or self.node_config.get("claude_model") or None,
-            env={"CLAUDECODE": "", "CLAUDE_CODE_SESSION": "", "CLAUDE_AGENT_SDK": "1"},
-            stderr=_on_stderr,
-            setting_sources=setting_sources,
-            settings=settings_val,
-            include_partial_messages=True,
-            thinking=_thinking_cfg,
-            add_dirs=self._add_dirs,
-            max_buffer_size=_max_buf,
-            mcp_servers=_mcp_servers or {},
-        )
-
-    async def _ensure_client(self, cwd: str | None = None) -> ClaudeSDKClient:
-        """懒创建并连接持久化 ClaudeSDKClient。cwd 变化时自动重连。"""
-        if self._client is not None:
-            if cwd and cwd != self._client_cwd:
-                logger.info(f"[claude] cwd changed ({self._client_cwd} → {cwd}), reconnecting")
-                await self._disconnect_client()
-            else:
-                return self._client
-
-        options = self._build_client_options(cwd=cwd)
-        self._client = ClaudeSDKClient(options=options)
-        await self._client.connect()
-        self._client_cwd = cwd
-        logger.info(f"[claude] persistent client connected (cwd={cwd})")
-        return self._client
-
-    async def _disconnect_client(self) -> None:
-        """断开并重置持久化 client。"""
-        if self._client is not None:
+            # MCP servers: 从 MCPManager 获取当前运行中的 server SSE 配置
+            # 如果 node_config 指定 "mcp_names" 列表，只取指定的 server；
+            # 否则取 MCPManager 中所有当前运行的 server（agent 已 acquire 的）。
+            _mcp_servers: dict = {}
             try:
-                await self._client.disconnect()
-            except Exception as e:
-                logger.warning(f"[claude] disconnect error: {e}")
-            self._client = None
-            self._client_cwd = None
+                from framework.mcp_manager import MCPManager
+                _mgr = MCPManager.get_instance()
+                _mcp_names = self.node_config.get("mcp_names")
+                if _mcp_names is not None:
+                    _mcp_servers = _mgr.get_sse_configs(_mcp_names)
+                else:
+                    _mcp_servers = _mgr.get_all_configs()
+            except Exception as _mcp_err:
+                logger.debug(f"[claude] mcp_manager lookup failed: {_mcp_err}")
 
-    @classmethod
-    async def reset_all_clients(cls) -> int:
-        """断开所有活跃实例的持久连接（供 !reset 调用）。
+            return ClaudeAgentOptions(
+                system_prompt=sp,
+                cwd=cwd or None,
+                allowed_tools=_allowed,
+                disallowed_tools=_disallowed,
+                permission_mode=self._permission_mode,
+                resume=sid or None,
+                model=self.node_config.get("model") or self.node_config.get("claude_model") or None,
+                env={"CLAUDECODE": "", "CLAUDE_CODE_SESSION": "", "CLAUDE_AGENT_SDK": "1"},
+                stderr=_on_stderr,
+                setting_sources=setting_sources,
+                settings=settings_val,
+                include_partial_messages=True,
+                thinking=_thinking_cfg,
+                add_dirs=self._add_dirs,
+                max_buffer_size=_max_buf,
+                mcp_servers=_mcp_servers or {},
+            )
 
-        下一次 call_llm 会自动重建 client，CLI 以全新状态启动。
-        返回断开的 client 数量。
-        """
-        count = 0
-        for inst in cls._instances:
-            if inst._client is not None:
-                await inst._disconnect_client()
-                count += 1
-        if count:
-            logger.info(f"[claude] reset_all_clients: disconnected {count} client(s)")
-        return count
+        async def _run_once(sid: str, msg_text: str) -> tuple[str, str, bool]:
+            """
+            调用 sdk_query()，返回 (result_text, new_session_id, is_error)。
 
-    async def _run_query(self, session_id: str, prompt: str, cwd: str | None) -> tuple[str, str, bool]:
-        """
-        通过持久化 client 发送一次 query 并收集响应。
+            sdk_query() 内部通过 wait_for_result_and_end_input() 关闭 stdin，
+            子进程优雅退出后会话历史写入磁盘。
 
-        返回 (result_text, new_session_id, is_error)。
-        """
-        client = await self._ensure_client(cwd=cwd)
-        self._stderr_lines.clear()
+            注意：SDK 将传输层的 ProcessError 包装为普通 Exception 推入消息流，
+            receive_messages() 收到 {"type":"error"} 时 raise Exception(msg)。
+            该异常在此函数内透传，由外层统一处理。
+            """
+            _result = ""
+            _new_sid = sid
+            _is_error = False
+            _in_thinking = False  # track current block type for ANSI styling
+            _text_chunks: list[str] = []  # fallback when ResultMessage.result is empty
 
-        _result = ""
-        _new_sid = session_id
-        _is_error = False
-        _in_thinking = False
-        _text_chunks: list[str] = []
-
-        # session_id 为空时生成唯一 UUID，确保每个 channel/调用获得独立 session。
-        # 不能用 "default" — 持久连接模式下所有 channel 共享同一个 CLI 子进程，
-        # "default" 会让不同 channel 意外 resume 同一个 session 导致内容泄漏。
-        _effective_sid = session_id or str(uuid4())
-        await client.query(prompt=prompt, session_id=_effective_sid)
-
-        async for msg in client.receive_response():
-            if isinstance(msg, StreamEvent):
-                cb = _stream_cb.get()
-                ev = msg.event
-                etype = ev.get("type")
-                if etype == "content_block_start":
-                    btype = ev.get("content_block", {}).get("type")
-                    if btype == "thinking":
-                        _in_thinking = True
-                    elif btype == "text" and _in_thinking:
+            async for msg in sdk_query(prompt=msg_text, options=_make_options(sid)):
+                if isinstance(msg, StreamEvent):
+                    cb = _stream_cb.get()
+                    ev = msg.event
+                    etype = ev.get("type")
+                    if etype == "content_block_start":
+                        btype = ev.get("content_block", {}).get("type")
+                        if btype == "thinking":
+                            _in_thinking = True
+                        elif btype == "text" and _in_thinking:
+                            _in_thinking = False
+                    elif etype == "content_block_stop" and _in_thinking:
                         _in_thinking = False
-                elif etype == "content_block_stop" and _in_thinking:
-                    _in_thinking = False
-                elif etype == "content_block_delta":
-                    delta = ev.get("delta", {})
-                    dtype = delta.get("type")
-                    if dtype == "text_delta":
-                        text = delta.get("text", "")
-                        _text_chunks.append(text)
-                        if cb:
-                            cb(text, False)
-                    elif dtype == "thinking_delta":
-                        thinking_text = delta.get("thinking", "")
-                        if cb and thinking_text:
-                            cb(thinking_text, True)
-            elif isinstance(msg, ResultMessage):
-                _new_sid = msg.session_id or session_id
-                _is_error = msg.is_error
-                if msg.usage:
-                    update_token_stats(msg.usage)
-                if msg.result:
-                    _result = msg.result.strip()
+                    elif etype == "content_block_delta":
+                        delta = ev.get("delta", {})
+                        dtype = delta.get("type")
+                        if dtype == "text_delta":
+                            text = delta.get("text", "")
+                            _text_chunks.append(text)  # always accumulate
+                            if cb:
+                                cb(text, False)
+                        elif dtype == "thinking_delta":
+                            thinking_text = delta.get("thinking", "")
+                            if cb and thinking_text:
+                                cb(thinking_text, True)
+                elif isinstance(msg, ResultMessage):
+                    _new_sid = msg.session_id or sid
+                    _is_error = msg.is_error
+                    if msg.usage:
+                        update_token_stats(msg.usage)
+                        # 记录 context 大小，供 auto-compact 判断
+                        _ctx = (
+                            msg.usage.get("input_tokens", 0)
+                            + msg.usage.get("cache_read_input_tokens", 0)
+                            + msg.usage.get("cache_creation_input_tokens", 0)
+                        )
+                        if _new_sid:
+                            self._last_context_size[_new_sid] = _ctx
+                    if msg.result:
+                        _result = msg.result.strip()
 
-        if not _result and _text_chunks:
-            _result = "".join(_text_chunks).strip()
+            # include_partial_messages=True may leave ResultMessage.result empty;
+            # fall back to text accumulated from stream events
+            if not _result and _text_chunks:
+                _result = "".join(_text_chunks).strip()
 
-        return _result, _new_sid, _is_error
+            return _result, _new_sid, _is_error
 
-    async def call_llm(
-        self,
-        prompt: str,
-        session_id: str = "",
-        tools: list[str] | None = None,
-        cwd: str | None = None,
-        history: list | None = None,
-    ) -> tuple[str, str]:
-        """调用 Claude SDK（持久连接），返回 (text, new_session_id)。history 由 SDK session 管理，忽略。"""
-        model = self.node_config.get("model") or self.node_config.get("claude_model") or "default"
-        sid_short = session_id[:8] if session_id else "new"
-        logger.info(f"[claude] model={model} sid={sid_short}")
-        if is_debug():
-            logger.debug(f"[claude] prompt_len={len(prompt)} cwd={cwd!r}")
+        def _is_cli_exit_error(e: Exception) -> bool:
+            """
+            判断异常是否来自 CLI 子进程非零退出。
+            ProcessError 在 SDK 内部被包装为 Exception(str(e))，
+            因此同时检测类型和消息内容。
+            """
+            return isinstance(e, ProcessError) or "exit code" in str(e).lower()
 
         result_text = ""
         new_session_id = ""
         is_error = False
 
-        async with self._query_lock:
+        # ── Auto-compact：context 超阈值时先让 CLI 压缩 session 历史 ──────
+        if session_id and self._last_context_size.get(session_id, 0) > self._COMPACT_THRESHOLD:
+            ctx_size = self._last_context_size[session_id]
+            logger.info(
+                f"[claude] auto-compact: sid={session_id[:8]} "
+                f"context={ctx_size:,} > threshold={self._COMPACT_THRESHOLD:,}"
+            )
+            # 通过流式回调通知用户（Discord / CLI）
+            cb = _stream_cb.get()
+            if cb:
+                cb("\n⚙️ Session context 过大，正在自动压缩历史...\n", False)
             try:
-                result_text, new_session_id, is_error = await self._run_query(
-                    session_id, prompt, cwd,
+                # 用 sdk_query 发送 /compact，CLI 内部执行 compact
+                async for msg in sdk_query(
+                    prompt="/compact",
+                    options=_make_options(session_id),
+                ):
+                    if isinstance(msg, ResultMessage):
+                        if msg.session_id:
+                            session_id = msg.session_id
+                        # compact 后清除旧 context 记录
+                        self._last_context_size.clear()
+                        break
+                logger.info(f"[claude] auto-compact done, sid={session_id[:8]}")
+                if cb:
+                    cb("✅ 压缩完成，继续处理...\n\n", False)
+            except Exception as e:
+                logger.warning(f"[claude] auto-compact failed: {e}")
+                if cb:
+                    cb(f"⚠️ 压缩失败（{e}），继续使用原 session...\n\n", False)
+
+        try:
+            result_text, new_session_id, is_error = await _run_once(session_id, prompt)
+        except Exception as e:
+            if stderr_lines:
+                logger.error(
+                    f"[claude] CLI stderr ({len(stderr_lines)} lines):\n"
+                    + "\n".join(stderr_lines[-20:])
                 )
-            except (CLIConnectionError, OSError) as e:
-                # CLI 子进程死了 → 重连一次
-                logger.warning(f"[claude] client connection lost, reconnecting: {e}")
-                await self._disconnect_client()
+            # resume 失败 -> 以新 session 重试
+            if _is_cli_exit_error(e) and session_id:
+                logger.warning(
+                    f"[claude] resume sid={session_id[:8]} 失败，以新 session 重试..."
+                )
                 try:
-                    result_text, new_session_id, is_error = await self._run_query(
-                        session_id, prompt, cwd,
-                    )
+                    result_text, new_session_id, is_error = await _run_once("", prompt)
                 except Exception as retry_err:
-                    logger.error(f"[claude] reconnect retry failed: {retry_err}")
+                    # 重试也失败：返回错误文本 + 空 session ID，
+                    # 确保 llm_node.__call__ 正常写入 state 清掉坏 session，
+                    # 避免 checkpoint 保留坏 session ID 导致无限 resume 失败循环。
+                    logger.error(f"[claude] 新 session 重试也失败: {retry_err}")
                     result_text = f"[Claude 暂时不可用] {retry_err}"
                     new_session_id = ""
                     is_error = True
-            except Exception as e:
-                if self._stderr_lines:
-                    logger.error(
-                        f"[claude] CLI stderr ({len(self._stderr_lines)} lines):\n"
-                        + "\n".join(self._stderr_lines[-20:])
-                    )
-                # resume 失败 → 以新 session 重试
-                _is_exit = isinstance(e, ProcessError) or "exit code" in str(e).lower()
-                if _is_exit and session_id:
-                    logger.warning(
-                        f"[claude] resume sid={session_id[:8]} 失败，以新 session 重试..."
-                    )
-                    try:
-                        result_text, new_session_id, is_error = await self._run_query(
-                            "", prompt, cwd,
-                        )
-                    except Exception as retry_err:
-                        logger.error(f"[claude] 新 session 重试也失败: {retry_err}")
-                        result_text = f"[Claude 暂时不可用] {retry_err}"
-                        new_session_id = ""
-                        is_error = True
-                else:
-                    raise
+            else:
+                raise
 
         new_sid_short = new_session_id[:8] if new_session_id else "new"
         logger.info(f"[claude] done sid={new_sid_short} output_len={len(result_text)}")
