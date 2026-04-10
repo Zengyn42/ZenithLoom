@@ -845,18 +845,36 @@ async def _build_declarative(
 
                 async def _fresh_wrapper(state: dict, config=None, *, _g=_inner, _n=_nid) -> dict:
                     # 清空 session IDs、裁剪 messages（仅保留最后一条 HumanMessage）、
-                    # 同时清空 routing_context。
+                    # 同时清空 routing_context 以及所有子图结论字段。
                     #
                     # routing_context 陷阱：父图路由信号的 context 字段可能是文件路径
                     # （如 "/tmp/debate_plan.md"），子图首节点直接用它当 prompt 会接收
                     # 到一个无意义字符串，导致 Gemini 自由发挥而非基于用户真实意图。
                     # 清空后子图首节点回落到 messages[-1]（用户原始输入），行为更可预期。
+                    #
+                    # 子图结论字段清空：LlmNode._build_gemini_section() 会把
+                    # debate_conclusion / apex_conclusion / knowledge_result / discovery_report
+                    # 注入到 Claude 节点 prompt 中。若不清空，第二次调用同一个子图时，
+                    # 子图内部的 Claude 节点会看到上一次调用的结论，污染当前辩论的上下文。
+                    # previous_node_output / subgraph_topic 同理，也需要清空避免跨次污染。
                     msgs = state.get("messages", [])
                     human_msgs = [m for m in reversed(msgs) if getattr(m, "type", "") == "human"]
                     fresh_msgs = [human_msgs[0]] if human_msgs else (msgs[-1:] if msgs else [])
-                    patched = {**state, "node_sessions": {}, "messages": fresh_msgs, "routing_context": ""}
+                    patched = {
+                        **state,
+                        "node_sessions": {},
+                        "messages": fresh_msgs,
+                        "routing_context": "",
+                        "debate_conclusion": "",
+                        "apex_conclusion": "",
+                        "knowledge_result": "",
+                        "discovery_report": "",
+                        "previous_node_output": "",
+                        "subgraph_topic": "",
+                    }
                     logger.debug(
                         f"[session_mode:fresh_per_call] {_n}: clearing node_sessions + routing_context + "
+                        f"subgraph conclusions + previous_node_output + subgraph_topic + "
                         f"trimming messages {len(msgs)} → {len(fresh_msgs)}"
                     )
                     push_graph_scope(_n)
