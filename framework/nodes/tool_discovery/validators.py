@@ -32,7 +32,7 @@ def _github_headers() -> dict:
     """Build GitHub API headers with optional token."""
     headers = {
         "Accept": "application/vnd.github+json",
-        "User-Agent": "BootstrapBuilder-ToolDiscovery/1.0",
+        "User-Agent": "ZenithLoom-ToolDiscovery/1.0",
     }
     token = os.environ.get("GITHUB_TOKEN", "")
     if token:

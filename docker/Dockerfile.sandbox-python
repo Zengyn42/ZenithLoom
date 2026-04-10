@@ -1,4 +1,4 @@
-# BootstrapBuilder — Python Sandbox for Tool Discovery
+# ZenithLoom — Python Sandbox for Tool Discovery
 # Build: docker build -t bb-sandbox-python -f docker/Dockerfile.sandbox-python .
 # Usage: docker run --rm --memory=1g --cpus=1 --read-only --tmpfs /workspace:rw bb-sandbox-python
 

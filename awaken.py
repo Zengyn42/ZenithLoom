@@ -21,7 +21,7 @@
 identity.json 格式：
   {
     "name": "hani",
-    "blueprint": "/path/to/BootstrapBuilder/blueprints/role_agents/technical_architect",
+    "blueprint": "/path/to/ZenithLoom/blueprints/role_agents/technical_architect",
     "connector": "discord",
     "discord": {
       "token": "...",

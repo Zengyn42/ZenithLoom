@@ -7,7 +7,7 @@
   - rollback    : git reset --hard <hash>
   - get_current_hash : git rev-parse HEAD
 
-所有操作在 project_root（项目目录）执行，不影响 BootstrapBuilder 自身的 git 状态。
+所有操作在 project_root（项目目录）执行，不影响 ZenithLoom 自身的 git 状态。
 """
 
 import logging

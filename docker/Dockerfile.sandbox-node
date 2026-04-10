@@ -1,4 +1,4 @@
-# BootstrapBuilder — Node.js Sandbox for Tool Discovery
+# ZenithLoom — Node.js Sandbox for Tool Discovery
 # Build: docker build -t bb-sandbox-node -f docker/Dockerfile.sandbox-node .
 # Usage: docker run --rm --memory=1g --cpus=1 --read-only --tmpfs /workspace:rw bb-sandbox-node
 

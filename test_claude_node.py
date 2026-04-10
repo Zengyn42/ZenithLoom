@@ -4,7 +4,7 @@ Claude AgentNode 简单集成测试
 直接调用 ClaudeNode.call_llm() 和 AgentNode.__call__()，不经过 LangGraph 图。
 
 运行：
-    cd /home/kingy/Foundation/BootstrapBuilder
+    cd /home/kingy/Foundation/ZenithLoom
     /usr/bin/python3 test_claude_node.py
 
 测试场景：

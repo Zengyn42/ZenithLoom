@@ -85,7 +85,7 @@ class ConversationRecord:
     BaseAgentState.node_sessions["gemini_main"]。
     """
     sessionId: str
-    projectHash: str    # project slug, e.g. "bootstrapbuilder"
+    projectHash: str    # project slug, e.g. "zenithloom"
     startTime: str      # ISO 8601
     lastUpdated: str    # ISO 8601
     messages: list      # list[MessageRecord]（序列化时用 dict）
@@ -105,7 +105,7 @@ def get_project_id(workspace: str) -> str:
       - 非字母数字字符替换为 '-'
       - 合并连续 '-'，去除首尾 '-'
 
-    e.g. "/home/kingy/Foundation/BootstrapBuilder" → "bootstrapbuilder"
+    e.g. "/home/kingy/Foundation/ZenithLoom" → "zenithloom"
     """
     if not workspace:
         workspace = os.getcwd()

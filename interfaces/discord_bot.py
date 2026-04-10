@@ -71,7 +71,7 @@ async def _fetch_mermaid_png(mermaid_text: str) -> bytes | None:
         url      = f"https://mermaid.ink/img/{encoded}?type=png&bgColor={bg_color}"
         req = urllib.request.Request(
             url,
-            headers={"User-Agent": "Mozilla/5.0 (compatible; BootstrapBuilder/1.0)"},
+            headers={"User-Agent": "Mozilla/5.0 (compatible; ZenithLoom/1.0)"},
         )
 
         def _blocking_fetch() -> bytes:
