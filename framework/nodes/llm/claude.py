@@ -188,13 +188,25 @@ class ClaudeSDKNode(AgentNode):
             _is_error = False
             _in_thinking = False  # track current block type for ANSI styling
             _text_chunks: list[str] = []  # fallback when ResultMessage.result is empty
+            # 追踪最后一次 API 调用的 context size（每次 tool use 循环都有独立的 message_start）。
+            # 不能用 ResultMessage.usage — 那是累计值，复杂 tool use 会远超真实 context。
+            _last_msg_ctx = 0
 
             async for msg in sdk_query(prompt=msg_text, options=_make_options(sid)):
                 if isinstance(msg, StreamEvent):
                     cb = _stream_cb.get()
                     ev = msg.event
                     etype = ev.get("type")
-                    if etype == "content_block_start":
+                    if etype == "message_start":
+                        # 每次 API 调用开始，提取本次调用的 input context size
+                        _usage = ev.get("message", {}).get("usage", {})
+                        if _usage:
+                            _last_msg_ctx = (
+                                _usage.get("input_tokens", 0)
+                                + _usage.get("cache_read_input_tokens", 0)
+                                + _usage.get("cache_creation_input_tokens", 0)
+                            )
+                    elif etype == "content_block_start":
                         btype = ev.get("content_block", {}).get("type")
                         if btype == "thinking":
                             _in_thinking = True
@@ -219,14 +231,9 @@ class ClaudeSDKNode(AgentNode):
                     _is_error = msg.is_error
                     if msg.usage:
                         update_token_stats(msg.usage)
-                        # 记录 context 大小，供 auto-compact 判断
-                        _ctx = (
-                            msg.usage.get("input_tokens", 0)
-                            + msg.usage.get("cache_read_input_tokens", 0)
-                            + msg.usage.get("cache_creation_input_tokens", 0)
-                        )
-                        if _new_sid:
-                            self._last_context_size[_new_sid] = _ctx
+                    # 用最后一次 message_start 的 context 作为 session 真实大小
+                    if _new_sid and _last_msg_ctx > 0:
+                        self._last_context_size[_new_sid] = _last_msg_ctx
                     if msg.result:
                         _result = msg.result.strip()
 
