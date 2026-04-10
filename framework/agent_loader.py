@@ -889,30 +889,31 @@ async def _build_declarative(
                 builder.add_node(node_id, _fresh_wrapper)
 
             elif session_mode == "inherit":
-                # Inject parent node's session ID into all subgraph session keys.
-                inherit_from = node_def.get("inherit_from", "claude_main")
-                _inner = inner_graph
-                _nid = node_id
-                _sub_keys = _get_subgraph_session_keys(inner_loader.json)
-
-                async def _inherit_wrapper(
-                    state: dict, config=None,
-                    *, _g=_inner, _n=_nid, _from=inherit_from, _keys=_sub_keys,
-                ) -> dict:
-                    parent_sid = (state.get("node_sessions") or {}).get(_from, "")
-                    injected = {sk: parent_sid for sk in _keys}
-                    patched = {**state, "node_sessions": injected}
-                    logger.debug(
-                        f"[session_mode:inherit] {_n}: inheriting session "
-                        f"from {_from!r} → {len(_keys)} subgraph keys"
-                    )
-                    push_graph_scope(_n)
-                    try:
-                        return await _g.ainvoke(patched)
-                    finally:
-                        pop_graph_scope()
-
-                builder.add_node(node_id, _inherit_wrapper)
+                # NOT IMPLEMENTED — see docs/vault/architecture/session-mode-design.md
+                #
+                # The original intent was to inject a parent graph LLM node's session
+                # UUID into all the subgraph's session keys, so the subgraph "continues"
+                # the parent's conversation. This cannot be implemented correctly because:
+                #
+                # 1. LLM providers have independent session stores (Claude in
+                #    ~/.claude/, Gemini in ~/.gemini/, Ollama in-process). A UUID
+                #    from one provider cannot be resumed by another → runtime failure
+                #    whenever parent and child subgraph use different providers.
+                # 2. Even same-provider inheritance has semantic issues:
+                #    token budget already consumed by the parent session, permission
+                #    mode / system prompt divergence between parent node and subgraph
+                #    node, etc.
+                #
+                # Workarounds for sharing context across subgraphs:
+                #   - Use fresh_per_call + pass context via messages (LangGraph native)
+                #   - Use SubgraphMapperNode for explicit field mapping
+                #   - Manually extract parent session history and inject as prompt prefix
+                raise NotImplementedError(
+                    f"subgraph '{node_id}': session_mode 'inherit' is not implemented. "
+                    f"See docs/vault/architecture/session-mode-design.md for the rationale. "
+                    f"For sharing context between subgraphs, use session_mode='fresh_per_call' "
+                    f"and pass context via messages or SubgraphMapperNode."
+                )
 
             elif session_mode == "isolated":
                 # Each node gets its own unique session key (forced at build time)
@@ -934,7 +935,8 @@ async def _build_declarative(
             else:
                 raise ValueError(
                     f"subgraph '{node_id}': unknown session_mode {session_mode!r} "
-                    f"(valid: persistent, fresh_per_call, inherit, isolated)"
+                    f"(valid: persistent, fresh_per_call, isolated; "
+                    f"'inherit' is declared but NotImplemented)"
                 )
 
         else:
