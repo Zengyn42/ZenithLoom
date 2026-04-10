@@ -1,5 +1,5 @@
 """
-Shared LangGraph state reducers for BootstrapBuilder schemas.
+Shared LangGraph state reducers for ZenithLoom schemas.
 """
 
 

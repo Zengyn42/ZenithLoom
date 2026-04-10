@@ -1,4 +1,4 @@
-# BootstrapBuilder
+# ZenithLoom
 
 多 LLM Agent 编排框架，基于 LangGraph 构建。支持声明式图定义、多 Session 管理、子图嵌套、以及 Git 原子回滚。
 
@@ -7,7 +7,7 @@
 ## 目录结构
 
 ```
-BootstrapBuilder/
+ZenithLoom/
 ├── main.py                        # 入口（CLI / Discord / Tmux 模式）
 ├── framework/                     # 核心框架层
 │   ├── state.py                   # BaseAgentState / DebateState (TypedDict)

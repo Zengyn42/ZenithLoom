@@ -28,7 +28,7 @@ from pathlib import Path
 
 logger = logging.getLogger(__name__)
 
-# 项目根：framework/ 的父目录，即 BootstrapBuilder/
+# 项目根：framework/ 的父目录，即 ZenithLoom/
 _PROJECT_ROOT = Path(__file__).resolve().parent.parent
 
 

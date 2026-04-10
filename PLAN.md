@@ -1,8 +1,8 @@
-# BootstrapBuilder - 0号管家 基础 Builder Agent 计划
+# ZenithLoom - 0号管家 基础 Builder Agent 计划
 
 ## Context
 
-在空的 `BootstrapBuilder/` 目录里搭建"无垠智穹 0号管家"。
+在空的 `ZenithLoom/` 目录里搭建"无垠智穹 0号管家"。
 核心是 LangGraph 状态机（Claude 主控 + Gemini 战略顾问），通过 SQLite 持久化记忆，
 支持多个接口无缝共享同一个会话状态。
 
@@ -34,7 +34,7 @@
 ## 目录结构
 
 ```
-BootstrapBuilder/
+ZenithLoom/
 ├── agent/
 │   ├── __init__.py
 │   ├── core.py          # LangGraph 状态机 + 引擎实例
