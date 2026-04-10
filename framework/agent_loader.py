@@ -750,11 +750,23 @@ async def _build_declarative(
     all_schemas = get_all_schemas()
     state_schema = all_schemas.get(graph_spec.get("state_schema", "base_schema"), BaseAgentState)
 
-    # is_subgraph=True 且使用 base_schema → 子图模式，使用 SubgraphInputState 隔离父图 messages。
-    # 自定义 schema（如 colony_coder_schema）含有 base_schema 以外的字段，
-    # SubgraphInputState 不覆盖这些字段，不能应用 input 隔离（否则自定义字段会丢失）。
-    _schema_name = graph_spec.get("state_schema", "base_schema")
-    if is_subgraph and _schema_name == "base_schema":
+    # is_subgraph=True 时应用 SubgraphInputState 隔离父图字段（messages / 子图输出字段等）。
+    # 仅对 BaseAgentState 的纯扩展子类（如 debate_schema, 只 override messages 不加新字段）安全，
+    # 自定义 schema（如 colony_coder_schema）含有 base_schema 以外的字段需要从父图流入，
+    # 应用 SubgraphInputState 会导致这些字段被阻断 → 保留原始 state_schema 作为 input。
+    def _can_apply_input_filter(schema_cls) -> bool:
+        if schema_cls is BaseAgentState:
+            return True
+        try:
+            from typing import get_type_hints
+            base_fields = set(get_type_hints(BaseAgentState).keys())
+            schema_fields = set(get_type_hints(schema_cls).keys())
+            # 安全条件：schema 字段完全是 BaseAgentState 的子集或相等
+            return schema_fields.issubset(base_fields)
+        except Exception:
+            return False
+
+    if is_subgraph and _can_apply_input_filter(state_schema):
         builder = StateGraph(state_schema, input_schema=SubgraphInputState)
     else:
         builder = StateGraph(state_schema)
@@ -845,36 +857,22 @@ async def _build_declarative(
 
                 async def _fresh_wrapper(state: dict, config=None, *, _g=_inner, _n=_nid) -> dict:
                     # 清空 session IDs、裁剪 messages（仅保留最后一条 HumanMessage）、
-                    # 同时清空 routing_context 以及所有子图结论字段。
+                    # 同时清空 routing_context。
                     #
                     # routing_context 陷阱：父图路由信号的 context 字段可能是文件路径
                     # （如 "/tmp/debate_plan.md"），子图首节点直接用它当 prompt 会接收
                     # 到一个无意义字符串，导致 Gemini 自由发挥而非基于用户真实意图。
                     # 清空后子图首节点回落到 messages[-1]（用户原始输入），行为更可预期。
                     #
-                    # 子图结论字段清空：LlmNode._build_gemini_section() 会把
-                    # debate_conclusion / apex_conclusion / knowledge_result / discovery_report
-                    # 注入到 Claude 节点 prompt 中。若不清空，第二次调用同一个子图时，
-                    # 子图内部的 Claude 节点会看到上一次调用的结论，污染当前辩论的上下文。
-                    # previous_node_output / subgraph_topic 同理，也需要清空避免跨次污染。
+                    # 注：子图输出字段（debate_conclusion / apex_conclusion 等）和
+                    # 每节点临时字段（previous_node_output / subgraph_topic）由
+                    # SubgraphInputState 在 schema 层阻断，不从父图流入子图。
                     msgs = state.get("messages", [])
                     human_msgs = [m for m in reversed(msgs) if getattr(m, "type", "") == "human"]
                     fresh_msgs = [human_msgs[0]] if human_msgs else (msgs[-1:] if msgs else [])
-                    patched = {
-                        **state,
-                        "node_sessions": {},
-                        "messages": fresh_msgs,
-                        "routing_context": "",
-                        "debate_conclusion": "",
-                        "apex_conclusion": "",
-                        "knowledge_result": "",
-                        "discovery_report": "",
-                        "previous_node_output": "",
-                        "subgraph_topic": "",
-                    }
+                    patched = {**state, "node_sessions": {}, "messages": fresh_msgs, "routing_context": ""}
                     logger.debug(
                         f"[session_mode:fresh_per_call] {_n}: clearing node_sessions + routing_context + "
-                        f"subgraph conclusions + previous_node_output + subgraph_topic + "
                         f"trimming messages {len(msgs)} → {len(fresh_msgs)}"
                     )
                     push_graph_scope(_n)

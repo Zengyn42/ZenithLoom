@@ -55,7 +55,27 @@ class SubgraphInputState(TypedDict):
 
     用于 StateGraph(BaseAgentState, input=SubgraphInputState)。
 
-    messages 字段故意缺失：LangGraph 原生阻断父图消息进入子图。
+    设计原则：只包含父图真正需要透传给子图的上下文。
+    子图的输出字段、每次调用的临时字段、以及 messages 统统不在 input schema，
+    LangGraph 会原生阻断它们从父图流入子图。
+
+    故意从 input schema 移除的字段（防止跨次调用的状态污染）：
+
+      messages:
+        子图有自己的对话语境，父图历史不应流入。
+
+      debate_conclusion / apex_conclusion / knowledge_result / discovery_report:
+        子图的【输出】字段。LlmNode._build_gemini_section() 会把这些注入
+        Claude 节点 prompt（供 claude_main 读取子图结论）。若从父图流入子图，
+        第二次调用同一子图时，内部 Claude 节点会看到上一次的结论被注入到
+        自己的 prompt 里，导致辩论跑偏 / 产出被污染。
+
+      previous_node_output / subgraph_topic:
+        子图内部节点间通信的临时字段，由 SubgraphMapperNode 或 LLM 节点
+        自己维护。父图的残留值不应流入，每次子图调用都应从空值开始。
+
+      refined_plan:
+        colony_coder_planner 的输出，同理不应反向流入其他子图。
 
     node_sessions 使用与 BaseAgentState 完全相同的 reducer（_merge_dict）：
       - LangGraph 1.0.10 不允许 input_schema 与 state_schema 对同字段使用【不同】reducer，
@@ -76,15 +96,10 @@ class SubgraphInputState(TypedDict):
     node_sessions: Annotated[dict, _merge_dict]  # 与 BaseAgentState 相同 reducer，允许 inherit/persistent 正常工作
     knowledge_vault: str
     project_docs: str
-    subgraph_topic: str
-    previous_node_output: str
-    debate_conclusion: str
-    apex_conclusion: str
-    knowledge_result: str
-    discovery_report: str
-    refined_plan: str
     connector: str
-    # messages 字段故意缺失 → LangGraph 不从父图透传 messages
+    # 以下字段故意缺失 → LangGraph 阻断它们从父图流入子图：
+    #   messages, debate_conclusion, apex_conclusion, knowledge_result,
+    #   discovery_report, refined_plan, previous_node_output, subgraph_topic
 
 
 # Auto-register on import
