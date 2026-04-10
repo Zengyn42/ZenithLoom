@@ -201,29 +201,18 @@ async def test_persistent_preserves_session_across_calls(tmp_path):
 
 
 @pytest.mark.asyncio
-async def test_inherit_injects_parent_session_into_subgraph(tmp_path):
+async def test_inherit_raises_not_implemented(tmp_path):
     """
-    inherit: the wrapper reads parent's node_sessions["claude_main"] and injects it
-    into all declared session_key slots of the inner subgraph.
-    The inner graph must receive "parent-sid-ABC" under its "inherited_key" session slot.
+    inherit: session_mode is intentionally unimplemented because it cannot work
+    correctly across LLM providers (session UUIDs are provider-specific).
+    Graph compilation must fail with NotImplementedError.
+    See docs/vault/architecture/session-mode-design.md for full rationale.
     """
     inner_dir = _make_inherit_checker_dir(tmp_path)
-    parent = await _build_parent(
-        _parent_spec(inner_dir, "inherit", extra={"inherit_from": "claude_main"})
-    )
-
-    state = {**BASE_STATE, "node_sessions": {"claude_main": "parent-sid-ABC"}}
-    cfg = {"configurable": {"thread_id": f"inherit-{uuid.uuid4().hex[:6]}"}}
-
-    result = await parent.ainvoke(state, config=cfg)
-    conclusion = result.get("debate_conclusion", "")
-
-    assert conclusion == "parent-sid-ABC", (
-        f"inherit mode: inner graph should have received parent session 'parent-sid-ABC' "
-        f"via node_sessions['inherited_key'], but got {conclusion!r}.\n"
-        f"If this is 'NOT_INJECTED', SubgraphInputState is blocking the injection — "
-        f"inherit mode needs a fix to bypass the input schema filtering."
-    )
+    with pytest.raises(NotImplementedError, match="session_mode 'inherit' is not implemented"):
+        await _build_parent(
+            _parent_spec(inner_dir, "inherit", extra={"inherit_from": "claude_main"})
+        )
 
 
 @pytest.mark.asyncio
