@@ -106,7 +106,7 @@ def test_deterministic_registered():
 - [ ] **Step 2: Run tests to verify they fail**
 
 ```bash
-cd /home/kingy/Foundation/BootstrapBuilder
+cd /home/kingy/Foundation/ZenithLoom
 pytest test_colony_coder.py::test_deterministic_node_calls_function -v
 ```
 Expected: `ModuleNotFoundError: No module named 'framework.nodes.deterministic_node'`

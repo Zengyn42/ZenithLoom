@@ -36,7 +36,7 @@ Full class implementation is in the spec at `docs/vault/architecture/claude-cli-
 
 - [ ] **Step 3: Run existing tests to verify no breakage**
 
-Run: `cd /home/kingy/Foundation/BootstrapBuilder && python -m pytest tests/ -x -q 2>&1 | tail -20`
+Run: `cd /home/kingy/Foundation/ZenithLoom && python -m pytest tests/ -x -q 2>&1 | tail -20`
 Expected: All existing tests pass
 
 - [ ] **Step 4: Commit**
@@ -137,7 +137,7 @@ Add three tests:
 
 - [ ] **Step 3: Run integration tests**
 
-Run: `cd /home/kingy/Foundation/BootstrapBuilder && python test_claude_node.py`
+Run: `cd /home/kingy/Foundation/ZenithLoom && python test_claude_node.py`
 Expected: All tests pass
 
 - [ ] **Step 4: Commit**

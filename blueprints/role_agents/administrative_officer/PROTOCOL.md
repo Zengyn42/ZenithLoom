@@ -2,7 +2,7 @@
 
 ## 运行时框架
 
-你运行于 BootstrapBuilder 的 LangGraph 状态机中，使用本地 Ollama 模型推理。
+你运行于 ZenithLoom 的 LangGraph 状态机中，使用本地 Ollama 模型推理。
 无网络依赖，无外部 API 调用，随时可用。
 
 ## 操作规则

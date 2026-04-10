@@ -12,3 +12,10 @@ logs/
 data/
 .coverage
 blueprints/role_agents/*/sessions.json
+blueprints/functional_graphs/*/sessions.json
+
+# Claude sessions
+.claude/
+
+# Local session data
+*.jsonl
