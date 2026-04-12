@@ -166,9 +166,9 @@ class ClaudeSDKNode(AgentNode):
                 mcp_servers=_mcp_servers or {},
             )
 
-        async def _run_once(sid: str, msg_text: str) -> tuple[str, str, bool]:
+        async def _run_once(sid: str, msg_text: str) -> tuple[str, str, bool, dict]:
             """
-            调用 sdk_query()，返回 (result_text, new_session_id, is_error)。
+            调用 sdk_query()，返回 (result_text, new_session_id, is_error, last_msg_usage)。
 
             sdk_query() 内部通过 wait_for_result_and_end_input() 关闭 stdin，
             子进程优雅退出后会话历史写入磁盘。
@@ -182,9 +182,10 @@ class ClaudeSDKNode(AgentNode):
             _is_error = False
             _in_thinking = False  # track current block type for ANSI styling
             _text_chunks: list[str] = []  # fallback when ResultMessage.result is empty
-            # 追踪最后一次 API 调用的 context size（每次 tool use 循环都有独立的 message_start）。
+            # 追踪最后一次 API 调用的完整 usage dict（每次 tool use 循环都有独立的 message_start）。
             # 不能用 ResultMessage.usage — 那是累计值，复杂 tool use 会远超真实 context。
-            _last_msg_ctx = 0
+            # 这份 dict 会随返回值向外透出，供 call_llm 末尾的内联 token 行显示。
+            _last_msg_usage: dict = {}
 
             async for msg in sdk_query(prompt=msg_text, options=_make_options(sid)):
                 if isinstance(msg, StreamEvent):
@@ -192,14 +193,11 @@ class ClaudeSDKNode(AgentNode):
                     ev = msg.event
                     etype = ev.get("type")
                     if etype == "message_start":
-                        # 每次 API 调用开始，提取本次调用的 input context size
+                        # 每次 API 调用开始，捕获本次调用的 usage dict（浅拷贝）。
+                        # 最终保留最后一次，反映本轮最终 API 调用的真实 context 占用。
                         _usage = ev.get("message", {}).get("usage", {})
                         if _usage:
-                            _last_msg_ctx = (
-                                _usage.get("input_tokens", 0)
-                                + _usage.get("cache_read_input_tokens", 0)
-                                + _usage.get("cache_creation_input_tokens", 0)
-                            )
+                            _last_msg_usage = dict(_usage)
                     elif etype == "content_block_start":
                         btype = ev.get("content_block", {}).get("type")
                         if btype == "thinking":
@@ -233,7 +231,7 @@ class ClaudeSDKNode(AgentNode):
             if not _result and _text_chunks:
                 _result = "".join(_text_chunks).strip()
 
-            return _result, _new_sid, _is_error
+            return _result, _new_sid, _is_error, _last_msg_usage
 
         def _is_cli_exit_error(e: Exception) -> bool:
             """
@@ -246,9 +244,10 @@ class ClaudeSDKNode(AgentNode):
         result_text = ""
         new_session_id = ""
         is_error = False
+        last_msg_usage: dict = {}
 
         try:
-            result_text, new_session_id, is_error = await _run_once(session_id, prompt)
+            result_text, new_session_id, is_error, last_msg_usage = await _run_once(session_id, prompt)
         except Exception as e:
             if stderr_lines:
                 logger.error(
@@ -261,7 +260,7 @@ class ClaudeSDKNode(AgentNode):
                     f"[claude] resume sid={session_id[:8]} 失败，以新 session 重试..."
                 )
                 try:
-                    result_text, new_session_id, is_error = await _run_once("", prompt)
+                    result_text, new_session_id, is_error, last_msg_usage = await _run_once("", prompt)
                 except Exception as retry_err:
                     # 重试也失败：返回错误文本 + 空 session ID，
                     # 确保 llm_node.__call__ 正常写入 state 清掉坏 session，
@@ -270,6 +269,7 @@ class ClaudeSDKNode(AgentNode):
                     result_text = f"[Claude 暂时不可用] {retry_err}"
                     new_session_id = ""
                     is_error = True
+                    last_msg_usage = {}
             else:
                 raise
 
