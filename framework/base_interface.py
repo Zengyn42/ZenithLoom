@@ -359,24 +359,50 @@ class BaseInterface:
         # ── Token 统计 ────────────────────────────────────────────────────
         if cmd == "!tokens":
             from framework.token_tracker import get_token_stats, reset_token_stats
-            if arg == "reset":
+            from framework.token_display import (
+                is_token_display_enabled,
+                set_token_display,
+            )
+
+            arg_norm = (arg or "").strip().lower()
+
+            if arg_norm == "reset":
                 reset_token_stats()
                 return "Token 计数已重置。"
+
+            if arg_norm == "on":
+                set_token_display(True)
+                return "✅ Token 内联显示：开启"
+
+            if arg_norm == "off":
+                set_token_display(False)
+                return "✅ Token 内联显示：关闭"
+
+            if arg_norm == "status":
+                state = "开启" if is_token_display_enabled() else "关闭"
+                return f"Token 内联显示：{state}"
+
+            if arg_norm:
+                return "用法：!tokens [on|off|status|reset]"
+
+            # no-arg: cumulative stats plus toggle state
             s = get_token_stats()
-            inp  = s["input_tokens"]
-            out  = s["output_tokens"]
-            cr   = s["cache_read_input_tokens"]
-            cc   = s["cache_creation_input_tokens"]
+            inp = s["input_tokens"]
+            out = s["output_tokens"]
+            cr = s["cache_read_input_tokens"]
+            cc = s["cache_creation_input_tokens"]
             calls = s["calls"]
-            cost_usd  = (inp * 3 + out * 15 + cr * 0.3 + cc * 3.75) / 1_000_000
+            cost_usd = (inp * 3 + out * 15 + cr * 0.3 + cc * 3.75) / 1_000_000
             saved_usd = cr * (3 - 0.3) / 1_000_000
+            state = "开启" if is_token_display_enabled() else "关闭"
             return (
                 f"调用次数      : {calls}\n"
                 f"Input tokens  : {inp:,}\n"
                 f"Output tokens : {out:,}\n"
                 f"Cache read    : {cr:,}  (省了 ${saved_usd:.4f})\n"
                 f"Cache create  : {cc:,}\n"
-                f"估算费用      : ~${cost_usd:.4f} USD"
+                f"估算费用      : ~${cost_usd:.4f} USD\n"
+                f"内联显示      : {state}"
             )
 
         # ── 资源锁状态 ────────────────────────────────────────────────────
