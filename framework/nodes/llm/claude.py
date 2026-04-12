@@ -47,6 +47,7 @@ from claude_agent_sdk._errors import ProcessError
 
 from framework.config import AgentConfig
 from framework.debug import is_debug
+from framework.token_display import is_token_display_enabled
 from framework.nodes.llm.llm_node import LlmNode as AgentNode
 from framework.nodes.llm.llm_node import set_stream_callback, get_stream_callback, _stream_cb
 from framework.token_tracker import update_token_stats
@@ -277,6 +278,26 @@ class ClaudeSDKNode(AgentNode):
         logger.info(f"[claude] done sid={new_sid_short} output_len={len(result_text)}")
         if is_debug():
             logger.debug(f"[claude] output_preview={result_text[:200]!r}")
+
+        # Inline token usage line — last message_start.usage, NOT ResultMessage
+        # (ResultMessage.usage is cumulative across tool-use sub-calls and
+        # overstates the real context window on tool-heavy turns).
+        if is_token_display_enabled() and last_msg_usage:
+            cb = _stream_cb.get()
+            if cb is not None:
+                ctx_total = (
+                    last_msg_usage.get("input_tokens", 0)
+                    + last_msg_usage.get("cache_read_input_tokens", 0)
+                    + last_msg_usage.get("cache_creation_input_tokens", 0)
+                )
+                line = (
+                    f"\n[tokens: ctx={ctx_total:,} "
+                    f"in={last_msg_usage.get('input_tokens', 0):,} "
+                    f"out={last_msg_usage.get('output_tokens', 0):,} "
+                    f"cache_read={last_msg_usage.get('cache_read_input_tokens', 0):,}]\n"
+                )
+                cb(line, False)
+
         return result_text, new_session_id
 
     # 向后兼容别名
