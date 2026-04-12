@@ -61,8 +61,35 @@ class JsonLineParser:
                     logger.debug(f"[signal_parser.json_line] signal={result.get('route')!r}")
                     return result
             except json.JSONDecodeError:
-                pass
+                # 常见问题：LLM 在 JSON 字符串值中生成未转义的双引号
+                # 尝试修复：提取 route 字段，context 做宽松处理
+                if '"route"' in line:
+                    repaired = self._try_repair(line)
+                    if repaired:
+                        logger.warning(
+                            f"[signal_parser.json_line] repaired invalid JSON, "
+                            f"route={repaired.get('route')!r}"
+                        )
+                        return repaired
+                    logger.warning(
+                        f"[signal_parser.json_line] JSON parse failed on line "
+                        f"that looks like a routing signal: {line[:120]}..."
+                    )
         return None
+
+    @staticmethod
+    def _try_repair(line: str) -> dict | None:
+        """尝试修复 LLM 常见的 JSON 错误（未转义引号）。"""
+        import re
+        # 提取 route 值（可靠，通常是简短的 node_id）
+        m_route = re.search(r'"route"\s*:\s*"([^"]+)"', line)
+        if not m_route:
+            return None
+        route = m_route.group(1)
+        # 提取 context 值（宽松：取最后一个 "} 之前的所有内容）
+        m_ctx = re.search(r'"context"\s*:\s*"(.*)"[^"]*$', line, re.DOTALL)
+        context = m_ctx.group(1) if m_ctx else ""
+        return {"route": route, "context": context}
 
 
 class RegexXmlParser:
