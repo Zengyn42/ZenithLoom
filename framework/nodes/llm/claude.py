@@ -61,11 +61,7 @@ class ClaudeSDKNode(AgentNode):
     继承 AgentNode，实现 call_llm()。
     使用 sdk_query() 流式调用，每次调用 spawn 新 CLI 子进程。
 
-    Auto-compact：监测每次调用后的 context 大小，超过 _COMPACT_THRESHOLD 时
-    下一次调用前先发送 /compact 让 CLI 压缩 session 历史，再执行实际请求。
     """
-
-    _COMPACT_THRESHOLD = 100_000  # tokens
 
     def __init__(
         self,
@@ -75,8 +71,6 @@ class ClaudeSDKNode(AgentNode):
     ):
         super().__init__(config, node_config)
         self.system_prompt = system_prompt
-        # session_id → 上次 context 大小（tokens），用于 auto-compact 判断
-        self._last_context_size: dict[str, int] = {}
 
     async def call_llm(
         self,
@@ -231,9 +225,6 @@ class ClaudeSDKNode(AgentNode):
                     _is_error = msg.is_error
                     if msg.usage:
                         update_token_stats(msg.usage)
-                    # 用最后一次 message_start 的 context 作为 session 真实大小
-                    if _new_sid and _last_msg_ctx > 0:
-                        self._last_context_size[_new_sid] = _last_msg_ctx
                     if msg.result:
                         _result = msg.result.strip()
 
@@ -255,37 +246,6 @@ class ClaudeSDKNode(AgentNode):
         result_text = ""
         new_session_id = ""
         is_error = False
-
-        # ── Auto-compact：context 超阈值时先让 CLI 压缩 session 历史 ──────
-        if session_id and self._last_context_size.get(session_id, 0) > self._COMPACT_THRESHOLD:
-            ctx_size = self._last_context_size[session_id]
-            logger.info(
-                f"[claude] auto-compact: sid={session_id[:8]} "
-                f"context={ctx_size:,} > threshold={self._COMPACT_THRESHOLD:,}"
-            )
-            # 通过流式回调通知用户（Discord / CLI）
-            cb = _stream_cb.get()
-            if cb:
-                cb("\n⚙️ Session context 过大，正在自动压缩历史...\n", False)
-            try:
-                # 用 sdk_query 发送 /compact，CLI 内部执行 compact
-                async for msg in sdk_query(
-                    prompt="/compact",
-                    options=_make_options(session_id),
-                ):
-                    if isinstance(msg, ResultMessage):
-                        if msg.session_id:
-                            session_id = msg.session_id
-                        # compact 后清除旧 context 记录
-                        self._last_context_size.clear()
-                        break
-                logger.info(f"[claude] auto-compact done, sid={session_id[:8]}")
-                if cb:
-                    cb("✅ 压缩完成，继续处理...\n\n", False)
-            except Exception as e:
-                logger.warning(f"[claude] auto-compact failed: {e}")
-                if cb:
-                    cb(f"⚠️ 压缩失败（{e}），继续使用原 session...\n\n", False)
 
         try:
             result_text, new_session_id, is_error = await _run_once(session_id, prompt)
