@@ -425,6 +425,7 @@ async def test_discord_tokens():
     print("--- Discord !tokens ---")
     import interfaces.discord_bot as bot
     import framework.token_tracker as tt
+    from framework import token_display
 
     with tempfile.TemporaryDirectory() as tmp:
         sm = _make_session_mgr(tmp)
@@ -440,16 +441,44 @@ async def test_discord_tokens():
         })
 
         iface = bot._DiscordInterface(loader)
+
+        # 1) no-arg — cumulative stats + toggle state line
         reply = await iface.handle_command("!tokens", "")
         assert "1,000" in reply or "1000" in reply
         assert "500" in reply
+        assert "内联显示" in reply
         print(f"   !tokens preview:\n{reply[:300]}")
 
+        # 2) reset — preserved behavior
         reply2 = await iface.handle_command("!tokens", "reset")
         assert "重置" in reply2
         assert tt._token_stats["input_tokens"] == 0
         print(f"   !tokens reset: {reply2}")
 
+        # 3) off — disable inline display
+        reply3 = await iface.handle_command("!tokens", "off")
+        assert "关闭" in reply3
+        assert token_display.is_token_display_enabled() is False
+        print(f"   !tokens off: {reply3}")
+
+        # 4) status — report current state
+        reply4 = await iface.handle_command("!tokens", "status")
+        assert "关闭" in reply4
+        print(f"   !tokens status (off): {reply4}")
+
+        # 5) on — re-enable
+        reply5 = await iface.handle_command("!tokens", "on")
+        assert "开启" in reply5
+        assert token_display.is_token_display_enabled() is True
+        print(f"   !tokens on: {reply5}")
+
+        # 6) unknown arg — usage hint
+        reply6 = await iface.handle_command("!tokens", "gibberish")
+        assert "用法" in reply6 or "on|off|status" in reply6
+        print(f"   !tokens gibberish: {reply6}")
+
+    # Restore default for test isolation
+    token_display.set_token_display(True)
     print("✅ Discord !tokens OK\n")
 
 
