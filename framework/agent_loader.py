@@ -192,6 +192,8 @@ class EntityLoader:
             spec.loader.exec_module(mod)
             if hasattr(mod, "build_graph"):
                 logger.info(f"[agent_loader] using custom graph.py for {self.name!r}")
+                # Custom graphs may not expose _llm_node_instances;
+                # controller.compact_claude_session() tolerates absence.
                 return await mod.build_graph(self, checkpointer)
 
         config = self.load_config()
@@ -270,12 +272,16 @@ class EntityLoader:
         if is_debug():
             logger.debug(f"[agent_loader] db={config.db_path!r}")
 
-        return await build_agent_graph(
+        compiled = await build_agent_graph(
             config=config,
             agent_node=agent_node,
             checkpointer=checkpointer,
             spec=spec,
         )
+        compiled._llm_node_instances = {
+            getattr(agent_node, "_session_key", "claude_main"): agent_node,
+        }
+        return compiled
 
     async def _build_engine(self):
         """懒加载编译图单例（内部使用）。"""
@@ -763,6 +769,10 @@ async def _build_declarative(
     else:
         builder = StateGraph(state_schema)
 
+    # Collect LLM node instances keyed by node_id so GraphController can
+    # reach them for /compact and other out-of-graph operations.
+    _llm_node_instances: dict[str, object] = {}
+
     for node_def in graph_spec.get("nodes", []):
         node_id = node_def["id"]
         node_type = node_def.get("type", "")
@@ -986,6 +996,7 @@ async def _build_declarative(
                 _base["session_key"] = node_id
             effective_def = _base
             node_instance = factory(config, effective_def)
+            _llm_node_instances[node_id] = node_instance
             builder.add_node(node_id, _wrap_node_for_flow_log(node_id, node_instance))
 
     # ── Step 3: 添加边 ────────────────────────────────────────────────────
@@ -1105,7 +1116,9 @@ async def _build_declarative(
         checkpointer = AsyncSqliteSaver(conn)
         await checkpointer.setup()
 
-    return builder.compile(checkpointer=checkpointer or None)
+    compiled = builder.compile(checkpointer=checkpointer or None)
+    compiled._llm_node_instances = _llm_node_instances
+    return compiled
 
 
 # ---------------------------------------------------------------------------
