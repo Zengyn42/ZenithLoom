@@ -282,6 +282,71 @@ class ClaudeSDKNode(AgentNode):
     # 向后兼容别名
     call_claude = call_llm
 
+    async def compact_session(self, session_id: str) -> tuple[str, str]:
+        """
+        对指定 Claude session 发送 /compact，让 CLI 压缩对话历史。
+
+        返回 (status_message, new_session_id)。
+          - status_message: 人类可读状态，如 "ok: sid abc12345 → def67890"
+                            或 "error: <exception msg>" / "warning: no session_id returned"
+          - new_session_id: compact 之后的新 session_id；失败时保留传入的旧 sid
+
+        修复原 auto-compact 的两个 bug：
+          1. 不在第一个 ResultMessage 就 break —— 完整遍历迭代器，
+             取最后一次见到的非空 session_id 作为新 sid
+          2. 不清空任何全局追踪字段（这些字段已在移除 auto-compact 时删掉）
+
+        语义提醒：Claude CLI 的 /compact 是**有损**操作。它用 LLM 生成摘要
+        替换对话历史，之前的细节（具体文件路径、tool-call 输出等）会丢失。
+        手动调用此方法的上层代码应在 UI 里向用户明确说明。
+        """
+        if not session_id:
+            return ("warning: empty session_id, nothing to compact", session_id)
+
+        _sp = self.node_config.get("system_prompt") or self.system_prompt or None
+        _allowed = self.node_config.get("tools") or self.config.tools
+        _disallowed = self._get_disallowed_tools()
+        _model = (
+            self.node_config.get("model")
+            or self.node_config.get("claude_model")
+            or None
+        )
+        _cwd = self.config.workspace or None
+        options = ClaudeAgentOptions(
+            system_prompt=_sp,
+            cwd=_cwd,
+            allowed_tools=_allowed,
+            disallowed_tools=_disallowed,
+            permission_mode=self._permission_mode,
+            resume=session_id,
+            model=_model,
+            env={"CLAUDECODE": "", "CLAUDE_CODE_SESSION": "", "CLAUDE_AGENT_SDK": "1"},
+            include_partial_messages=False,
+        )
+
+        new_sid = session_id
+        saw_result = False
+        try:
+            async for msg in sdk_query(prompt="/compact", options=options):
+                if isinstance(msg, ResultMessage):
+                    saw_result = True
+                    if msg.session_id:
+                        new_sid = msg.session_id
+        except Exception as e:
+            logger.warning(f"[claude] compact_session failed sid={session_id[:8]}: {e}")
+            return (f"error: {e}", session_id)
+
+        if not saw_result:
+            return ("warning: no ResultMessage from /compact", session_id)
+
+        logger.info(
+            f"[claude] compact_session ok: sid={session_id[:8]} → {new_sid[:8]}"
+        )
+        return (
+            f"ok: {session_id[:8]} → {new_sid[:8]}",
+            new_sid,
+        )
+
     def get_recent_history(self, session_id: str, limit: int = 10) -> list:
         """获取 Claude session 近期消息。"""
         if not session_id:
