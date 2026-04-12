@@ -450,8 +450,17 @@ class BaseInterface:
             except ValueError:
                 keep = 20
             thread_id = self._resolve_thread_id()
-            deleted   = await controller.compact_checkpoint(thread_id, keep_last=keep)
-            return f"Compact 完成：删除了 {deleted} 条旧记录，保留最近 {keep} 条。"
+            deleted = await controller.compact_checkpoint(thread_id, keep_last=keep)
+            try:
+                claude_msg = await controller.compact_claude_session(thread_id)
+            except Exception as e:
+                claude_msg = f"❌ 调用失败: {e}"
+            return (
+                "Compact 完成：\n"
+                f"  checkpoint DB : 删除 {deleted} 条旧记录，保留最近 {keep} 条\n"
+                f"  Claude session: {claude_msg}\n"
+                "  （注意：/compact 是有损摘要，旧细节可能不再可回忆）"
+            )
 
         if cmd == "!reset":
             if arg != "confirm":
