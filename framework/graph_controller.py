@@ -208,6 +208,73 @@ class GraphController:
         logger.info(f"[controller] compact_checkpoint thread={thread_id!r} deleted={deleted} kept={keep_last}")
         return deleted
 
+    async def compact_claude_session(self, thread_id: str) -> str:
+        """
+        对 thread_id 下所有活跃的 ClaudeSDKNode session 发送 /compact。
+
+        流程：
+          1. 从 compiled graph 的 _llm_node_instances 侧边映射拿到节点实例
+          2. 从 state["node_sessions"] 读出各节点当前的 session_id
+          3. 对每个匹配的 ClaudeSDKNode.compact_session(sid) 并拿到 new_sid
+          4. 如有 sid 变化，用 aupdate_state 写回 checkpoint
+
+        返回人类可读摘要字符串。
+        该方法从不抛异常（每个节点的失败被转成状态字符串）。
+        """
+        # 懒导入，避免 graph_controller 与 nodes.llm.claude 形成循环依赖
+        from framework.nodes.llm.claude import ClaudeSDKNode
+
+        instances: dict = getattr(self._graph, "_llm_node_instances", {}) or {}
+        claude_nodes = {
+            key: inst
+            for key, inst in instances.items()
+            if isinstance(inst, ClaudeSDKNode)
+        }
+        if not claude_nodes:
+            return "无 Claude session 可压缩（该图未注册 ClaudeSDKNode 实例）"
+
+        config = {"configurable": {"thread_id": thread_id}}
+        try:
+            snapshot = await self._graph.aget_state(config)
+        except Exception as e:
+            return f"❌ 读取 state 失败: {e}"
+
+        node_sessions: dict = (snapshot.values or {}).get("node_sessions", {}) or {}
+        if not node_sessions:
+            return "无活跃 Claude session（state.node_sessions 为空）"
+
+        results: list[str] = []
+        updated_sessions: dict[str, str] = {}
+        any_changed = False
+
+        for node_key, node in claude_nodes.items():
+            lookup_key = getattr(node, "_session_key", None) or node_key
+            sid = node_sessions.get(lookup_key, "")
+            if not sid:
+                results.append(f"{lookup_key}: 无活跃 session，跳过")
+                continue
+
+            status, new_sid = await node.compact_session(sid)
+            results.append(f"{lookup_key}: {status}")
+            if new_sid and new_sid != sid:
+                updated_sessions[lookup_key] = new_sid
+                any_changed = True
+
+        if any_changed:
+            merged = {**node_sessions, **updated_sessions}
+            try:
+                await self._graph.aupdate_state(config, {"node_sessions": merged})
+            except Exception as e:
+                results.append(f"⚠️ aupdate_state 写回 new session_ids 失败: {e}")
+            else:
+                self.sync_node_sessions({"node_sessions": merged}, thread_id=thread_id)
+
+        logger.info(
+            f"[controller] compact_claude_session thread={thread_id!r} "
+            f"nodes={len(claude_nodes)} changed={any_changed}"
+        )
+        return "；".join(results)
+
     async def checkpoint_stats(self, thread_id: str) -> int:
         """查询指定 thread_id 的 checkpoint 数量，通过 checkpointer 连接执行。"""
         cp = self._graph.checkpointer
