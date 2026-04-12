@@ -873,6 +873,9 @@ async def _build_declarative(
                     msgs = state.get("messages", [])
                     human_msgs = [m for m in reversed(msgs) if getattr(m, "type", "") == "human"]
                     fresh_msgs = [human_msgs[0]] if human_msgs else (msgs[-1:] if msgs else [])
+                    # routing_context → subgraph_topic：在清空前转存辩题锚点，
+                    # 使子图内所有节点都能通过 subgraph_topic 读到辩题。
+                    _topic = state.get("routing_context", "") or state.get("subgraph_topic", "")
                     patched = {
                         **state,
                         "node_sessions": {},
@@ -883,7 +886,7 @@ async def _build_declarative(
                         "knowledge_result": "",
                         "discovery_report": "",
                         "previous_node_output": "",
-                        "subgraph_topic": "",
+                        "subgraph_topic": _topic,
                     }
                     logger.debug(
                         f"[session_mode:fresh_per_call] {_n}: clearing node_sessions + routing_context + "
