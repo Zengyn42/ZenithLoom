@@ -129,7 +129,8 @@
       },
       {
         "id": "tool_discovery",
-        "agent_dir": "blueprints/functional_graphs/tool_discovery"
+        "agent_dir": "blueprints/functional_graphs/tool_discovery",
+        "session_mode": "fresh_per_call"
       }
     ],
     "edges": [
