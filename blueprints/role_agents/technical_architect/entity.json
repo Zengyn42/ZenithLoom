@@ -131,6 +131,12 @@
         "id": "tool_discovery",
         "agent_dir": "blueprints/functional_graphs/tool_discovery",
         "session_mode": "fresh_per_call"
+      },
+      {
+        "id": "tool_evaluate",
+        "agent_dir": "blueprints/functional_graphs/tool_evaluate",
+        "session_mode": "fresh_per_call",
+        "fresh_keep_fields": ["discovery_report"]
       }
     ],
     "edges": [
@@ -230,6 +236,17 @@
       {
         "id": "e_discovery_2_claude",
         "from": "tool_discovery",
+        "to": "claude_main"
+      },
+      {
+        "id": "e_validate_2_evaluate",
+        "type": "routing_to",
+        "from": "validate",
+        "to": "tool_evaluate"
+      },
+      {
+        "id": "e_evaluate_2_claude",
+        "from": "tool_evaluate",
         "to": "claude_main"
       }
     ]

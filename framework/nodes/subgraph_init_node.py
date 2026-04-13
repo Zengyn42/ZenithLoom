@@ -18,11 +18,17 @@ from framework.schema.reducers import CLEAR_DICT
 logger = logging.getLogger(__name__)
 
 
-def make_subgraph_init(session_mode: str):
+def make_subgraph_init(session_mode: str, keep_fields: list[str] | None = None):
     """Return entry cleanup function per session_mode.
+
+    Args:
+        session_mode: "fresh_per_call", "isolated", etc.
+        keep_fields: field names to preserve (not clear) during fresh_per_call init.
+                     Declared via "fresh_keep_fields" in entity.json subgraph node def.
 
     Returns None for persistent, inherit, and unknown modes (no init needed).
     """
+    _keep = frozenset(keep_fields or [])
 
     if session_mode == "fresh_per_call":
 
@@ -40,9 +46,9 @@ def make_subgraph_init(session_mode: str):
             _topic = state.get("routing_context", "") or state.get("subgraph_topic", "")
             logger.debug(
                 "[subgraph_init:fresh_per_call] clearing sessions + output fields + "
-                "trimming messages %d → %d", len(msgs), len(fresh),
+                "trimming messages %d → %d (keep_fields=%s)", len(msgs), len(fresh), _keep or "none",
             )
-            return {
+            result = {
                 "node_sessions": CLEAR_DICT.copy(),
                 "messages": removals + fresh,
                 "routing_context": "",
@@ -53,6 +59,10 @@ def make_subgraph_init(session_mode: str):
                 "previous_node_output": "",
                 "subgraph_topic": _topic,
             }
+            # Preserve fields specified by fresh_keep_fields
+            for field in _keep:
+                result.pop(field, None)
+            return result
 
         return _fresh_init
 

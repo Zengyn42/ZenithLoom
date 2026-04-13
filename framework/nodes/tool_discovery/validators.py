@@ -526,7 +526,7 @@ def sandbox_eval(state: dict) -> dict:
     """
     沙箱评估节点。
 
-    读取上游 candidate_filter 的 JSON 输出（筛选后的候选列表），
+    读取上游 candidate_score 的 JSON 输出（{dimensions, candidates}），
     对每个候选执行：克隆 → 安装 → 测试。
 
     Docker 可用时使用 Docker 沙箱，否则降级到 venv + 静态分析。
@@ -542,8 +542,16 @@ def sandbox_eval(state: dict) -> dict:
     timeout = config.get("timeout", 120)
 
     # Parse filtered candidates from last AI message
+    # candidate_filter outputs {dimensions, candidates} or legacy [candidate, ...]
     last_content = _extract_json_from_message(state)
-    filtered = _parse_json_from_llm(last_content)
+    parsed = _parse_json_from_llm(last_content)
+
+    if isinstance(parsed, dict) and "candidates" in parsed:
+        filtered = parsed["candidates"]
+    elif isinstance(parsed, list):
+        filtered = parsed
+    else:
+        filtered = None
 
     if not filtered or not isinstance(filtered, list):
         errors.append(f"Failed to parse filtered_candidates: {last_content[:200]}")
@@ -590,8 +598,15 @@ def sandbox_eval(state: dict) -> dict:
     user_query = state.get("user_query", "") or state.get("routing_context", "")
     from langchain_core.messages import AIMessage
 
+    # Include evaluation dimensions if available (from candidate_filter's structured output)
+    dimensions = parsed.get("dimensions", []) if isinstance(parsed, dict) else []
+    dimensions_section = ""
+    if dimensions:
+        dimensions_section = f"评估维度：\n{json.dumps(dimensions, ensure_ascii=False, indent=2)}\n\n"
+
     report_context = (
         f"用户需求：{user_query}\n\n"
+        f"{dimensions_section}"
         f"筛选后的候选工具：\n{json.dumps(filtered, ensure_ascii=False, indent=2)}\n\n"
         f"沙箱评估结果：\n{json.dumps(eval_results, ensure_ascii=False, indent=2)}"
     )

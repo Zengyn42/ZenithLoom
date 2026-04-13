@@ -166,7 +166,7 @@ class EntityLoader:
             self._session_mgr = SessionManager(cfg.sessions_file, cfg.db_path)
         return self._session_mgr
 
-    async def build_graph(self, checkpointer=_DEFAULT, extra_persona_text: str = "", is_subgraph: bool = False, force_unique_session_keys: bool = False, session_mode: str = "persistent"):
+    async def build_graph(self, checkpointer=_DEFAULT, extra_persona_text: str = "", is_subgraph: bool = False, force_unique_session_keys: bool = False, session_mode: str = "persistent", fresh_keep_fields: list[str] | None = None):
         """
         构建并返回编译好的 LangGraph 状态机。
 
@@ -203,7 +203,7 @@ class EntityLoader:
                     from langgraph.graph import StateGraph, START, END
 
                     wrapper = StateGraph(BaseAgentState, input_schema=SubgraphInputState)
-                    _init_fn = make_subgraph_init(session_mode)
+                    _init_fn = make_subgraph_init(session_mode, keep_fields=fresh_keep_fields)
                     _exit_fn = make_subgraph_exit()
                     wrapper.add_node("_subgraph_init", _init_fn)
                     wrapper.add_node("_inner", compiled)
@@ -273,6 +273,7 @@ class EntityLoader:
                 force_unique_session_keys=force_unique_session_keys,
                 extra_persona_text=_all_extra,
                 session_mode=session_mode,
+                fresh_keep_fields=fresh_keep_fields,
             )
 
         # Priority 3: GraphSpec 默认图
@@ -735,6 +736,7 @@ async def _build_declarative(
     force_unique_session_keys: bool = False,
     extra_persona_text: str = "",
     session_mode: str = "persistent",
+    fresh_keep_fields: list[str] | None = None,
 ) -> object:
     """
     从 entity.json["graph"]（含 nodes + edges）构建 LangGraph 状态机。
@@ -849,10 +851,12 @@ async def _build_declarative(
                 )
 
             _force_unique = session_mode == "isolated"
+            _keep_fields = node_def.get("fresh_keep_fields")
             inner_graph = await inner_loader.build_graph(
                 checkpointer=None, extra_persona_text=_child_extra_persona, is_subgraph=True,
                 force_unique_session_keys=_force_unique,
                 session_mode=session_mode,
+                fresh_keep_fields=_keep_fields,
             )
 
             if session_mode in ("persistent", "fresh_per_call", "inherit", "isolated"):
@@ -956,7 +960,7 @@ async def _build_declarative(
     # ── Entry side ────────────────────────────────────────────────────
     if _needs_init and _graph_entry and not _has_start_edge:
         from framework.nodes.subgraph_init_node import make_subgraph_init
-        _init_fn = make_subgraph_init(session_mode)
+        _init_fn = make_subgraph_init(session_mode, keep_fields=fresh_keep_fields)
         builder.add_node("_subgraph_init", _init_fn)
         builder.add_edge(START, "_subgraph_init")
         builder.add_edge("_subgraph_init", _graph_entry)
