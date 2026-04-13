@@ -13,6 +13,7 @@ See docs/vault/architecture/unified-subgraph-integration.md for design.
 
 import logging
 from langchain_core.messages import HumanMessage, RemoveMessage
+from framework.schema.reducers import CLEAR_DICT
 
 logger = logging.getLogger(__name__)
 
@@ -42,7 +43,7 @@ def make_subgraph_init(session_mode: str):
                 "trimming messages %d → %d", len(msgs), len(fresh),
             )
             return {
-                "node_sessions": {},
+                "node_sessions": CLEAR_DICT.copy(),
                 "messages": removals + fresh,
                 "routing_context": "",
                 "debate_conclusion": "",
@@ -59,7 +60,7 @@ def make_subgraph_init(session_mode: str):
 
         def _isolated_init(state: dict) -> dict:
             logger.debug("[subgraph_init:isolated] clearing node_sessions")
-            return {"node_sessions": {}}
+            return {"node_sessions": CLEAR_DICT.copy()}
 
         return _isolated_init
 

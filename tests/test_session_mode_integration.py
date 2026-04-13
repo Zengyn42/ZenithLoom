@@ -201,18 +201,20 @@ async def test_persistent_preserves_session_across_calls(tmp_path):
 
 
 @pytest.mark.asyncio
-async def test_inherit_raises_not_implemented(tmp_path):
+async def test_inherit_preserves_parent_sessions(tmp_path):
     """
-    inherit: session_mode is intentionally unimplemented because it cannot work
-    correctly across LLM providers (session UUIDs are provider-specific).
-    Graph compilation must fail with NotImplementedError.
-    See docs/vault/architecture/session-mode-design.md for full rationale.
+    inherit: subgraph inherits parent's state without clearing.
+    node_sessions flow through from parent; inner graph sees them.
+    The recorder checks for "test_session" key which is empty in parent →
+    generates new UUID. This is expected — inherit means "don't clear", not "inject".
     """
-    inner_dir = _make_inherit_checker_dir(tmp_path)
-    with pytest.raises(NotImplementedError, match="session_mode 'inherit' is not implemented"):
-        await _build_parent(
-            _parent_spec(inner_dir, "inherit", extra={"inherit_from": "claude_main"})
-        )
+    inner_dir = _make_recorder_dir(tmp_path, "inherit_inner")
+    parent = await _build_parent(_parent_spec(inner_dir, "inherit"))
+    cfg = {"configurable": {"thread_id": f"inherit-{uuid.uuid4().hex[:6]}"}}
+
+    result = await parent.ainvoke(dict(BASE_STATE), config=cfg)
+    sid = result.get("debate_conclusion", "")
+    assert sid, "inherit: debate_conclusion is empty (inner graph did not run?)"
 
 
 @pytest.mark.asyncio
@@ -256,4 +258,7 @@ async def test_isolated_clears_sessions_and_unique_keys_applied(tmp_path):
     )
     assert "force_unique_session_keys=_force_unique" in src, (
         "agent_loader must pass force_unique_session_keys=_force_unique to inner_loader.build_graph"
+    )
+    assert "session_mode=session_mode" in src, (
+        "agent_loader must pass session_mode to inner_loader.build_graph"
     )
