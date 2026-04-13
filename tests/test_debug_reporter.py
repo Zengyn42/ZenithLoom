@@ -186,3 +186,22 @@ def test_print_summary(capsys):
     out = capsys.readouterr().out
     assert "2" in out  # node count
     assert "success" in out.lower()
+
+
+@pytest.mark.asyncio
+async def test_colony_coder_graph_with_subgraphs_true():
+    """Verify colony_coder graph compiles with native subgraphs."""
+    import blueprints.functional_graphs.colony_coder.state  # noqa: F401
+    from framework.agent_loader import EntityLoader
+
+    loader = EntityLoader(Path("blueprints/functional_graphs/colony_coder"))
+    graph = await loader.build_graph(checkpointer=None)
+
+    # Verify the graph has subgraph nodes
+    node_ids = set(graph.nodes) - {"__start__", "__end__"}
+    assert "plan" in node_ids, f"Missing 'plan' node, got: {node_ids}"
+    assert "execute" in node_ids, f"Missing 'execute' node, got: {node_ids}"
+    assert "qa" in node_ids, f"Missing 'qa' node, got: {node_ids}"
+
+    # Verify astream accepts subgraphs=True without error
+    assert hasattr(graph, 'astream'), "Compiled graph should have astream method"
