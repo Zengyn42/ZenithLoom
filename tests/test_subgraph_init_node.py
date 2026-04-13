@@ -175,3 +175,16 @@ def test_exit_empty_messages():
     fn = make_subgraph_exit()
     result = fn({"messages": []})
     assert result == {"messages": []}
+
+
+def test_base_agent_state_uses_add_messages():
+    """BaseAgentState must use add_messages reducer, not _keep_last_2."""
+    from framework.schema.base import BaseAgentState
+    from typing import get_type_hints
+    hints = get_type_hints(BaseAgentState, include_extras=True)
+    messages_hint = hints["messages"]
+    metadata = getattr(messages_hint, "__metadata__", ())
+    from langgraph.graph.message import add_messages
+    assert add_messages in metadata, (
+        f"BaseAgentState.messages should use add_messages reducer, got {metadata}"
+    )
