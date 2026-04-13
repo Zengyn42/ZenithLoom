@@ -1,10 +1,10 @@
 {
   "name": "ToolDiscovery",
-  "routing_hint": "当用户要求发现/搜索/评估开源工具、GitHub 项目时使用。适用于 '找一个能做X的工具' 类需求。",
+  "routing_hint": "当用户要求发现/搜索/评估开源工具、GitHub 项目时使用。适用于 '找一个能做X的工具' 类需求。这是第一阶段：搜索候选 + 设计评估维度，返回给用户确认。",
   "graph": {
     "state_schema": "tool_discovery_schema",
     "entry": "query_expand",
-    "exit": "report_gen",
+    "exit": "dimension_design",
     "nodes": [
       {
         "id": "query_expand",
@@ -24,32 +24,13 @@
         "agent_dir": "framework/nodes/tool_discovery"
       },
       {
-        "id": "candidate_filter",
+        "id": "dimension_design",
         "type": "CLAUDE_SDK",
         "model": null,
         "tools": [],
         "permission_mode": "plan",
-        "system_prompt": "你是工具发现流水线的候选筛选节点。你会收到一批 GitHub 仓库候选列表（JSON 数组）和用户的原始需求。\n\n你的任务：\n1. 根据与用户需求的相关性，给每个候选打分（0-10）\n2. 给出打分理由\n3. 筛选出 Top-5 最相关的候选\n\n你必须严格输出以下 JSON 格式（不要输出其他内容）：\n```json\n[\n  {\n    \"repo\": \"owner/name\",\n    \"url\": \"https://github.com/...\",\n    \"relevance_score\": 8,\n    \"rationale\": \"为什么这个工具相关...\",\n    \"stars\": 1234,\n    \"language\": \"Python\",\n    \"description\": \"...\"\n  }\n]\n```\n\n按 relevance_score 降序排列。只保留 score >= 5 的候选。",
-        "session_key": "candidate_filter",
-        "tombstone_enabled": false,
-        "first_turn_suffix": "",
-        "user_msg_prefix": ""
-      },
-      {
-        "id": "sandbox_eval",
-        "type": "DETERMINISTIC",
-        "agent_dir": "framework/nodes/tool_discovery"
-      },
-      {
-        "id": "report_gen",
-        "type": "CLAUDE_SDK",
-        "extra_persona": true,
-        "persona_files": ["./ROLE.md"],
-        "model": null,
-        "tools": [],
-        "permission_mode": "plan",
-        "system_prompt": "你是工具发现流水线的报告生成节点。你会收到：\n1. 用户的原始需求\n2. 经过筛选的候选工具列表\n3. 沙箱评估结果（安装/测试情况）\n\n生成一份面向用户的评估报告，使用 Markdown 格式：\n\n## 工具发现报告\n\n### 需求\n[用户原始需求]\n\n### 推荐工具\n\n对每个工具：\n- **名称**（链接）— 星标数、语言\n- 相关性评分：X/10\n- 简介\n- 安装/测试状态\n- 优点/缺点\n\n### 总结\n综合建议，推荐首选工具及理由。\n\n保持专业、简洁。如有评估失败的工具，如实标注。",
-        "session_key": "report_gen",
+        "system_prompt": "你是工具发现流水线的维度设计节点。你会收到一批 GitHub 仓库候选列表和用户的原始需求。\n\n你的任务：根据用户的需求，设计 3-5 个评估维度。每个维度必须来自用户需求的具体期待。\n\n例如：\n- 用户说「找一个批量处理图片的工具」→ 维度可能是：批量处理能力、支持格式数、API易用性、性能\n- 用户说「找一个能写 Google Slides 的 AI 工具」→ 维度可能是：Slides API 集成度、AI 生成质量、模板支持、文档完善度\n\n每个维度需指定权重（所有权重之和 = 1.0）。权重应反映该维度对用户需求的重要程度。\n\n同时，简要列出搜索到的候选工具摘要（名称、星标、语言、简介），让用户了解搜索结果。\n\n## 输出格式\n\n输出必须严格为以下 JSON（不要输出其他内容）：\n```json\n{\n  \"user_query\": \"用户原始需求\",\n  \"dimensions\": [\n    {\"name\": \"维度名\", \"weight\": 0.3, \"description\": \"为什么这个维度重要\"}\n  ],\n  \"candidate_summary\": [\n    {\"repo\": \"owner/name\", \"stars\": 1234, \"language\": \"Python\", \"description\": \"简介\"}\n  ],\n  \"raw_candidates\": \"<原样复制输入中的候选仓库 JSON 数组>\"\n}\n```\n\nraw_candidates 字段必须原样保留输入中的完整候选数据（JSON 字符串），后续阶段需要使用。",
+        "session_key": "dimension_design",
         "tombstone_enabled": false,
         "first_turn_suffix": "",
         "user_msg_prefix": "",
@@ -58,9 +39,7 @@
     ],
     "edges": [
       {"from": "query_expand",     "to": "search_aggregate"},
-      {"from": "search_aggregate", "to": "candidate_filter"},
-      {"from": "candidate_filter", "to": "sandbox_eval"},
-      {"from": "sandbox_eval",     "to": "report_gen"}
+      {"from": "search_aggregate", "to": "dimension_design"}
     ]
   },
   "max_retries": 1
