@@ -725,6 +725,7 @@ async def _build_declarative(
     is_subgraph: bool = False,
     force_unique_session_keys: bool = False,
     extra_persona_text: str = "",
+    session_mode: str = "persistent",
 ) -> object:
     """
     从 entity.json["graph"]（含 nodes + edges）构建 LangGraph 状态机。
@@ -1038,11 +1039,30 @@ async def _build_declarative(
     _has_start_edge = any(e["from"] == "__start__" for e in graph_spec.get("edges", []))
     _has_end_edge   = any(e["to"]   == "__end__"   for e in graph_spec.get("edges", []))
 
-    if _graph_entry and not _has_start_edge:
+    _needs_init = is_subgraph and session_mode in ("fresh_per_call", "isolated")
+    _needs_exit = is_subgraph  # ALL subgraphs get exit cleanup
+
+    # ── Entry side ────────────────────────────────────────────────────
+    if _needs_init and _graph_entry and not _has_start_edge:
+        from framework.nodes.subgraph_init_node import make_subgraph_init
+        _init_fn = make_subgraph_init(session_mode)
+        builder.add_node("_subgraph_init", _init_fn)
+        builder.add_edge(START, "_subgraph_init")
+        builder.add_edge("_subgraph_init", _graph_entry)
+        logger.debug(f"[agent_loader] subgraph_init injected: START → _subgraph_init → {_graph_entry!r} (mode={session_mode})")
+    elif _graph_entry and not _has_start_edge:
         builder.add_edge(START, _graph_entry)
         logger.debug(f"[agent_loader] dynamic entry: START → {_graph_entry!r}")
 
-    if _graph_exit and not _has_end_edge:
+    # ── Exit side ─────────────────────────────────────────────────────
+    if _needs_exit and _graph_exit and not _has_end_edge:
+        from framework.nodes.subgraph_init_node import make_subgraph_exit
+        _exit_fn = make_subgraph_exit()
+        builder.add_node("_subgraph_exit", _exit_fn)
+        builder.add_edge(_graph_exit, "_subgraph_exit")
+        builder.add_edge("_subgraph_exit", END)
+        logger.debug(f"[agent_loader] subgraph_exit injected: {_graph_exit!r} → _subgraph_exit → END")
+    elif _graph_exit and not _has_end_edge:
         builder.add_edge(_graph_exit, END)
         logger.debug(f"[agent_loader] dynamic exit: {_graph_exit!r} → END")
 
