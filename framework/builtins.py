@@ -15,7 +15,6 @@ import 时自动执行注册（无副作用，幂等）。
   GIT_ROLLBACK     — GitRollbackNode，验证失败时回退
   VALIDATE         — ValidateNode，输出质量验证
   VRAM_FLUSH       — VramFlushNode，GPU 显存清洗
-  SUBGRAPH_MAPPER  — SubgraphMapperNode，子图状态字段映射
   EXTERNAL_TOOL    — ExternalToolNode，通用外部 CLI 调用（gws / obsidian / cli-anything-* 等）
   PROBE            — ProbeNode，服务存活探针（heartbeat 图专用，claude/gemini/ollama）
   SYSTEM_STATS     — SystemStatsNode，系统资源采集（CPU/内存/磁盘/GPU，支持阈值告警）
@@ -101,12 +100,6 @@ def _(config, node_config):
 def _(config, node_config):
     from framework.nodes.vram_flush_node import VramFlushNode
     return VramFlushNode()
-
-
-@register_node("SUBGRAPH_MAPPER")
-def _(config, node_config):
-    from framework.nodes.subgraph.subgraph_mapper import SubgraphMapperNode
-    return SubgraphMapperNode(node_config)
 
 
 # SUBGRAPH_REF / AGENT_REF — removed; now handled inline by agent_loader

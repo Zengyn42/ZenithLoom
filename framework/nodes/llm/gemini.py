@@ -884,7 +884,7 @@ class GeminiCLINode(AgentNode):
 
         # ── subgraph_topic + previous_node_output 注入 ───────────────────
         # 注入顺序：前节点论点在前，主题锚点追加到 prompt 末尾（recency effect 防止辩题漂移）
-        # SubgraphMapperNode 入口已清空 routing_context，subgraph_topic 注入不再受 routing_context 干扰
+        # _subgraph_init 入口已清空 routing_context，subgraph_topic 注入不再受 routing_context 干扰
         _subgraph_topic = state.get("subgraph_topic", "")
         _prev_output = state.get("previous_node_output", "") if _subgraph_topic else ""
 

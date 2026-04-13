@@ -318,7 +318,7 @@ class LlmNode:
 
         # ── subgraph_topic + previous_node_output 注入 ───────────────────
         # 注入顺序：前节点论点在前，主题锚点在最后（recency effect 防止辩题漂移）
-        # SubgraphMapperNode 入口已清空 routing_context，subgraph_topic 锚点可靠生效
+        # _subgraph_init 入口已清空 routing_context，subgraph_topic 锚点可靠生效
         _subgraph_topic = state.get("subgraph_topic", "")
         _topic_inject = (
             f"【辩题锚点·你的所有发言必须围绕此展开，禁止改变或升维辩题】\n{_subgraph_topic}\n"
@@ -504,7 +504,7 @@ class LlmNode:
             result[self._output_field] = raw_output
 
         # ── previous_node_output：供下一节点读取上文结论 ─────────────────
-        # 始终写入，SubgraphMapperNode 入口负责清空，防止污染父图。
+        # 始终写入，_subgraph_init 入口负责清空，防止污染父图。
         if raw_output:
             result["previous_node_output"] = raw_output
 
