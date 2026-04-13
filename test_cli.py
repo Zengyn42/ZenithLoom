@@ -119,7 +119,7 @@ def test_awaken_arg_parsing():
     spec = importlib.util.spec_from_file_location("awaken", "awaken.py")
     awk_mod = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(awk_mod)
-    entity_p, connector, debug = awk_mod._parse_args()
+    entity_p, connector, debug, _debug_output = awk_mod._parse_args()
     sys.argv = orig
     assert entity_p == entity_path, f"entity_path={entity_p}"
     assert connector == "cli", f"connector={connector}"
