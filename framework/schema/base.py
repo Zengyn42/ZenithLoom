@@ -2,7 +2,7 @@ import operator
 """
 base_schema — 框架默认 state schema
 
-BaseAgentState: 对话历史由 Claude SDK session 管理，LangGraph state 只保留最近 2 条消息。
+BaseAgentState: 对话历史使用 add_messages reducer 累积消息。子图内部消息由 _subgraph_exit 节点清理，不会污染父图。
 主图（Hani）、ApexCoder 等不需要自定义字段的图默认使用此 schema。
 entity.json 中不声明 state_schema 时自动使用。
 """
@@ -10,25 +10,14 @@ entity.json 中不声明 state_schema 时自动使用。
 from typing import Annotated, TypedDict
 
 from langchain_core.messages import BaseMessage
+from langgraph.graph.message import add_messages
 
 from framework.schema.reducers import _merge_dict
 
 
-def _keep_last_2(existing: list, new) -> list:
-    """只保留最近 2 条非空消息。对话历史交给 SDK session 管理。
-    空消息（EXTERNAL_TOOL 等无输出节点）不参与竞争，保留已有有效消息。
-    """
-    new_list = new if isinstance(new, list) else [new]
-    non_empty_new = [m for m in new_list if getattr(m, "content", "").strip()]
-    if not non_empty_new:
-        return existing[-2:] if existing else []
-    combined = existing + non_empty_new
-    return combined[-2:]
-
-
 class BaseAgentState(TypedDict):
     resilience_log: Annotated[list[dict], operator.add]
-    messages: Annotated[list[BaseMessage], _keep_last_2]
+    messages: Annotated[list[BaseMessage], add_messages]
     routing_target: str   # 路由目标节点 ID（Claude 写入，如 "debate_brainstorm"；空 = 无路由请求）
     routing_context: str  # 路由上下文（问题/背景，目标节点读取；替代旧 gemini_context）
     workspace: str        # 当前工作目录（per-session，GraphController 注入）
