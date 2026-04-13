@@ -188,3 +188,87 @@ def test_base_agent_state_uses_add_messages():
     assert add_messages in metadata, (
         f"BaseAgentState.messages should use add_messages reducer, got {metadata}"
     )
+
+
+# ── Integration tests: _build_declarative injection ─────────────────────
+
+
+@pytest.mark.asyncio
+async def test_fresh_per_call_injects_init_and_exit():
+    """fresh_per_call subgraph must have both _subgraph_init and _subgraph_exit."""
+    from framework.agent_loader import _build_declarative
+    from framework.config import AgentConfig
+    graph_spec = {
+        "state_schema": "debate_schema",
+        "entry": "fake_node",
+        "exit": "fake_node",
+        "nodes": [{"id": "fake_node", "type": "VRAM_FLUSH"}],
+        "edges": [],
+    }
+    graph = await _build_declarative(
+        graph_spec, AgentConfig(), checkpointer=None,
+        is_subgraph=True, session_mode="fresh_per_call",
+    )
+    node_names = [n.name for n in graph.get_graph(xray=True).nodes.values()]
+    assert "_subgraph_init" in node_names, f"missing _subgraph_init: {node_names}"
+    assert "_subgraph_exit" in node_names, f"missing _subgraph_exit: {node_names}"
+
+
+@pytest.mark.asyncio
+async def test_persistent_injects_exit_only():
+    """persistent subgraph must have _subgraph_exit but NOT _subgraph_init."""
+    from framework.agent_loader import _build_declarative
+    from framework.config import AgentConfig
+    graph_spec = {
+        "entry": "fake_node",
+        "exit": "fake_node",
+        "nodes": [{"id": "fake_node", "type": "VRAM_FLUSH"}],
+        "edges": [],
+    }
+    graph = await _build_declarative(
+        graph_spec, AgentConfig(), checkpointer=None,
+        is_subgraph=True, session_mode="persistent",
+    )
+    node_names = [n.name for n in graph.get_graph(xray=True).nodes.values()]
+    assert "_subgraph_init" not in node_names, f"persistent should NOT have _subgraph_init: {node_names}"
+    assert "_subgraph_exit" in node_names, f"missing _subgraph_exit: {node_names}"
+
+
+@pytest.mark.asyncio
+async def test_inherit_injects_exit_only():
+    """inherit subgraph must have _subgraph_exit but NOT _subgraph_init."""
+    from framework.agent_loader import _build_declarative
+    from framework.config import AgentConfig
+    graph_spec = {
+        "entry": "fake_node",
+        "exit": "fake_node",
+        "nodes": [{"id": "fake_node", "type": "VRAM_FLUSH"}],
+        "edges": [],
+    }
+    graph = await _build_declarative(
+        graph_spec, AgentConfig(), checkpointer=None,
+        is_subgraph=True, session_mode="inherit",
+    )
+    node_names = [n.name for n in graph.get_graph(xray=True).nodes.values()]
+    assert "_subgraph_init" not in node_names
+    assert "_subgraph_exit" in node_names
+
+
+@pytest.mark.asyncio
+async def test_non_subgraph_has_no_boundary_nodes():
+    """Top-level graph (is_subgraph=False) must NOT inject init/exit."""
+    from framework.agent_loader import _build_declarative
+    from framework.config import AgentConfig
+    graph_spec = {
+        "entry": "fake_node",
+        "exit": "fake_node",
+        "nodes": [{"id": "fake_node", "type": "VRAM_FLUSH"}],
+        "edges": [],
+    }
+    graph = await _build_declarative(
+        graph_spec, AgentConfig(), checkpointer=None,
+        is_subgraph=False,
+    )
+    node_names = [n.name for n in graph.get_graph(xray=True).nodes.values()]
+    assert "_subgraph_init" not in node_names
+    assert "_subgraph_exit" not in node_names
