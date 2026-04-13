@@ -32,7 +32,7 @@ from collections import defaultdict
 from pathlib import Path
 
 from framework.config import AgentConfig
-from framework.debug import is_debug, log_graph_flow, log_state_snapshot, push_graph_scope, pop_graph_scope
+from framework.debug import is_debug, log_graph_flow, log_state_snapshot
 
 logger = logging.getLogger(__name__)
 
@@ -166,7 +166,7 @@ class EntityLoader:
             self._session_mgr = SessionManager(cfg.sessions_file, cfg.db_path)
         return self._session_mgr
 
-    async def build_graph(self, checkpointer=_DEFAULT, extra_persona_text: str = "", is_subgraph: bool = False, force_unique_session_keys: bool = False):
+    async def build_graph(self, checkpointer=_DEFAULT, extra_persona_text: str = "", is_subgraph: bool = False, force_unique_session_keys: bool = False, session_mode: str = "persistent"):
         """
         构建并返回编译好的 LangGraph 状态机。
 
@@ -251,6 +251,7 @@ class EntityLoader:
                 is_subgraph=is_subgraph,
                 force_unique_session_keys=force_unique_session_keys,
                 extra_persona_text=_all_extra,
+                session_mode=session_mode,
             )
 
         # Priority 3: GraphSpec 默认图
@@ -703,19 +704,6 @@ def _get_state_schemas() -> dict:
 
 
 
-def _get_subgraph_session_keys(entity_json: dict) -> set:
-    """Extract all unique session_key values from a subgraph's entity.json graph spec.
-
-    Each LLM node declares a ``session_key`` (defaults to its ``id``).
-    Used by ``session_mode: inherit`` to know which keys to inject.
-    """
-    keys: set[str] = set()
-    for nd in entity_json.get("graph", {}).get("nodes", []):
-        sk = nd.get("session_key", nd.get("id", ""))
-        if sk:
-            keys.add(sk)
-    return keys
-
 
 async def _build_declarative(
     graph_spec: dict,
@@ -843,114 +831,16 @@ async def _build_declarative(
             inner_graph = await inner_loader.build_graph(
                 checkpointer=None, extra_persona_text=_child_extra_persona, is_subgraph=True,
                 force_unique_session_keys=_force_unique,
+                session_mode=session_mode,
             )
 
-            if session_mode == "persistent":
-                # Default: LangGraph manages subgraph checkpoint namespace;
-                # node_sessions persist across calls.
+            if session_mode in ("persistent", "fresh_per_call", "inherit", "isolated"):
+                # All modes: native subgraph. Init/exit nodes injected inside by _build_declarative.
                 builder.add_node(node_id, inner_graph)
-
-            elif session_mode == "fresh_per_call":
-                # Clear node_sessions before each invocation so every call
-                # starts fresh LLM sessions. Wrapping in an async function
-                # prevents LangGraph from creating a checkpoint namespace
-                # for the subgraph (inner_graph has checkpointer=None).
-                _inner = inner_graph  # capture for closure
-                _nid = node_id
-
-                async def _fresh_wrapper(state: dict, config=None, *, _g=_inner, _n=_nid) -> dict:
-                    # fresh_per_call 语义：每次调用子图都从干净的状态开始。
-                    # 清空内容：
-                    #   - node_sessions：LLM session UUID 清零，每个节点创建新 session
-                    #   - messages：裁剪到第一条 HumanMessage（用户原始输入）
-                    #   - routing_context：父图路由信号的 context 可能是文件路径等无意义字符串
-                    #   - 子图输出字段（debate_conclusion / apex_conclusion / knowledge_result /
-                    #     discovery_report）：LlmNode._build_gemini_section() 会把这些注入
-                    #     Claude 节点 prompt（供 claude_main 读取子图结论）。若不清空，
-                    #     第二次调用同一子图时，内部 Claude 节点会看到上一次的结论被注入到
-                    #     prompt 里，污染当前辩论的上下文
-                    #   - previous_node_output / subgraph_topic：每节点临时字段，
-                    #     上次残留值会干扰首节点行为
-                    msgs = state.get("messages", [])
-                    human_msgs = [m for m in reversed(msgs) if getattr(m, "type", "") == "human"]
-                    fresh_msgs = [human_msgs[0]] if human_msgs else (msgs[-1:] if msgs else [])
-                    # routing_context → subgraph_topic：在清空前转存辩题锚点，
-                    # 使子图内所有节点都能通过 subgraph_topic 读到辩题。
-                    _topic = state.get("routing_context", "") or state.get("subgraph_topic", "")
-                    patched = {
-                        **state,
-                        "node_sessions": {},
-                        "messages": fresh_msgs,
-                        "routing_context": "",
-                        "debate_conclusion": "",
-                        "apex_conclusion": "",
-                        "knowledge_result": "",
-                        "discovery_report": "",
-                        "previous_node_output": "",
-                        "subgraph_topic": _topic,
-                    }
-                    logger.debug(
-                        f"[session_mode:fresh_per_call] {_n}: clearing node_sessions + routing_context + "
-                        f"subgraph conclusions + previous_node_output + subgraph_topic + "
-                        f"trimming messages {len(msgs)} → {len(fresh_msgs)}"
-                    )
-                    push_graph_scope(_n)
-                    try:
-                        return await _g.ainvoke(patched)
-                    finally:
-                        pop_graph_scope()
-
-                builder.add_node(node_id, _fresh_wrapper)
-
-            elif session_mode == "inherit":
-                # NOT IMPLEMENTED — see docs/vault/architecture/session-mode-design.md
-                #
-                # The original intent was to inject a parent graph LLM node's session
-                # UUID into all the subgraph's session keys, so the subgraph "continues"
-                # the parent's conversation. This cannot be implemented correctly because:
-                #
-                # 1. LLM providers have independent session stores (Claude in
-                #    ~/.claude/, Gemini in ~/.gemini/, Ollama in-process). A UUID
-                #    from one provider cannot be resumed by another → runtime failure
-                #    whenever parent and child subgraph use different providers.
-                # 2. Even same-provider inheritance has semantic issues:
-                #    token budget already consumed by the parent session, permission
-                #    mode / system prompt divergence between parent node and subgraph
-                #    node, etc.
-                #
-                # Workarounds for sharing context across subgraphs:
-                #   - Use fresh_per_call + pass context via messages (LangGraph native)
-                #   - Use SubgraphMapperNode for explicit field mapping
-                #   - Manually extract parent session history and inject as prompt prefix
-                raise NotImplementedError(
-                    f"subgraph '{node_id}': session_mode 'inherit' is not implemented. "
-                    f"See docs/vault/architecture/session-mode-design.md for the rationale. "
-                    f"For sharing context between subgraphs, use session_mode='fresh_per_call' "
-                    f"and pass context via messages or SubgraphMapperNode."
-                )
-
-            elif session_mode == "isolated":
-                # Each node gets its own unique session key (forced at build time)
-                # AND node_sessions is cleared per call.
-                _inner = inner_graph
-                _nid = node_id
-
-                async def _isolated_wrapper(state: dict, config=None, *, _g=_inner, _n=_nid) -> dict:
-                    patched = {**state, "node_sessions": {}}
-                    logger.debug(f"[session_mode:isolated] {_n}: clearing node_sessions (unique keys)")
-                    push_graph_scope(_n)
-                    try:
-                        return await _g.ainvoke(patched)
-                    finally:
-                        pop_graph_scope()
-
-                builder.add_node(node_id, _isolated_wrapper)
-
             else:
                 raise ValueError(
                     f"subgraph '{node_id}': unknown session_mode {session_mode!r} "
-                    f"(valid: persistent, fresh_per_call, isolated; "
-                    f"'inherit' is declared but NotImplemented)"
+                    f"(valid: persistent, fresh_per_call, inherit, isolated)"
                 )
 
         else:
