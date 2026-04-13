@@ -128,9 +128,12 @@ async def test_input_transform_state_mapping():
     assert "routing_context" in fields, "routing_context 应在 SubgraphInputState 中"
     assert "knowledge_vault" in fields, "knowledge_vault 应在 SubgraphInputState 中"
     assert "project_docs" in fields, "project_docs 应在 SubgraphInputState 中"
-    assert "debate_conclusion" in fields, "debate_conclusion 应在 SubgraphInputState 中"
 
-    logger.info("✅ SubgraphInputState: routing_context 和 state 字段均正确声明，messages 已隔离")
+    # debate_conclusion 是子图 output field，不应在 SubgraphInputState 中
+    # （防止父图的上次子图结论流入子图，污染当前调用的上下文）
+    assert "debate_conclusion" not in fields, "debate_conclusion 不应在 SubgraphInputState 中（output field）"
+
+    logger.info("✅ SubgraphInputState: routing_context 和 state 字段均正确声明，messages + output fields 已隔离")
 
 
 async def test_llm_node_output_field():
