@@ -194,7 +194,28 @@ class EntityLoader:
                 logger.info(f"[agent_loader] using custom graph.py for {self.name!r}")
                 # Custom graphs may not expose _llm_node_instances;
                 # controller.compact_claude_session() tolerates absence.
-                return await mod.build_graph(self, checkpointer)
+                compiled = await mod.build_graph(self, checkpointer)
+
+                # Wrap Priority 1 graphs with init/exit nodes when session_mode requires it
+                if is_subgraph and session_mode in ("fresh_per_call", "isolated"):
+                    from framework.nodes.subgraph_init_node import make_subgraph_init, make_subgraph_exit
+                    from framework.schema.base import BaseAgentState, SubgraphInputState
+                    from langgraph.graph import StateGraph, START, END
+
+                    wrapper = StateGraph(BaseAgentState, input_schema=SubgraphInputState)
+                    _init_fn = make_subgraph_init(session_mode)
+                    _exit_fn = make_subgraph_exit()
+                    wrapper.add_node("_subgraph_init", _init_fn)
+                    wrapper.add_node("_inner", compiled)
+                    wrapper.add_node("_subgraph_exit", _exit_fn)
+                    wrapper.add_edge(START, "_subgraph_init")
+                    wrapper.add_edge("_subgraph_init", "_inner")
+                    wrapper.add_edge("_inner", "_subgraph_exit")
+                    wrapper.add_edge("_subgraph_exit", END)
+                    logger.debug(f"[agent_loader] wrapping custom graph.py with init/exit (mode={session_mode})")
+                    return wrapper.compile(checkpointer=checkpointer)
+
+                return compiled
 
         config = self.load_config()
 
@@ -751,7 +772,7 @@ async def _build_declarative(
     #     SubgraphInputState 缺失 messages 会阻断父图 messages 流入 → 首节点拿不到辩题；
     #   - tool_discovery_schema / colony_coder_schema 含自定义业务字段，
     #     SubgraphInputState 不覆盖 → 字段被阻断。
-    # 自定义 schema 的跨调用字段污染由 session_mode wrapper（_fresh_wrapper 等）清理。
+    # 自定义 schema 的跨调用字段污染由 session_mode（_subgraph_init 等）清理。
     _schema_name = graph_spec.get("state_schema", "base_schema")
     if is_subgraph and _schema_name == "base_schema":
         builder = StateGraph(state_schema, input_schema=SubgraphInputState)

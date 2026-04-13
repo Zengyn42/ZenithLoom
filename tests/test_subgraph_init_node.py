@@ -44,7 +44,8 @@ def test_init_fresh_per_call_clears_sessions_and_messages():
     }
     result = fn(state)
 
-    assert result["node_sessions"] == {}
+    from framework.schema.reducers import CLEAR_DICT
+    assert result["node_sessions"] == CLEAR_DICT
     assert result["debate_conclusion"] == ""
     assert result["apex_conclusion"] == ""
     assert result["knowledge_result"] == ""
@@ -133,8 +134,9 @@ def test_init_isolated_clears_only_sessions():
         "node_sessions": {"claude_main": "uuid-123", "gemini": "uuid-456"},
         "messages": [HumanMessage(content="hello", id="h1")],
     }
+    from framework.schema.reducers import CLEAR_DICT
     result = fn(state)
-    assert result == {"node_sessions": {}}
+    assert result == {"node_sessions": CLEAR_DICT}
 
 
 def test_init_unknown_mode_returns_none():

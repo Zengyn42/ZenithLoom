@@ -42,31 +42,6 @@ def test_unknown_session_mode_raises():
     assert "unknown session_mode" in src, "Missing error for unknown session_mode"
 
 
-def test_get_subgraph_session_keys_basic():
-    """_get_subgraph_session_keys extracts session_key from entity.json graph nodes."""
-    from framework.agent_loader import _get_subgraph_session_keys
-    entity = {
-        "graph": {
-            "nodes": [
-                {"id": "a", "session_key": "shared"},
-                {"id": "b", "session_key": "shared"},
-                {"id": "c", "session_key": "unique_c"},
-                {"id": "d"},  # no session_key → falls back to id
-            ]
-        }
-    }
-    keys = _get_subgraph_session_keys(entity)
-    assert keys == {"shared", "unique_c", "d"}
-
-
-def test_get_subgraph_session_keys_empty():
-    """_get_subgraph_session_keys handles empty or missing graph gracefully."""
-    from framework.agent_loader import _get_subgraph_session_keys
-    assert _get_subgraph_session_keys({}) == set()
-    assert _get_subgraph_session_keys({"graph": {}}) == set()
-    assert _get_subgraph_session_keys({"graph": {"nodes": []}}) == set()
-
-
 def test_force_unique_session_keys_in_build_graph_signature():
     """build_graph must accept force_unique_session_keys parameter."""
     from framework.agent_loader import EntityLoader
@@ -130,83 +105,21 @@ def test_persistent_is_default_for_nodes_without_session_mode():
 # ---------------------------------------------------------------------------
 
 @pytest.mark.asyncio
-async def test_fresh_per_call_wrapper_clears_node_sessions():
-    """fresh_per_call wrapper must pass node_sessions={} to inner graph."""
-    captured = {}
-
-    class FakeGraph:
-        async def ainvoke(self, state, config=None):
-            captured["node_sessions"] = state.get("node_sessions")
-            return state
-
-    fake = FakeGraph()
-
-    # Simulate wrapper logic
-    async def _fresh_wrapper(state, config=None, *, _g=fake):
-        patched = {**state, "node_sessions": {}}
-        return await _g.ainvoke(patched)
-
-    parent_state = {
-        "node_sessions": {"claude_main": "uuid-abc", "gemini_debate": "uuid-old"},
-        "messages": [],
-    }
-    await _fresh_wrapper(parent_state)
-    assert captured["node_sessions"] == {}, \
-        f"Expected empty node_sessions, got {captured['node_sessions']}"
+async def test_fresh_per_call_uses_subgraph_init_node():
+    """fresh_per_call must inject _subgraph_init/_subgraph_exit (not async wrapper)."""
+    import framework.agent_loader as al
+    src = inspect.getsource(al._build_declarative)
+    assert "_fresh_wrapper" not in src, "_fresh_wrapper should be removed"
+    assert "_subgraph_init" in src
+    assert "_subgraph_exit" in src
 
 
 @pytest.mark.asyncio
-async def test_inherit_wrapper_injects_parent_session():
-    """inherit wrapper must inject parent's session ID into all subgraph keys."""
-    captured = {}
-
-    class FakeGraph:
-        async def ainvoke(self, state, config=None):
-            captured["node_sessions"] = state.get("node_sessions")
-            return state
-
-    fake = FakeGraph()
-    sub_keys = {"gemini_debate", "claude_debate"}
-
-    async def _inherit_wrapper(state, config=None, *, _g=fake, _from="claude_main", _keys=sub_keys):
-        parent_sid = (state.get("node_sessions") or {}).get(_from, "")
-        injected = {sk: parent_sid for sk in _keys}
-        patched = {**state, "node_sessions": injected}
-        return await _g.ainvoke(patched)
-
-    parent_state = {
-        "node_sessions": {"claude_main": "parent-uuid-123"},
-        "messages": [],
-    }
-    await _inherit_wrapper(parent_state)
-    assert captured["node_sessions"] == {
-        "gemini_debate": "parent-uuid-123",
-        "claude_debate": "parent-uuid-123",
-    }
-
-
-@pytest.mark.asyncio
-async def test_isolated_wrapper_clears_node_sessions():
-    """isolated wrapper must also pass node_sessions={} (unique keys forced at build time)."""
-    captured = {}
-
-    class FakeGraph:
-        async def ainvoke(self, state, config=None):
-            captured["node_sessions"] = state.get("node_sessions")
-            return state
-
-    fake = FakeGraph()
-
-    async def _isolated_wrapper(state, config=None, *, _g=fake):
-        patched = {**state, "node_sessions": {}}
-        return await _g.ainvoke(patched)
-
-    parent_state = {
-        "node_sessions": {"claude_main": "uuid-abc"},
-        "messages": [],
-    }
-    await _isolated_wrapper(parent_state)
-    assert captured["node_sessions"] == {}
+async def test_isolated_uses_native_subgraph():
+    """isolated must use native subgraph (not async wrapper)."""
+    import framework.agent_loader as al
+    src = inspect.getsource(al._build_declarative)
+    assert "_isolated_wrapper" not in src, "_isolated_wrapper should be removed"
 
 
 def test_force_unique_session_keys_overrides_shared_keys():
