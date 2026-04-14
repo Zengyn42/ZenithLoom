@@ -278,7 +278,12 @@ class OllamaNode(AgentNode):
                 logger.info(f"[ollama] tool call: {fn_name}({list(fn_args.keys())})")
                 tool_fn = TOOL_REGISTRY.get(fn_name)
                 if tool_fn:
-                    tool_result = await tool_fn(**fn_args)
+                    try:
+                        tool_result = await tool_fn(**fn_args)
+                    except TypeError as e:
+                        # Missing/wrong arguments — tell the model to fix its call
+                        tool_result = {"error": f"Invalid arguments for {fn_name}: {e}. Check required parameters and retry."}
+                        logger.warning(f"[ollama] tool call failed: {fn_name}({fn_args}) → {e}")
                 else:
                     tool_result = {"error": f"unknown tool: {fn_name}"}
 
