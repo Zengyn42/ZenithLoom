@@ -1,8 +1,8 @@
 # Knowledge Graph Design
 
 > Date: 2026-04-09
-> Status: Design — guides future implementation; supersedes ad-hoc vault-as-RAG approach
-> Companion: `rag-architecture-design.md` (current state, Phase 0)
+> Status: Design — guides Phase 2-4 implementation on top of the current Phase 1 RAG
+> Companion: `rag-architecture-design.md` (Phase 1 — current production file-based RAG)
 
 ## Summary
 
@@ -282,39 +282,68 @@ Phase A explicitly does not use embeddings because:
 
 Adoption is incremental. Each phase produces a working system; later phases add capabilities without breaking earlier ones.
 
-### Phase A — Explicit edges only (now to ~2 months)
+### Phase 1 — Current State: File-based RAG (✅ Implemented)
 
-**What's built:**
-- `knowledge/` directory in vault
-- Knowledge node files with frontmatter
-- ID registry
-- All edges from frontmatter declarations + wikilinks + tag co-occurrence
-- MCP tools: `knowledge_get(id)`, `knowledge_list(filter)`, `knowledge_create(...)`, `knowledge_update(...)`, `knowledge_supersede(old, new)`, `knowledge_neighbors(id)`
+**What's already built:**
+- Obsidian vault with ~100s of Markdown files as source of truth
+- Full Obsidian MCP server (11 tools: read / write / patch / search / manage)
+- Three-layer security (path sandbox + blacklist + soft delete to `.trash/`)
+- CAS optimistic locking + per-file `asyncio.Lock`
+- `knowledge_shelf` subgraph with Gemini integration
+- Jei (Knowledge Curator) agent dedicated to vault operations
+- WSL↔Windows rsync sync (one-way push)
+- LangGraph state integration (`knowledge_vault`, `knowledge_result` auto-injection)
+- Implicit edges (wikilinks `[[...]]`, tag co-occurrence)
+- Implicit metadata (Obsidian frontmatter parsed by MCP)
 
-**What's NOT built:**
-- No embeddings
-- No automatic edge discovery
-- No graph algorithms
+**What's still missing for a true knowledge graph:**
+- Formalized node identity (no `knowledge_id`, addressing is by file path)
+- Typed relations (no `supersedes / depends_on / contradicts`)
+- Lifecycle status (no `active / superseded / invalidated`)
+- Type-aware update semantics (all edits are file-level, no concept of "this is a decision being superseded vs a fact being corrected")
+
+Phase 1 is **production-ready as a file-based knowledge management system**, but does not yet treat knowledge as graph-native nodes. Phases 2-4 add that formalization.
+
+See `rag-architecture-design.md` for the detailed Phase 1 architecture.
+
+### Phase 2 — Formal knowledge graph nodes (📋 designed, not yet implemented)
+
+Add the formalization layer described in §2-§3 of this document:
+
+**Added:**
+- `knowledge/` subdirectory in vault for atomic knowledge node files
+- Knowledge node frontmatter schema (`knowledge_id`, `type`, `status`, `relations`)
+- ID registry (`knowledge/REGISTRY.md`)
+- All edges from frontmatter `relations` declarations (in addition to existing wikilinks + tags)
+- New MCP tools: `knowledge_get(id)`, `knowledge_list(filter)`, `knowledge_create(...)`, `knowledge_update(...)`, `knowledge_supersede(old, new)`, `knowledge_neighbors(id)`
+- Type-aware update flows (see §6)
+
+**Unchanged from Phase 1:**
+- Underlying file storage and MCP layer
+- Search remains keyword/regex-based
+- No embeddings yet
 
 **Retrieval mechanisms:**
 - Exact ID lookup (O(1))
-- Metadata filtering (type / status / scope / tags)
-- Keyword full-text search (regex on bodies)
-- Graph traversal (BFS along edge types)
+- Metadata filtering (`type` / `status` / `scope` / `tags`)
+- Keyword full-text search (existing `obsidian_search_files`)
+- Graph traversal (BFS along typed edges)
 
 **Hard rule for the LLM curator (Jei):**
 > When creating a knowledge node, you MUST declare its `relations` (references, depends_on, supersedes if applicable). If you don't know related nodes, run `knowledge_search` first to find candidates from existing nodes. An undeclared relation = an orphan node that no one will find.
 
-### Phase B — Semantic retrieval (when nodes > 200 OR semantic search becomes painful)
+**Coexistence:** Phase 1 capabilities remain active. Documents (files without `knowledge_id`) and knowledge nodes coexist in the same vault.
+
+### Phase 3 — Semantic retrieval (📋 designed, triggered when nodes > 200 OR semantic search becomes painful)
 
 **Added:**
-- Embedding pipeline (async indexer)
-- Embedding storage (sidecar or vector DB)
-- New retrieval tool: `knowledge_search(query, mode="semantic")` 
-- `embed: true / false` frontmatter field on existing nodes
+- Embedding pipeline (async indexer, decoupled from write path)
+- Embedding storage (sidecar files or vector DB like LanceDB)
+- New retrieval tool: `knowledge_search(query, mode="semantic")`
+- `embed: true / false` frontmatter field on knowledge nodes (opt-in)
 
 **Unchanged:**
-- Edges still only explicit (frontmatter / wikilinks / tags)
+- Edges still only explicit (frontmatter `relations` + wikilinks + tags)
 - Embeddings serve retrieval only, not edge construction
 
 **Behavior:**
@@ -322,7 +351,7 @@ Adoption is incremental. Each phase produces a working system; later phases add 
 - Then LLM decides which candidates to actually link via `relations` field
 - Embeddings inform humans/LLMs but don't autonomously create edges
 
-### Phase C — Automatic edge discovery (when nodes > 1000 OR knowledge discovery features are wanted)
+### Phase 4 — Automatic edge discovery (📋 designed, triggered when nodes > 1000 OR knowledge discovery features are wanted)
 
 **Added:**
 - Embedding-derived `semantic_similar` edges (with cosine weight)
@@ -406,10 +435,10 @@ These seed nodes serve double duty:
 
 | Doc | Relationship |
 |---|---|
-| `rag-architecture-design.md` | Describes Phase 0 (current Markdown-vault-as-RAG). This doc describes Phase A onward. |
+| `rag-architecture-design.md` | Detailed description of Phase 1 (current production file-based RAG). This doc adds Phase 2 onward (formal knowledge graph, embeddings, automatic discovery). |
 | `session-mode-design.md` | Governs how `knowledge_shelf` subgraph isolates context per call — relevant when curator agent (Jei) operates on the graph. |
 | `claude-cli-node-design.md` | LLM tool execution layer used by Jei to interact with the MCP. |
-| `Vault/知识/PrismRag-v4.0-设计文档.md` | The graph-first RAG paradigm explored long-term — Phase C aligns with its embedding-derived edge approach. |
+| `Vault/知识/PrismRag-v4.0-设计文档.md` | The graph-first RAG paradigm explored long-term — Phase 4 aligns with its embedding-derived edge approach. |
 
 ---
 
