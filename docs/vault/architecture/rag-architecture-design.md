@@ -1,8 +1,20 @@
-# RAG Architecture Design
+# RAG Architecture Design — Phase 1 (Current Production)
 
 > Date: 2026-04-09
-> Status: Describes current implementation as of commit 6d55910
+> Status: Describes the **currently deployed** Phase 1 file-based RAG (commit 6d55910)
 > Scope: Obsidian-vault-backed retrieval system used by ZenithLoom agents
+> Companion: `knowledge-graph-design.md` (Phase 2-4: formal knowledge graph + embeddings + auto-discovery)
+
+## Phase Context
+
+This document describes **Phase 1** of the RAG roadmap — a working, production-ready file-based knowledge management system. It includes a security-hardened MCP server, CAS concurrency control, a dedicated curator agent, and end-to-end LangGraph integration.
+
+What Phase 1 deliberately does NOT have:
+- Formalized knowledge node identity (no `knowledge_id`, no typed relations, no lifecycle status)
+- Vector embeddings or semantic search
+- Automatic edge discovery between knowledge units
+
+These are planned for Phase 2-4. See `knowledge-graph-design.md`.
 
 ## Summary
 
