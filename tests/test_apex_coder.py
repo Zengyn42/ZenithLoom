@@ -1,0 +1,89 @@
+import pytest
+from pathlib import Path
+from langchain_core.messages import HumanMessage, AIMessage
+import tempfile
+
+
+def test_apex_coder_schema_registered():
+    import blueprints.functional_graphs.apex_coder.state  # noqa: F401
+    from framework.registry import get_all_schemas
+    schemas = get_all_schemas()
+    assert "apex_coder_schema" in schemas
+
+
+def test_apex_coder_schema_has_required_fields():
+    import typing
+    from blueprints.functional_graphs.apex_coder.state import ApexCoderState
+    hints = typing.get_type_hints(ApexCoderState, include_extras=True)
+    for field in ("user_requirements", "working_directory", "qa_bypass",
+                  "qa_tests_dir", "run_qa_script", "qa_summary", "apex_conclusion"):
+        assert field in hints, f"ApexCoderState missing field: {field}"
+
+
+def test_splitter_text_input():
+    from blueprints.functional_graphs.apex_coder.validators import splitter
+    result = splitter({
+        "messages": [HumanMessage(content="Build a snake game\n\n## 工作目录: /tmp/test_splitter_apex")]
+    })
+    assert result["user_requirements"] == "Build a snake game\n\n## 工作目录: /tmp/test_splitter_apex"
+    assert result["working_directory"] == "/tmp/test_splitter_apex"
+    assert len(result["messages"]) == 1
+    assert result["messages"][0].content == result["user_requirements"]
+
+
+def test_splitter_file_input():
+    from blueprints.functional_graphs.apex_coder.validators import splitter
+    with tempfile.NamedTemporaryFile(mode="w", suffix=".md", delete=False) as f:
+        f.write("Build a todo app")
+        f.flush()
+        result = splitter({"messages": [HumanMessage(content=f.name)]})
+    assert result["user_requirements"] == "Build a todo app"
+    assert result["working_directory"].startswith("/tmp/apex_")
+
+
+def test_splitter_auto_generates_working_dir():
+    from blueprints.functional_graphs.apex_coder.validators import splitter
+    result = splitter({"messages": [HumanMessage(content="Build something")]})
+    assert result["working_directory"].startswith("/tmp/apex_")
+    assert Path(result["working_directory"]).exists()
+    assert Path(result["working_directory"], "test_tool", "qa_tests").exists()
+
+
+def test_splitter_creates_directories():
+    from blueprints.functional_graphs.apex_coder.validators import splitter
+    result = splitter({
+        "messages": [HumanMessage(content="Task\n\n## 工作目录: /tmp/test_splitter_dirs")]
+    })
+    assert Path("/tmp/test_splitter_dirs/test_tool/qa_tests").is_dir()
+
+
+def test_reset_for_coder_clears_qa_messages():
+    from blueprints.functional_graphs.apex_coder.validators import reset_for_coder
+    result = reset_for_coder({
+        "messages": [
+            HumanMessage(content="user task", id="h1"),
+            AIMessage(content="QA reasoning blah blah", id="a1"),
+        ],
+        "user_requirements": "user task",
+        "working_directory": "/tmp/test_reset",
+        "qa_bypass": False,
+        "run_qa_script": "/tmp/test_reset/test_tool/run_qa.sh",
+    })
+    msgs = result["messages"]
+    human_msgs = [m for m in msgs if isinstance(m, HumanMessage)]
+    assert len(human_msgs) == 1
+    assert "user task" in human_msgs[0].content
+    assert "run_qa.sh" in human_msgs[0].content
+
+
+def test_reset_for_coder_bypass_mode():
+    from blueprints.functional_graphs.apex_coder.validators import reset_for_coder
+    result = reset_for_coder({
+        "messages": [HumanMessage(content="task", id="h1")],
+        "user_requirements": "simple task",
+        "working_directory": "/tmp/test_bypass",
+        "qa_bypass": True,
+        "run_qa_script": "",
+    })
+    human_msgs = [m for m in result["messages"] if isinstance(m, HumanMessage)]
+    assert "BYPASSED" in human_msgs[0].content
