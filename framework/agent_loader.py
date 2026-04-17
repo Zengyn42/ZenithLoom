@@ -166,7 +166,7 @@ class EntityLoader:
             self._session_mgr = SessionManager(cfg.sessions_file, cfg.db_path)
         return self._session_mgr
 
-    async def build_graph(self, checkpointer=_DEFAULT, extra_persona_text: str = "", is_subgraph: bool = False, force_unique_session_keys: bool = False, session_mode: str = "persistent", fresh_keep_fields: list[str] | None = None):
+    async def build_graph(self, checkpointer=_DEFAULT, extra_persona_text: str = "", is_subgraph: bool = False, force_unique_session_keys: bool = False, session_mode: str = "fresh_per_call", fresh_keep_fields: list[str] | None = None):
         """
         构建并返回编译好的 LangGraph 状态机。
 
@@ -736,7 +736,7 @@ async def _build_declarative(
     is_subgraph: bool = False,
     force_unique_session_keys: bool = False,
     extra_persona_text: str = "",
-    session_mode: str = "persistent",
+    session_mode: str = "fresh_per_call",
     fresh_keep_fields: list[str] | None = None,
 ) -> object:
     """
@@ -831,7 +831,7 @@ async def _build_declarative(
                     f"external subgraph '{node_id}': agent_dir not found: {inner_dir}"
                 )
 
-            session_mode = node_def.get("session_mode", "persistent")
+            session_mode = node_def.get("session_mode", "fresh_per_call")
             inner_loader = EntityLoader(inner_dir)
 
             # extra_persona dict on subgraph node = parent passes extra persona to child

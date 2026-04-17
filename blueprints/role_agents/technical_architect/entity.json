@@ -125,6 +125,7 @@
       {
         "id": "apex_coder",
         "agent_dir": "blueprints/functional_graphs/apex_coder",
+        "session_mode": "inherit",
         "routing_hint": "当编程问题极其复杂、需要全力以赴穷举所有方案时使用。适用：多次失败仍未解决的 bug、完整架构重构、跨多文件系统变更、需要深度 debug 的环境/配置问题。"
       },
       {
