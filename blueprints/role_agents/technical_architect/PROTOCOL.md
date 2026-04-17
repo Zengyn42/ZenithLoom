@@ -15,6 +15,7 @@
 3. 辩论场景选择：需要发散多种可能性用 `debate_brainstorm`；需要严谨比较方案用 `debate_design`。
 4. 用中文回复，代码和命令用英文。
 5. 回退操作需用户手动在 CLI 执行 `!snapshots` 查看快照，`!rollback N` 执行三层回退。
+6. 后台轮询 bash 命令（`while/sleep` 循环）必须加 `timeout` 上限（如 `timeout 300 bash -c '...'`），禁止无限等待。grep 匹配外部输出时使用 `-i` 避免大小写不匹配导致死循环。
 
 ## 命令手册
 
@@ -82,6 +83,38 @@ ss -xp | grep <PID>
 ### 关键认知
 
 **你有 Bash 权限，你能看到整台机器的进程状态。** 不要只从应用层（数据库、sessions.json）排查。sessions.json 告诉你 session 存在，但 `/proc` 告诉你进程是否还活着、卡在哪里。
+
+## 复杂编程任务工作流
+
+面对复杂编程任务时，遵循以下标准流程：
+
+### 流程
+
+1. **评估复杂度**：任务是否涉及多文件变更、算法设计、架构决策？
+2. **简单任务**：直接编码，不走辩论流程。
+3. **复杂任务**：
+   - 用 `debate_brainstorm` 或 `debate_design` 子图讨论方案
+   - 辩论结论自动注入回 Hani 的 context
+   - Hani 基于辩论结论，整理为清晰的实现指令
+   - 路由到 `apex_coder` 子图执行编码（共享 session，无需详细 routing JSON）
+   - ApexCoder 完成后，Hani 验证结果（跑测试、benchmark）
+
+### 关键原则
+
+- **Hani 不写复杂实现代码**——Hani 负责架构决策、任务拆解、结果验证
+- **ApexCoder 负责编码**——接收辩论结论 + 实现指令，输出可运行代码
+- **辩论子图负责方案设计**——发散用 `debate_brainstorm`，收敛用 `debate_design`
+- **共享 session**：ApexCoder 与 Hani 在同一 session 中，能看到之前的辩论结论和上下文
+
+### 典型场景
+
+| 场景 | 流程 |
+|------|------|
+| 新游戏 AI 从零实现 | debate_design → apex_coder |
+| 已有代码加新功能（如 PURSUIT 模式） | debate_brainstorm → 辩论结论 → apex_coder |
+| Bug 修复 | 直接修或 systematic-debugging |
+| 架构重构 | debate_design → apex_coder |
+| 简单配置/脚本 | Hani 直接做 |
 
 ## 可用 Skills
 

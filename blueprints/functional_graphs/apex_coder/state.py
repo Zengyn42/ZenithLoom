@@ -36,7 +36,7 @@ class ApexCoderState(BaseAgentState):
     # Retry loop
     iteration_history: list          # list of "attempt N: error was X"
     retry_count: int                 # current retry count
-    status: str                      # "PENDING", "PASS", "FAIL"
+    status: str = "PENDING"          # "PENDING", "PASS", "FAIL" — default PENDING to catch state merge bugs
 
     # Override node_sessions with merge reducer
     node_sessions: Annotated[dict, _merge_dict]
