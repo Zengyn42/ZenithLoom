@@ -20,9 +20,9 @@ def test_apex_coder_schema_has_required_fields():
         assert field in hints, f"ApexCoderState missing field: {field}"
 
 
-def test_splitter_text_input():
-    from blueprints.functional_graphs.apex_coder.validators import splitter
-    result = splitter({
+def test_setup_text_input():
+    from blueprints.functional_graphs.apex_coder.validators import setup
+    result = setup({
         "messages": [HumanMessage(content="Build a snake game\n\n## 工作目录: /tmp/test_splitter_apex")]
     })
     assert result["user_requirements"] == "Build a snake game\n\n## 工作目录: /tmp/test_splitter_apex"
@@ -31,27 +31,27 @@ def test_splitter_text_input():
     assert result["messages"][0].content == result["user_requirements"]
 
 
-def test_splitter_file_input():
-    from blueprints.functional_graphs.apex_coder.validators import splitter
+def test_setup_file_input():
+    from blueprints.functional_graphs.apex_coder.validators import setup
     with tempfile.NamedTemporaryFile(mode="w", suffix=".md", delete=False) as f:
         f.write("Build a todo app")
         f.flush()
-        result = splitter({"messages": [HumanMessage(content=f.name)]})
+        result = setup({"messages": [HumanMessage(content=f.name)]})
     assert result["user_requirements"] == "Build a todo app"
     assert result["working_directory"].startswith("/tmp/apex_")
 
 
-def test_splitter_auto_generates_working_dir():
-    from blueprints.functional_graphs.apex_coder.validators import splitter
-    result = splitter({"messages": [HumanMessage(content="Build something")]})
+def test_setup_auto_generates_working_dir():
+    from blueprints.functional_graphs.apex_coder.validators import setup
+    result = setup({"messages": [HumanMessage(content="Build something")]})
     assert result["working_directory"].startswith("/tmp/apex_")
     assert Path(result["working_directory"]).exists()
     assert Path(result["working_directory"], "test_tool", "qa_tests").exists()
 
 
-def test_splitter_creates_directories():
-    from blueprints.functional_graphs.apex_coder.validators import splitter
-    result = splitter({
+def test_setup_creates_directories():
+    from blueprints.functional_graphs.apex_coder.validators import setup
+    result = setup({
         "messages": [HumanMessage(content="Task\n\n## 工作目录: /tmp/test_splitter_dirs")]
     })
     assert Path("/tmp/test_splitter_dirs/test_tool/qa_tests").is_dir()
@@ -138,7 +138,7 @@ async def test_apex_coder_graph_compiles():
     from framework.agent_loader import EntityLoader
     g = await EntityLoader(Path("blueprints/functional_graphs/apex_coder")).build_graph(checkpointer=None)
     node_ids = set(g.nodes) - {"__start__", "__end__"}
-    required = {"splitter", "claude_qa", "reset_for_coder", "claude_coder", "executor", "route", "inject_error_context"}
+    required = {"setup", "claude_qa", "reset_for_coder", "claude_coder", "executor", "route", "inject_error_context"}
     assert required <= node_ids, f"Missing nodes: {required - node_ids}, got: {node_ids}"
 
 
@@ -227,6 +227,42 @@ def test_inject_error_context_includes_history():
     assert len(result["iteration_history"]) == 2
     human_msgs = [m for m in result["messages"] if isinstance(m, HumanMessage)]
     assert "Do NOT repeat" in human_msgs[0].content
+
+
+def test_setup_reads_refined_plan():
+    from blueprints.functional_graphs.apex_coder.validators import setup
+    result = setup({
+        "messages": [HumanMessage(content="Build a game")],
+        "refined_plan": "Use MVC pattern with curses UI",
+        "node_sessions": {"claude_main": "uuid-A", "apex_qa": "old-uuid"},
+    })
+    assert "MVC pattern" in result["user_requirements"]
+    assert "设计方案" in result["user_requirements"]
+    # Should clear subgraph session keys
+    assert "apex_qa" not in result["node_sessions"]
+    assert "claude_main" in result["node_sessions"]
+
+
+def test_setup_reads_debate_conclusion():
+    from blueprints.functional_graphs.apex_coder.validators import setup
+    result = setup({
+        "messages": [HumanMessage(content="Build a game")],
+        "debate_conclusion": "Use event-driven architecture",
+        "node_sessions": {"claude_main": "uuid-A", "apex_coder": "old-uuid"},
+    })
+    assert "event-driven" in result["user_requirements"]
+    assert "辩论结论" in result["user_requirements"]
+    assert "apex_coder" not in result["node_sessions"]
+
+
+def test_setup_routing_context_priority():
+    from blueprints.functional_graphs.apex_coder.validators import setup
+    result = setup({
+        "messages": [HumanMessage(content="ignored message")],
+        "routing_context": "Build a CLI tool\n\n## 工作目录: /tmp/test_routing_ctx",
+    })
+    assert result["user_requirements"] == "Build a CLI tool\n\n## 工作目录: /tmp/test_routing_ctx"
+    assert result["working_directory"] == "/tmp/test_routing_ctx"
 
 
 def test_subgraph_exit_inherit_clears_session_keys():

@@ -4,10 +4,10 @@
   "llm": "claude",
   "graph": {
     "state_schema": "apex_coder_schema",
-    "entry": "splitter",
+    "entry": "setup",
     "nodes": [
       {
-        "id": "splitter",
+        "id": "setup",
         "type": "DETERMINISTIC"
       },
       {
@@ -15,6 +15,7 @@
         "type": "CLAUDE_SDK",
         "model": "claude-sonnet-4-6",
         "session_key": "apex_qa",
+        "inherit_from": "claude_main",
         "tools": ["Read", "Write", "Bash"],
         "permission_mode": "bypassPermissions",
         "persona_files": ["./QA_ROLE.md", "./PROTOCOL.md"],
@@ -31,6 +32,7 @@
         "model": "claude-opus-4-6",
         "extra_persona": true,
         "session_key": "apex_coder",
+        "inherit_from": "claude_main",
         "tools": [
           "Read", "Write", "Edit", "Bash",
           "Glob", "Grep", "NotebookEdit", "Agent"
@@ -70,7 +72,7 @@
       }
     ],
     "edges": [
-      {"from": "splitter",              "to": "claude_qa"},
+      {"from": "setup",                 "to": "claude_qa"},
       {"from": "claude_qa",             "to": "reset_for_coder"},
       {"from": "reset_for_coder",       "to": "claude_coder"},
       {"from": "claude_coder",          "to": "executor"},

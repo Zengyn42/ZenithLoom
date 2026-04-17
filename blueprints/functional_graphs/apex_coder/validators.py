@@ -1,7 +1,7 @@
 """DETERMINISTIC nodes for apex_coder TDD pipeline.
 
 Nodes:
-  splitter              — extract user_requirements, create working_directory
+  setup                 — extract user_requirements, create working_directory, enrich with parent context
   reset_for_coder       — clear QA messages, build clean prompt for Coder
   executor              — run QA tests mechanically (no LLM)
   route                 — PASS → end, FAIL → retry or abort
@@ -20,16 +20,30 @@ logger = logging.getLogger(__name__)
 RETRY_CAP = 5
 
 
-def splitter(state: dict) -> dict:
+def setup(state: dict) -> dict:
+    """Extract user_requirements, create working_directory, prepare for QA."""
     from langchain_core.messages import HumanMessage
 
-    msg = state["messages"][0].content.strip()
+    # Input priority: routing_context (subgraph) > messages[0] (standalone)
+    msgs = state.get("messages", [])
+    raw_msg = msgs[0].content.strip() if msgs else ""
+    raw = state.get("routing_context", "") or raw_msg
 
-    if msg.startswith("/") and Path(msg).is_file():
-        user_requirements = Path(msg).read_text(encoding="utf-8")
+    # Smart input: file path or raw text
+    if raw.startswith("/") and Path(raw).is_file():
+        user_requirements = Path(raw).read_text(encoding="utf-8")
     else:
-        user_requirements = msg
+        user_requirements = raw
 
+    # Enrich with parent design context (inherit mode)
+    plan = state.get("refined_plan", "")
+    debate = state.get("debate_conclusion", "")
+    if plan:
+        user_requirements = f"{user_requirements}\n\n## 设计方案\n{plan}"
+    elif debate:
+        user_requirements = f"{user_requirements}\n\n## 辩论结论\n{debate}"
+
+    # Parse working_directory
     wd_match = re.search(
         r"[#]*\s*(?:工作目录|working.?dir(?:ectory)?)[:：]\s*(\S+)",
         user_requirements,
@@ -43,11 +57,21 @@ def splitter(state: dict) -> dict:
     Path(working_directory).mkdir(parents=True, exist_ok=True)
     Path(working_directory, "test_tool", "qa_tests").mkdir(parents=True, exist_ok=True)
 
+    # Clear subgraph session keys (for re-fork on next call)
+    ns = dict(state.get("node_sessions", {}))
+    ns.pop("apex_qa", None)
+    ns.pop("apex_coder", None)
+
     return {
         "user_requirements": user_requirements,
         "working_directory": working_directory,
+        "node_sessions": ns,
         "messages": [HumanMessage(content=user_requirements)],
     }
+
+
+# Backward-compat alias
+splitter = setup
 
 
 def reset_for_coder(state: dict) -> dict:
