@@ -369,6 +369,7 @@ class GeminiCodeAssistNode(_GeminiSessionMixin, AgentNode):
         tools: list[str] | None = None,
         cwd: str | None = None,
         history: list | None = None,
+        inherit_from: str = "",
     ) -> tuple[str, str]:
         """单轮 Gemini 对话，返回 (reply, session_id)。history 由 session 管理，忽略。"""
         workspace = cwd or ""
@@ -695,6 +696,7 @@ class GeminiCLINode(AgentNode):
         tools: list[str] | None = None,
         cwd: str | None = None,
         history: list | None = None,
+        inherit_from: str = "",
     ) -> tuple[str, str]:
         """调用 Gemini CLI subprocess，返回 (reply, session_id)。history 由 session 管理，忽略。
 

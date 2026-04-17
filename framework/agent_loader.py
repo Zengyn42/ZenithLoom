@@ -204,7 +204,8 @@ class EntityLoader:
 
                     wrapper = StateGraph(BaseAgentState, input_schema=SubgraphInputState)
                     _init_fn = make_subgraph_init(session_mode, keep_fields=fresh_keep_fields)
-                    _exit_fn = make_subgraph_exit()
+                    _skeys = _extract_session_keys_from_json(self._json)
+                    _exit_fn = make_subgraph_exit(session_mode=session_mode, subgraph_session_keys=_skeys)
                     wrapper.add_node("_subgraph_init", _init_fn)
                     wrapper.add_node("_inner", compiled)
                     wrapper.add_node("_subgraph_exit", _exit_fn)
@@ -972,7 +973,13 @@ async def _build_declarative(
     # ── Exit side ─────────────────────────────────────────────────────
     if _needs_exit and _graph_exit and not _has_end_edge:
         from framework.nodes.subgraph_init_node import make_subgraph_exit
-        _exit_fn = make_subgraph_exit()
+        # Collect session_keys from all LLM nodes in this subgraph
+        _subgraph_skeys = [
+            n.get("session_key", n["id"])
+            for n in graph_spec.get("nodes", [])
+            if n.get("type", "") in _LLM_NODE_TYPES
+        ]
+        _exit_fn = make_subgraph_exit(session_mode=session_mode, subgraph_session_keys=_subgraph_skeys)
         builder.add_node("_subgraph_exit", _exit_fn)
         builder.add_edge(_graph_exit, "_subgraph_exit")
         builder.add_edge("_subgraph_exit", END)
@@ -1206,6 +1213,17 @@ _LLM_NODE_TYPES = frozenset({
     "CLAUDE_CLI", "CLAUDE_SDK", "GEMINI_CLI", "GEMINI_API",
     "OLLAMA", "LOCAL_VLLM",
 })
+
+
+def _extract_session_keys_from_json(entity_json):
+    """Extract session_key values from all LLM nodes in entity.json graph spec."""
+    graph = entity_json.get("graph", {})
+    keys = []
+    for node in graph.get("nodes", []):
+        ntype = node.get("type", "")
+        if ntype in _LLM_NODE_TYPES:
+            keys.append(node.get("session_key", node["id"]))
+    return keys
 
 
 def _load_persona_text(

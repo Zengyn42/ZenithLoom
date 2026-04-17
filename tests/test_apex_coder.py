@@ -227,3 +227,32 @@ def test_inject_error_context_includes_history():
     assert len(result["iteration_history"]) == 2
     human_msgs = [m for m in result["messages"] if isinstance(m, HumanMessage)]
     assert "Do NOT repeat" in human_msgs[0].content
+
+
+def test_subgraph_exit_inherit_clears_session_keys():
+    from framework.nodes.subgraph_init_node import make_subgraph_exit
+    from langchain_core.messages import HumanMessage
+    exit_fn = make_subgraph_exit(session_mode="inherit", subgraph_session_keys=["apex_qa", "apex_coder"])
+    result = exit_fn({
+        "messages": [HumanMessage(content="test", id="m1")],
+        "node_sessions": {"claude_main": "uuid-A", "apex_qa": "uuid-B", "apex_coder": "uuid-C"},
+    })
+    # Messages should be removed
+    assert any(hasattr(m, 'id') for m in result["messages"])
+    # Subgraph session keys should be cleared
+    ns = result["node_sessions"]
+    assert "claude_main" in ns  # parent key preserved
+    assert "apex_qa" not in ns  # subgraph key cleared
+    assert "apex_coder" not in ns  # subgraph key cleared
+
+
+def test_subgraph_exit_persistent_keeps_session_keys():
+    from framework.nodes.subgraph_init_node import make_subgraph_exit
+    from langchain_core.messages import HumanMessage
+    exit_fn = make_subgraph_exit(session_mode="persistent", subgraph_session_keys=["apex_qa"])
+    result = exit_fn({
+        "messages": [HumanMessage(content="test", id="m1")],
+        "node_sessions": {"claude_main": "uuid-A", "apex_qa": "uuid-B"},
+    })
+    # persistent mode should NOT clear session keys
+    assert "node_sessions" not in result

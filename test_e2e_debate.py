@@ -143,7 +143,7 @@ async def test_llm_node_output_field():
     from framework.nodes.llm.llm_node import LlmNode
 
     class _MockNode(LlmNode):
-        async def call_llm(self, prompt, session_id="", tools=None, cwd=None, history=None):
+        async def call_llm(self, prompt, session_id="", tools=None, cwd=None, history=None, inherit_from=""):
             return "辩论结论内容", session_id or "mock-sid"
 
     node = _MockNode(AgentConfig(tools=[]), {

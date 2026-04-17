@@ -342,6 +342,7 @@ class OllamaNode(AgentNode):
         tools: list[str] | None = None,
         cwd: str | None = None,
         history: list | None = None,
+        inherit_from: str = "",
     ) -> tuple[str, str]:
         """
         调用 Ollama /v1/chat/completions。返回 (text, session_id)。

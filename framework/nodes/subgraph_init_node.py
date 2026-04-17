@@ -78,17 +78,30 @@ def make_subgraph_init(session_mode: str, keep_fields: list[str] | None = None):
         return None
 
 
-def make_subgraph_exit():
-    """Return exit cleanup function — uniform for ALL subgraphs.
+def make_subgraph_exit(session_mode="persistent", subgraph_session_keys=None):
+    """Return exit cleanup function.
 
-    Removes all internal messages via RemoveMessage so they don't
-    pollute the parent graph's message list.
+    ALL modes: RemoveMessage clears internal messages.
+    inherit mode: additionally clears subgraph session keys from node_sessions
+    so the parent doesn't retain forked sessions.
     """
+    _keys_to_clear = subgraph_session_keys or []
+    _is_inherit = session_mode == "inherit"
 
     def _exit_cleanup(state: dict) -> dict:
         msgs = state.get("messages", [])
         removals = [RemoveMessage(id=m.id) for m in msgs]
         logger.debug("[subgraph_exit] removing %d internal messages", len(msgs))
-        return {"messages": removals}
+        result = {"messages": removals}
+
+        if _is_inherit and _keys_to_clear:
+            ns = dict(state.get("node_sessions", {}))
+            for key in _keys_to_clear:
+                removed = ns.pop(key, None)
+                if removed:
+                    logger.debug(f"[subgraph_exit:inherit] cleared session key {key}={removed[:8] if removed else ''}")
+            result["node_sessions"] = ns
+
+        return result
 
     return _exit_cleanup

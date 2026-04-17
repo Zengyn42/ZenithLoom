@@ -282,6 +282,7 @@ class LlmNode:
         tools: list[str] | None = None,
         cwd: str | None = None,
         history: list | None = None,
+        inherit_from: str = "",
     ) -> tuple[str, str]:
         """
         调用具体 LLM，返回 (text, new_session_id)。
@@ -289,6 +290,9 @@ class LlmNode:
         history: LangGraph state["messages"] 完整历史（HumanMessage/AIMessage 列表）。
           - Claude/Gemini: 忽略（server-side session 已含历史）
           - OllamaNode: 用于重建多轮对话（Ollama 无 server-side session）
+        inherit_from: parent session ID to fork from (inherit mode).
+          - Non-empty + no session_id → fork parent session (Claude: fork_session=True)
+          - Non-empty + session_id set → resume own forked session (ignore inherit_from)
         子类必须实现。
         """
 
@@ -309,6 +313,14 @@ class LlmNode:
         # node_sessions UUID 路由（session_key 允许多节点共享 session）
         _ns = state.get("node_sessions") or {}
         session_id = _ns.get(self._session_key, "")
+
+        # inherit_from: fork parent session on first call (inherit mode)
+        _inherit_from_key = self._cfg.get("inherit_from", "")
+        _inherit_from_sid = ""
+        if _inherit_from_key and not session_id:
+            _inherit_from_sid = _ns.get(_inherit_from_key, "")
+            if _inherit_from_sid:
+                logger.info(f"[{self._node_id}] inherit: will fork session from {_inherit_from_key}={_inherit_from_sid[:8]}")
 
         if is_debug():
             logger.debug(
@@ -419,6 +431,7 @@ class LlmNode:
                     tools=tools,
                     cwd=project_root,
                     history=list(msgs),
+                    inherit_from=_inherit_from_sid,
                 )
         finally:
             # 恢复原始 callback

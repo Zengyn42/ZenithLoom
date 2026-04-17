@@ -80,11 +80,14 @@ class ClaudeSDKNode(AgentNode):
         tools: list[str] | None = None,
         cwd: str | None = None,
         history: list | None = None,
+        inherit_from: str = "",
     ) -> tuple[str, str]:
         """调用 Claude SDK，返回 (text, new_session_id)。history 由 SDK session 管理，忽略。"""
         model = self.node_config.get("model") or self.node_config.get("claude_model") or "default"
         sid_short = session_id[:8] if session_id else "new"
         logger.info(f"[claude] model={model} sid={sid_short}")
+        if inherit_from:
+            logger.info(f"[claude] inherit_from={inherit_from[:8]} fork={not bool(session_id)}")
         if is_debug():
             logger.debug(f"[claude] prompt_len={len(prompt)} cwd={cwd!r}")
 
@@ -119,6 +122,10 @@ class ClaudeSDKNode(AgentNode):
         # disallowed_tools 由基类 _get_disallowed_tools() 根据 mode 自动计算
         _disallowed = self._get_disallowed_tools()
 
+        # inherit_from fork logic: fork parent session on first call (no own sid yet)
+        _fork = bool(not session_id and inherit_from)
+        _resume_target = inherit_from if _fork else (session_id or None)
+
         def _make_options(sid: str) -> ClaudeAgentOptions:
             sp = self.node_config.get("system_prompt") or self.system_prompt or None
             node_tools = self.node_config.get("tools")
@@ -148,13 +155,19 @@ class ClaudeSDKNode(AgentNode):
             except Exception as _mcp_err:
                 logger.debug(f"[claude] mcp_manager lookup failed: {_mcp_err}")
 
+            # For fork: on first call use inherit_from as resume target with fork_session=True;
+            # on retry (sid already set) resume own session normally.
+            _eff_resume = inherit_from if (not sid and _fork) else (sid or None)
+            _eff_fork = bool(not sid and _fork)
+
             return ClaudeAgentOptions(
                 system_prompt=sp,
                 cwd=cwd or None,
                 allowed_tools=_allowed,
                 disallowed_tools=_disallowed,
                 permission_mode=self._permission_mode,
-                resume=sid or None,
+                resume=_eff_resume,
+                fork_session=_eff_fork,
                 model=self.node_config.get("model") or self.node_config.get("claude_model") or None,
                 env={"CLAUDECODE": "", "CLAUDE_CODE_SESSION": "", "CLAUDE_AGENT_SDK": "1"},
                 stderr=_on_stderr,
@@ -652,6 +665,7 @@ class ClaudeCLINode(AgentNode):
         tools: list[str] | None = None,
         cwd: str | None = None,
         history: list | None = None,
+        inherit_from: str = "",
     ) -> tuple[str, str]:
         """调用 Claude CLI subprocess，返回 (text, new_session_id)。history 由 CLI session 管理，忽略。"""
         result_text = ""
