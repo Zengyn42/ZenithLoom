@@ -84,7 +84,7 @@ class _MockLlmNode:
         from framework.nodes.llm.llm_node import LlmNode
 
         class _Impl(LlmNode):
-            async def call_llm(self, prompt, session_id="", tools=None, cwd=None, history=None):
+            async def call_llm(self, prompt, session_id="", tools=None, cwd=None, history=None, inherit_from=""):
                 return reply, session_id or "mock-sid"
 
         cfg = {"id": node_id}
@@ -174,7 +174,7 @@ async def test_llm_node_reads_routing_context_directly():
     captured = {}
 
     class _Impl:
-        async def call_llm(self, prompt, session_id="", tools=None, cwd=None, history=None):
+        async def call_llm(self, prompt, session_id="", tools=None, cwd=None, history=None, inherit_from=""):
             captured["prompt"] = prompt
             return "回复", "mock-sid"
 
@@ -182,7 +182,7 @@ async def test_llm_node_reads_routing_context_directly():
     from framework.nodes.llm.llm_node import LlmNode
 
     class _MockImpl(LlmNode):
-        async def call_llm(self, prompt, session_id="", tools=None, cwd=None, history=None):
+        async def call_llm(self, prompt, session_id="", tools=None, cwd=None, history=None, inherit_from=""):
             captured["prompt"] = prompt
             return "回复", "mock-sid"
 
@@ -215,7 +215,7 @@ async def test_llm_node_fallback_to_messages():
     from framework.nodes.llm.llm_node import LlmNode
 
     class _MockImpl(LlmNode):
-        async def call_llm(self, prompt, session_id="", tools=None, cwd=None, history=None):
+        async def call_llm(self, prompt, session_id="", tools=None, cwd=None, history=None, inherit_from=""):
             captured["prompt"] = prompt
             return "回复", "mock-sid"
 
