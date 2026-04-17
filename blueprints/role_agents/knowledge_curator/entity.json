@@ -20,7 +20,7 @@
         "model": "gemini-2.5-pro",
         "session_key": "jei_main",
         "enable_routing": true,
-        "permission_mode": "plan",
+        "permission_mode": "bypassPermissions",
         "timeout": 120,
         "skill_files": [
           "skills/presenton/slides_skill.md",
