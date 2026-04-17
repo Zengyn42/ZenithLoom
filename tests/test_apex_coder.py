@@ -87,3 +87,46 @@ def test_reset_for_coder_bypass_mode():
     })
     human_msgs = [m for m in result["messages"] if isinstance(m, HumanMessage)]
     assert "BYPASSED" in human_msgs[0].content
+
+
+import subprocess
+import json
+
+
+def test_hook_blocks_qa_test_write():
+    hook_path = "blueprints/functional_graphs/apex_coder/hooks/protect_qa_tests.py"
+    data = {"tool_input": {"file_path": "/tmp/game/test_tool/qa_tests/test_foo.py"}}
+    result = subprocess.run(
+        ["python3", hook_path],
+        input=json.dumps(data),
+        capture_output=True,
+        text=True,
+    )
+    output = json.loads(result.stdout)
+    assert output["decision"] == "block"
+
+
+def test_hook_allows_source_write():
+    hook_path = "blueprints/functional_graphs/apex_coder/hooks/protect_qa_tests.py"
+    data = {"tool_input": {"file_path": "/tmp/game/main.py"}}
+    result = subprocess.run(
+        ["python3", hook_path],
+        input=json.dumps(data),
+        capture_output=True,
+        text=True,
+    )
+    output = json.loads(result.stdout)
+    assert output["decision"] == "allow"
+
+
+def test_hook_allows_unit_test_write():
+    hook_path = "blueprints/functional_graphs/apex_coder/hooks/protect_qa_tests.py"
+    data = {"tool_input": {"file_path": "/tmp/game/test_tool/unit_tests/test_main.py"}}
+    result = subprocess.run(
+        ["python3", hook_path],
+        input=json.dumps(data),
+        capture_output=True,
+        text=True,
+    )
+    output = json.loads(result.stdout)
+    assert output["decision"] == "allow"
