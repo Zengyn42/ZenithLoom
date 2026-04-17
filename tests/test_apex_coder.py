@@ -190,6 +190,13 @@ def test_route_fail_exhausted():
     assert result["status"] == "FAIL"
 
 
+def test_route_pending_aborts():
+    from blueprints.functional_graphs.apex_coder.validators import route
+    result = route({"retry_count": 0})  # no status field at all
+    assert result["routing_target"] == "__end__"
+    assert result["status"] == "FAIL"
+
+
 def test_inject_error_context_builds_retry_prompt():
     from blueprints.functional_graphs.apex_coder.validators import inject_error_context
     result = inject_error_context({

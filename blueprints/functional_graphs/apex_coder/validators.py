@@ -174,8 +174,9 @@ def route(state: dict) -> dict:
     PASS → __end__ (success)
     FAIL + retry_count < RETRY_CAP → inject_error_context (retry)
     FAIL + retry_count >= RETRY_CAP → __end__ (abort)
+    PENDING (executor didn't set status) → __end__ (abort, state merge bug)
     """
-    status = state.get("status", "FAIL")
+    status = state.get("status", "PENDING")
     retry_count = state.get("retry_count", 0)
 
     logger.info(f"[route] status={status} retry_count={retry_count}/{RETRY_CAP}")
@@ -185,6 +186,13 @@ def route(state: dict) -> dict:
         return {
             "routing_target": "__end__",
             "status": "PASS",
+        }
+
+    if status == "PENDING":
+        logger.error("[route] status is PENDING — executor output not merged. Aborting.")
+        return {
+            "routing_target": "__end__",
+            "status": "FAIL",
         }
 
     if retry_count + 1 >= RETRY_CAP:
