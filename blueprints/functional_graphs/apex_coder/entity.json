@@ -5,7 +5,6 @@
   "graph": {
     "state_schema": "apex_coder_schema",
     "entry": "splitter",
-    "exit": "claude_coder",
     "nodes": [
       {
         "id": "splitter",
@@ -14,7 +13,7 @@
       {
         "id": "claude_qa",
         "type": "CLAUDE_SDK",
-        "model": "claude-opus-4-6",
+        "model": "claude-sonnet-4-6",
         "session_key": "apex_qa",
         "tools": ["Read", "Write", "Bash"],
         "permission_mode": "bypassPermissions",
@@ -56,12 +55,29 @@
         "add_dirs": [
           "blueprints/functional_graphs/apex_coder"
         ]
+      },
+      {
+        "id": "executor",
+        "type": "DETERMINISTIC"
+      },
+      {
+        "id": "route",
+        "type": "DETERMINISTIC"
+      },
+      {
+        "id": "inject_error_context",
+        "type": "DETERMINISTIC"
       }
     ],
     "edges": [
-      {"from": "splitter",         "to": "claude_qa"},
-      {"from": "claude_qa",        "to": "reset_for_coder"},
-      {"from": "reset_for_coder",  "to": "claude_coder"}
+      {"from": "splitter",              "to": "claude_qa"},
+      {"from": "claude_qa",             "to": "reset_for_coder"},
+      {"from": "reset_for_coder",       "to": "claude_coder"},
+      {"from": "claude_coder",          "to": "executor"},
+      {"from": "executor",              "to": "route"},
+      {"from": "route",                 "to": "inject_error_context", "type": "routing_to"},
+      {"from": "route",                 "to": "__end__",              "type": "routing_to"},
+      {"from": "inject_error_context",  "to": "claude_coder"}
     ]
   },
   "max_retries": 0,

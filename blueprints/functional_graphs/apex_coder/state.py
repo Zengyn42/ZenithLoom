@@ -15,13 +15,30 @@ from framework.registry import register_schema
 
 
 class ApexCoderState(BaseAgentState):
+    # Splitter output
     user_requirements: str
     working_directory: str
+
+    # QA output
     qa_bypass: bool
     qa_tests_dir: str
     run_qa_script: str
     qa_summary: str
+
+    # Coder output
     apex_conclusion: str
+
+    # Executor output
+    execution_stdout: str
+    execution_stderr: str
+    execution_returncode: Optional[int]
+
+    # Retry loop
+    iteration_history: list          # list of "attempt N: error was X"
+    retry_count: int                 # current retry count
+    status: str                      # "PENDING", "PASS", "FAIL"
+
+    # Override node_sessions with merge reducer
     node_sessions: Annotated[dict, _merge_dict]
 
 

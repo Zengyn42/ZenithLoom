@@ -138,5 +138,92 @@ async def test_apex_coder_graph_compiles():
     from framework.agent_loader import EntityLoader
     g = await EntityLoader(Path("blueprints/functional_graphs/apex_coder")).build_graph(checkpointer=None)
     node_ids = set(g.nodes) - {"__start__", "__end__"}
-    required = {"splitter", "claude_qa", "reset_for_coder", "claude_coder"}
+    required = {"splitter", "claude_qa", "reset_for_coder", "claude_coder", "executor", "route", "inject_error_context"}
     assert required <= node_ids, f"Missing nodes: {required - node_ids}, got: {node_ids}"
+
+
+def test_state_has_executor_fields():
+    import typing
+    from blueprints.functional_graphs.apex_coder.state import ApexCoderState
+    hints = typing.get_type_hints(ApexCoderState, include_extras=True)
+    for field in ("execution_stdout", "execution_stderr", "execution_returncode",
+                  "iteration_history", "status"):
+        assert field in hints, f"ApexCoderState missing field: {field}"
+
+
+def test_executor_bypass():
+    from blueprints.functional_graphs.apex_coder.validators import executor
+    result = executor({"qa_bypass": True, "working_directory": "/tmp", "run_qa_script": ""})
+    assert result["status"] == "PASS"
+    assert result["execution_returncode"] == 0
+
+
+def test_executor_missing_script():
+    from blueprints.functional_graphs.apex_coder.validators import executor
+    result = executor({
+        "qa_bypass": False,
+        "working_directory": "/tmp",
+        "run_qa_script": "/tmp/nonexistent_script.sh",
+    })
+    assert result["status"] == "FAIL"
+    assert result["execution_returncode"] == 1
+
+
+def test_route_pass():
+    from blueprints.functional_graphs.apex_coder.validators import route
+    result = route({"status": "PASS", "retry_count": 0})
+    assert result["routing_target"] == "__end__"
+    assert result["status"] == "PASS"
+
+
+def test_route_fail_retry():
+    from blueprints.functional_graphs.apex_coder.validators import route
+    result = route({"status": "FAIL", "retry_count": 0})
+    assert result["routing_target"] == "inject_error_context"
+    assert result["retry_count"] == 1
+
+
+def test_route_fail_exhausted():
+    from blueprints.functional_graphs.apex_coder.validators import route
+    result = route({"status": "FAIL", "retry_count": 4})
+    assert result["routing_target"] == "__end__"
+    assert result["status"] == "FAIL"
+
+
+def test_inject_error_context_builds_retry_prompt():
+    from blueprints.functional_graphs.apex_coder.validators import inject_error_context
+    result = inject_error_context({
+        "messages": [HumanMessage(content="old", id="h1")],
+        "user_requirements": "build a game",
+        "working_directory": "/tmp/test",
+        "run_qa_script": "/tmp/test/run_qa.sh",
+        "execution_stdout": "test output",
+        "execution_stderr": "AssertionError: expected 4 got 3",
+        "execution_returncode": 1,
+        "retry_count": 1,
+        "iteration_history": [],
+    })
+    human_msgs = [m for m in result["messages"] if isinstance(m, HumanMessage)]
+    assert len(human_msgs) == 1
+    assert "RETRY" in human_msgs[0].content
+    assert "AssertionError" in human_msgs[0].content
+    assert "build a game" in human_msgs[0].content
+    assert len(result["iteration_history"]) == 1
+
+
+def test_inject_error_context_includes_history():
+    from blueprints.functional_graphs.apex_coder.validators import inject_error_context
+    result = inject_error_context({
+        "messages": [HumanMessage(content="old", id="h1")],
+        "user_requirements": "task",
+        "working_directory": "/tmp/test",
+        "run_qa_script": "/tmp/test/run_qa.sh",
+        "execution_stdout": "",
+        "execution_stderr": "new error",
+        "execution_returncode": 1,
+        "retry_count": 2,
+        "iteration_history": ["Attempt 1: old error"],
+    })
+    assert len(result["iteration_history"]) == 2
+    human_msgs = [m for m in result["messages"] if isinstance(m, HumanMessage)]
+    assert "Do NOT repeat" in human_msgs[0].content

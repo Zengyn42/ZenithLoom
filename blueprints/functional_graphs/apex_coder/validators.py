@@ -1,14 +1,23 @@
 """DETERMINISTIC nodes for apex_coder TDD pipeline.
 
 Nodes:
-  splitter          — extract user_requirements, create working_directory
-  reset_for_coder   — clear QA messages, build clean prompt for Coder
+  splitter              — extract user_requirements, create working_directory
+  reset_for_coder       — clear QA messages, build clean prompt for Coder
+  executor              — run QA tests mechanically (no LLM)
+  route                 — PASS → end, FAIL → retry or abort
+  inject_error_context  — build retry prompt for Coder with error context
 """
 
+import logging
 import os
 import re
+import subprocess
 import uuid
 from pathlib import Path
+
+logger = logging.getLogger(__name__)
+
+RETRY_CAP = 5
 
 
 def splitter(state: dict) -> dict:
@@ -75,4 +84,148 @@ def reset_for_coder(state: dict) -> dict:
     prompt = "\n".join(lines)
     return {
         "messages": removals + [HumanMessage(content=prompt)],
+    }
+
+
+def executor(state: dict) -> dict:
+    """Run QA tests mechanically. No LLM involved."""
+    working_dir = state.get("working_directory", "")
+    run_qa = state.get("run_qa_script", "")
+    qa_bypass = state.get("qa_bypass", False)
+
+    if qa_bypass:
+        logger.info("[executor] QA bypassed → PASS")
+        return {
+            "execution_stdout": "",
+            "execution_stderr": "",
+            "execution_returncode": 0,
+            "status": "PASS",
+        }
+
+    if not run_qa or not os.path.isfile(run_qa):
+        logger.warning(f"[executor] run_qa_script not found: {run_qa}")
+        return {
+            "execution_stdout": "",
+            "execution_stderr": f"run_qa_script not found: {run_qa}",
+            "execution_returncode": 1,
+            "status": "FAIL",
+        }
+
+    try:
+        r = subprocess.run(
+            ["bash", run_qa],
+            cwd=working_dir,
+            capture_output=True,
+            text=True,
+            timeout=120,
+        )
+        logger.info(f"[executor] exit_code={r.returncode} stdout_len={len(r.stdout)} stderr_len={len(r.stderr)}")
+        return {
+            "execution_stdout": r.stdout[-3000:] if r.stdout else "",
+            "execution_stderr": r.stderr[-3000:] if r.stderr else "",
+            "execution_returncode": r.returncode,
+            "status": "PASS" if r.returncode == 0 else "FAIL",
+        }
+    except subprocess.TimeoutExpired:
+        logger.error("[executor] TIMEOUT (120s)")
+        return {
+            "execution_stdout": "",
+            "execution_stderr": "run_qa.sh exceeded 120s timeout",
+            "execution_returncode": -1,
+            "status": "FAIL",
+        }
+    except OSError as e:
+        logger.error(f"[executor] OSError: {e}")
+        return {
+            "execution_stdout": "",
+            "execution_stderr": str(e),
+            "execution_returncode": -1,
+            "status": "FAIL",
+        }
+
+
+def route(state: dict) -> dict:
+    """Route based on executor results.
+
+    PASS → __end__ (success)
+    FAIL + retry_count < RETRY_CAP → inject_error_context (retry)
+    FAIL + retry_count >= RETRY_CAP → __end__ (abort)
+    """
+    status = state.get("status", "FAIL")
+    retry_count = state.get("retry_count", 0)
+
+    logger.info(f"[route] status={status} retry_count={retry_count}/{RETRY_CAP}")
+
+    if status == "PASS":
+        logger.info("[route] PASS → __end__")
+        return {
+            "routing_target": "__end__",
+            "status": "PASS",
+        }
+
+    if retry_count + 1 >= RETRY_CAP:
+        logger.warning(f"[route] retry cap ({RETRY_CAP}) reached → __end__ (abort)")
+        return {
+            "routing_target": "__end__",
+            "status": "FAIL",
+        }
+
+    logger.info(f"[route] FAIL → inject_error_context (retry {retry_count + 1})")
+    return {
+        "routing_target": "inject_error_context",
+        "retry_count": retry_count + 1,
+    }
+
+
+def inject_error_context(state: dict) -> dict:
+    """Build retry prompt for Coder with error context + iteration history."""
+    from langchain_core.messages import HumanMessage, RemoveMessage
+
+    user_req = state.get("user_requirements", "")
+    working_dir = state.get("working_directory", "")
+    run_qa_script = state.get("run_qa_script", "")
+    stdout = state.get("execution_stdout", "")
+    stderr = state.get("execution_stderr", "")
+    retry_count = state.get("retry_count", 0)
+    history = state.get("iteration_history", [])
+
+    # Add current failure to history
+    error_summary = f"Attempt {retry_count}: returncode={state.get('execution_returncode')}"
+    if stderr:
+        error_summary += f"\nstderr: {stderr[-500:]}"
+    if stdout:
+        error_summary += f"\nstdout (last 500): {stdout[-500:]}"
+    new_history = history + [error_summary]
+
+    # Clear old messages
+    msgs = state.get("messages", [])
+    removals = [RemoveMessage(id=m.id) for m in msgs]
+
+    # Build retry prompt
+    lines = [f"## RETRY — Attempt {retry_count + 1}/{RETRY_CAP}\n"]
+    lines.append(f"## User Requirements\n\n{user_req}")
+    lines.append(f"\n## Working Directory: `{working_dir}`")
+    lines.append(f"\n## QA Tests: `{run_qa_script}`")
+    lines.append(f"\n## Previous Attempt Failed\n")
+    lines.append(f"```\n{stderr[-1500:]}\n```\n" if stderr else "(no stderr)\n")
+    if stdout:
+        lines.append(f"### stdout (last 500 chars)\n```\n{stdout[-500:]}\n```\n")
+
+    # History of all previous attempts
+    if len(new_history) > 1:
+        lines.append(f"\n## Iteration History ({len(new_history)} attempts)")
+        lines.append("**Do NOT repeat the same fix that already failed.**\n")
+        for h in new_history:
+            lines.append(f"- {h[:200]}")
+
+    lines.append(f"\n## Instructions")
+    lines.append(f"1. Read the error carefully")
+    lines.append(f"2. Read the QA test that failed")
+    lines.append(f"3. Fix your source code (NOT the QA tests)")
+    lines.append(f"4. **DO NOT modify `test_tool/qa_tests/`**")
+
+    prompt = "\n".join(lines)
+    return {
+        "messages": removals + [HumanMessage(content=prompt)],
+        "iteration_history": new_history,
     }
