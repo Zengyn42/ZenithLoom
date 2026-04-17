@@ -1,9 +1,8 @@
 #!/usr/bin/env python3
 """
-ApexCoder debug runner — 用 DebugConsoleReporter 可视化 ApexCoder 执行过程。
+ApexCoder TDD debug runner — 用 DebugConsoleReporter 可视化 ApexCoder 执行过程。
 
-ApexCoder 是单节点 Claude Opus，通过 Agent spawn 子 agent 来完成任务。
-与 ColonyCoder（多子图协作）形成对比。
+ApexCoder TDD pipeline: splitter → ClaudeQA → reset_for_coder → ClaudeCoder
 
 用法: python3 run_apex_coder_debug.py
 """
@@ -16,6 +15,8 @@ from pathlib import Path
 from dotenv import load_dotenv
 
 load_dotenv()
+
+import blueprints.functional_graphs.apex_coder.state  # noqa: F401
 
 logging.basicConfig(
     level=logging.INFO,
@@ -55,6 +56,9 @@ SNAKE_TASK = (
     "- 单文件实现，保存到 /tmp/snake_battle_apex/snake_battle.py\n"
     "- 代码结构清晰，两个 AI 分别是独立的类\n"
     "- 可直接 python3 snake_battle.py 运行\n"
+    "- 必须能在标准 24x80 终端下正常运行\n"
+    "\n"
+    "## 工作目录: /tmp/snake_battle_apex\n"
 )
 
 
@@ -67,17 +71,13 @@ async def main():
     reporter = DebugConsoleReporter("apex_coder")
 
     print("=" * 70)
-    print("  ApexCoder Debug Run — Snake Battle")
+    print("  ApexCoder TDD Debug Run — Snake Battle")
     print("=" * 70)
     print(flush=True)
 
-    # ApexCoder expects first message to be a plan file path (see ROLE.md)
-    plan_dir = Path("/tmp/snake_battle_apex")
-    plan_dir.mkdir(parents=True, exist_ok=True)
-    plan_file = plan_dir / "plan.md"
-    plan_file.write_text(SNAKE_TASK, encoding="utf-8")
+    Path("/tmp/snake_battle_apex").mkdir(parents=True, exist_ok=True)
 
-    init_state = {"messages": [HumanMessage(content=str(plan_file))]}
+    init_state = {"messages": [HumanMessage(content=SNAKE_TASK)]}
 
     async for namespace, event in graph.astream(
         init_state, stream_mode="updates", subgraphs=True
