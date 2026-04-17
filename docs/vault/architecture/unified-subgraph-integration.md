@@ -46,21 +46,109 @@ START → _subgraph_init → entry → ... → exit → _subgraph_exit → END
 
 ### 四种 session_mode 规则
 
-| session_mode | `_subgraph_init` 行为 | `_subgraph_exit` 行为 | checkpoint 行为 | 用途 |
+| session_mode | 首次 LLM 调用 | retry LLM 调用 | `_subgraph_exit` 行为 | 用途 |
 |---|---|---|---|---|
-| **persistent** | 无清理（不注入 init） | RemoveMessage 所有 msgs | 父图 checkpoint 保存子图 namespace，下次调用恢复 `node_sessions` | 持久子图（colony_coder 等），跨调用 LLM session 延续 |
-| **inherit** | 无清理（不注入 init） | RemoveMessage 所有 msgs | 无 checkpoint 持久化，每次从父图 state 拿 `node_sessions` | 子图继承父图对话上下文，使用父图的 session |
-| **fresh_per_call** | 全清：`node_sessions={}`、RemoveMessage 所有 msgs + 保留最后 HumanMessage、清空 output fields（`debate_conclusion` 等）、`routing_context → subgraph_topic` 转存 | RemoveMessage 所有 msgs | 无状态 | 每次调用全新（debate 等） |
-| **isolated** | 清 sessions：`node_sessions={}`（build time 强制 unique session_key） | RemoveMessage 所有 msgs | 无状态 | 完全隔离的 LLM 上下文 |
+| **persistent** | 新建 session | resume 自己的 session | RemoveMessage 所有 msgs | 子图跨调用保持 session |
+| **inherit** | **fork 父 session**（`fork_session=True`） | resume 自己的 fork | RemoveMessage 所有 msgs + 清子图 session keys | 子图继承父图上下文，互不影响 |
+| **fresh_per_call** | 新建 session | N/A（每次调用全新） | RemoveMessage 所有 msgs | 每次调用全新（debate 等） |
+| **isolated** | 新建 session (unique key) | N/A | RemoveMessage 所有 msgs | 完全隔离 |
 
 ### persistent vs inherit 的区别
 
-两者 init 都不做清理，差异在于 **checkpoint 语义**：
+两者 init 都不清理 node_sessions，但 **session 创建方式**和**退出清理**完全不同：
 
-- **persistent**：LangGraph 在父图 checkpoint 中为子图创建独立的 namespace。第二次 `ainvoke()` 时，子图从 checkpoint 恢复上次的 `node_sessions`（LLM session UUID），LLM 续写对话。
-- **inherit**：每次调用时子图从父图的当前 state 获取 `node_sessions`。子图使用的是**父图节点的** session UUID，而非子图自己创建的。效果：子图"续写"父图的对话。
+- **persistent**：子图 LLM 节点创建全新 session（与父图无关）。checkpoint 保存子图的 session UUID。下次调用恢复 → 子图"记得"上次对话。退出时不清 session keys。
 
-### `_subgraph_exit` 为何对所有 mode 统一
+- **inherit**：子图 LLM 节点 **fork 父图的 session**（通过 Claude SDK `fork_session=True`）。子图看到父图完整对话历史，但后续对话不影响父 session。退出时**清掉子图的 session keys** → 下次调用重新 fork。
+
+#### inherit 的 fork 语义
+
+```
+父图 session: uuid-A (Hani 与用户的完整对话)
+
+子图 LLM 节点首次调用:
+  node_sessions["apex_qa"] = ""（空）
+  → sdk_query(resume=uuid-A, fork_session=True)
+  → 得到 uuid-fork-qa（独立 session，起点 = uuid-A 的完整历史）
+  → node_sessions["apex_qa"] = "uuid-fork-qa"
+
+子图 LLM 节点 retry:
+  node_sessions["apex_qa"] = "uuid-fork-qa"（非空）
+  → sdk_query(resume=uuid-fork-qa, fork_session=False)
+  → 继续自己的 fork session（记得上次做了什么，不会重复犯错）
+
+子图退出 (_subgraph_exit):
+  → 清掉 node_sessions["apex_qa"]、["apex_coder"]
+  → 父图只保留 {"claude_main": "uuid-A"}
+  → 下次调用子图时重新 fork
+```
+
+#### inherit 的独立性保证
+
+同一子图内多个 LLM 节点（如 QA 和 Coder）各自 fork 父 session：
+
+- QA fork → 看到父图对话 + QA 自己的对话
+- Coder fork → 看到父图对话 + Coder 自己的对话（**看不到 QA 的 reasoning**）
+- 通过 `reset_for_coder`（DETERMINISTIC 节点）清掉 QA 的 messages 保证 Coder 的 prompt 不含 QA 的思考
+
+#### inherit_from 配置
+
+子图 LLM 节点在 entity.json 声明要继承哪个父图 session：
+
+```json
+{
+  "id": "claude_qa",
+  "type": "CLAUDE_SDK",
+  "session_key": "apex_qa",
+  "inherit_from": "claude_main"
+}
+```
+
+框架在 inherit 模式下：查找 `node_sessions[inherit_from]` 获取父 session UUID → 传给 call_llm 的 `inherit_from` 参数。
+
+#### ClaudeSDKNode 实现
+
+```python
+async def call_llm(self, prompt, session_id="", inherit_from="", ...):
+    if not session_id and inherit_from:
+        # 首次 + inherit → fork 父 session
+        options = ClaudeAgentOptions(resume=inherit_from, fork_session=True, ...)
+    elif session_id:
+        # 有自己的 session → resume（retry 场景）
+        options = ClaudeAgentOptions(resume=session_id, ...)
+    else:
+        # 全新 session（独立运行场景）
+        options = ClaudeAgentOptions(...)
+```
+
+### `_subgraph_exit` 按 mode 区分
+
+| mode | _subgraph_exit 行为 |
+|---|---|
+| persistent | RemoveMessage 所有 msgs |
+| **inherit** | RemoveMessage 所有 msgs + **清掉子图 session keys** |
+| fresh_per_call | RemoveMessage 所有 msgs |
+| isolated | RemoveMessage 所有 msgs |
+
+inherit 模式下，`_subgraph_exit` 需要知道子图有哪些 session_key（构建时从 entity.json 提取）：
+
+```python
+def make_subgraph_exit(session_mode="persistent", subgraph_session_keys=None):
+    def _exit_cleanup(state):
+        msgs = state.get("messages", [])
+        result = {"messages": [RemoveMessage(id=m.id) for m in msgs]}
+        
+        if session_mode == "inherit" and subgraph_session_keys:
+            ns = dict(state.get("node_sessions", {}))
+            for key in subgraph_session_keys:
+                ns.pop(key, None)
+            result["node_sessions"] = ns
+        
+        return result
+    return _exit_cleanup
+```
+
+### `_subgraph_exit` 为何对 messages 统一清理
 
 子图内部的 messages（辩论每轮发言、coder 每步输出等）对父图是噪声。父图只需要通过 state 字段（如 `debate_conclusion`）获取子图结论。
 
