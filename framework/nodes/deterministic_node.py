@@ -9,6 +9,7 @@ node_config fields (injected by _build_declarative):
 """
 
 import importlib.util
+import inspect
 import logging
 from pathlib import Path
 
@@ -29,10 +30,9 @@ def _load_validators(agent_dir: str):
 
 class DeterministicNode:
     """
-    DETERMINISTIC node: calls a pure Python function from validators.py.
+    DETERMINISTIC node: calls a Python function from validators.py.
 
-    The function must be synchronous: (state: dict) -> dict.
-    No LLM calls, no I/O — routing and validation logic only.
+    Supports both sync and async functions: (state: dict) -> dict.
     """
 
     def __init__(self, config, node_config: dict):
@@ -48,6 +48,8 @@ class DeterministicNode:
             logger.debug(f"[deterministic/{self._node_id}] routing_target={rt!r}")
 
         result = self._fn(state)
+        if inspect.iscoroutine(result):
+            result = await result
 
         if is_debug():
             keys = sorted(k for k in result.keys() if result[k]) if isinstance(result, dict) else []

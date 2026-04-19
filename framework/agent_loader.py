@@ -766,19 +766,31 @@ async def _build_declarative(
 
     # ── Step 2: 构建图节点 ────────────────────────────────────────────────
     import framework.schema  # noqa: F401 — 确保内置 schema 已注册
-    all_schemas = get_all_schemas()
-    state_schema = all_schemas.get(graph_spec.get("state_schema", "base_schema"), BaseAgentState)
 
-    # is_subgraph=True 且使用 base_schema → 子图模式，应用 SubgraphInputState 隔离父图字段。
-    # 自定义 schema 不应用 input filter：
-    #   - debate_schema 用 add_messages reducer 保留全部辩论历史，
-    #     SubgraphInputState 缺失 messages 会阻断父图 messages 流入 → 首节点拿不到辩题；
-    #   - tool_discovery_schema / colony_coder_schema 含自定义业务字段，
-    #     SubgraphInputState 不覆盖 → 字段被阻断。
-    # 自定义 schema 的跨调用字段污染由 session_mode（_subgraph_init 等）清理。
+    # Auto-discover business schema: if entity.json declares a custom state_schema
+    # and blueprint_dir contains state.py, import it to trigger self-registration.
     _schema_name = graph_spec.get("state_schema", "base_schema")
-    if is_subgraph and _schema_name == "base_schema":
+    if _schema_name != "base_schema" and blueprint_dir:
+        _state_py = Path(blueprint_dir) / "state.py"
+        if _state_py.exists() and _schema_name not in get_all_schemas():
+            import importlib.util as _ilu
+            _spec = _ilu.spec_from_file_location(f"_schema_{_schema_name}", _state_py)
+            _mod = _ilu.module_from_spec(_spec)
+            _spec.loader.exec_module(_mod)
+            logger.debug(f"[agent_loader] auto-imported state.py for schema {_schema_name!r}")
+
+    all_schemas = get_all_schemas()
+    state_schema = all_schemas.get(_schema_name, BaseAgentState)
+
+    # 子图 input 隔离策略：
+    #   - fresh_per_call 模式：有自己的 _subgraph_init 管理 messages，不需要 SubgraphInputState
+    #     （_subgraph_init 从父图 messages 中提取最后一条 HumanMessage，需要 messages 流入）
+    #   - 其他模式（inherit / persistent / isolated）：
+    #     SubgraphInputState 阻断父图 messages、output 字段流入子图，
+    #     子图有自己的对话语境，不应被父图历史污染。
+    if is_subgraph and session_mode != "fresh_per_call":
         builder = StateGraph(state_schema, input_schema=SubgraphInputState)
+        logger.debug(f"[agent_loader] SubgraphInputState applied (session_mode={session_mode})")
     else:
         builder = StateGraph(state_schema)
 
@@ -914,10 +926,41 @@ async def _build_declarative(
                 _base["agent_dir"] = blueprint_dir
             if force_unique_session_keys and _base.get("session_key"):
                 _base["session_key"] = node_id
+            if is_subgraph:
+                _base["_is_subgraph"] = True
             effective_def = _base
             node_instance = factory(config, effective_def)
             _llm_node_instances[node_id] = node_instance
             builder.add_node(node_id, _wrap_node_for_flow_log(node_id, node_instance))
+
+    # ── Pre-compute entry/exit metadata before edge processing ──────────
+    _graph_entry = graph_spec.get("entry")
+    _graph_exit  = graph_spec.get("exit")
+    _has_start_edge = any(e["from"] == "__start__" for e in graph_spec.get("edges", []))
+    _has_end_edge   = any(e["to"]   == "__end__"   for e in graph_spec.get("edges", []))
+
+    _needs_init = is_subgraph and session_mode in ("fresh_per_call", "isolated")
+    _needs_exit = is_subgraph  # ALL subgraphs get exit cleanup
+
+    # ── Exit intercept: redirect __end__ edges through _subgraph_exit ──
+    # Case 1: explicit exit node + no __end__ edges → old path (exit → _subgraph_exit → END)
+    # Case 2: no explicit exit node + has __end__ edges → NEW: intercept all __end__ → _subgraph_exit → END
+    # Case 3: explicit exit node + has __end__ edges → old path handles exit, __end__ edges left as-is
+    _exit_intercept = False
+    if _needs_exit and _has_end_edge and not _graph_exit:
+        from framework.nodes.subgraph_init_node import make_subgraph_exit
+        _subgraph_skeys = [
+            n.get("session_key", n["id"])
+            for n in graph_spec.get("nodes", [])
+            if n.get("type", "") in _LLM_NODE_TYPES
+        ]
+        _exit_fn = make_subgraph_exit(session_mode=session_mode, subgraph_session_keys=_subgraph_skeys)
+        builder.add_node("_subgraph_exit", _exit_fn)
+        _exit_intercept = True
+        logger.debug(
+            f"[agent_loader] exit_intercept: _subgraph_exit created, "
+            f"redirecting __end__ edges (mode={session_mode}, keys={_subgraph_skeys})"
+        )
 
     # ── Step 3: 添加边 ────────────────────────────────────────────────────
     # Separate routing_to edges (native routing) from named conditions per source.
@@ -928,7 +971,11 @@ async def _build_declarative(
         src = edge["from"]
         dst = edge["to"]
         edge_type = edge.get("type")
-        dst_node = END if dst == "__end__" else dst
+        # When exit_intercept is active, redirect __end__ → _subgraph_exit
+        if dst == "__end__" and _exit_intercept:
+            dst_node = "_subgraph_exit"
+        else:
+            dst_node = END if dst == "__end__" else dst
         max_retry = edge.get("max_retry")  # 仅供命名条件边
 
         if not edge_type:
@@ -949,14 +996,10 @@ async def _build_declarative(
             fn = _maybe_limit(get_condition(edge_type), max_retry)
             _named_conds[src].append((edge_type, fn, dst_node))
 
-    # 动态补 entry→START、exit→END（如 __start__/__end__ 边未声明）
-    _graph_entry = graph_spec.get("entry")
-    _graph_exit  = graph_spec.get("exit")
-    _has_start_edge = any(e["from"] == "__start__" for e in graph_spec.get("edges", []))
-    _has_end_edge   = any(e["to"]   == "__end__"   for e in graph_spec.get("edges", []))
-
-    _needs_init = is_subgraph and session_mode in ("fresh_per_call", "isolated")
-    _needs_exit = is_subgraph  # ALL subgraphs get exit cleanup
+    # Exit intercept: add _subgraph_exit → END after all edges redirected
+    if _exit_intercept:
+        builder.add_edge("_subgraph_exit", END)
+        logger.debug("[agent_loader] exit_intercept: _subgraph_exit → END")
 
     # ── Entry side ────────────────────────────────────────────────────
     if _needs_init and _graph_entry and not _has_start_edge:
@@ -970,10 +1013,9 @@ async def _build_declarative(
         builder.add_edge(START, _graph_entry)
         logger.debug(f"[agent_loader] dynamic entry: START → {_graph_entry!r}")
 
-    # ── Exit side ─────────────────────────────────────────────────────
-    if _needs_exit and _graph_exit and not _has_end_edge:
+    # ── Exit side (explicit exit node, no __end__ edges) ──────────────
+    if _needs_exit and _graph_exit and not _has_end_edge and not _exit_intercept:
         from framework.nodes.subgraph_init_node import make_subgraph_exit
-        # Collect session_keys from all LLM nodes in this subgraph
         _subgraph_skeys = [
             n.get("session_key", n["id"])
             for n in graph_spec.get("nodes", [])

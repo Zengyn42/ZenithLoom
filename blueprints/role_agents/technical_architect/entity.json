@@ -145,6 +145,11 @@
         "agent_dir": "blueprints/functional_graphs/tool_evaluate",
         "session_mode": "fresh_per_call",
         "fresh_keep_fields": ["discovery_report"]
+      },
+      {
+        "id": "video_quality_loop",
+        "agent_dir": "blueprints/functional_graphs/video_quality_loop",
+        "session_mode": "fresh_per_call"
       }
     ],
     "edges": [
@@ -255,6 +260,17 @@
       {
         "id": "e_evaluate_2_claude",
         "from": "tool_evaluate",
+        "to": "claude_main"
+      },
+      {
+        "id": "e_validate_2_vqloop",
+        "type": "routing_to",
+        "from": "validate",
+        "to": "video_quality_loop"
+      },
+      {
+        "id": "e_vqloop_2_claude",
+        "from": "video_quality_loop",
         "to": "claude_main"
       }
     ]
