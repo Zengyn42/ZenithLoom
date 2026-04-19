@@ -927,8 +927,23 @@ async def on_message(message: discord.Message):
             cmd = parts[0].lower()
             arg = parts[1].strip() if len(parts) > 1 else ""
             if _controller is not None:
+                # 长耗时命令：先发确认 + typing 指示器
+                _long_running_cmds = {"!discover"}
+                _long_running_hints = {
+                    "!discover": "🔍 正在搜索工具，请稍候…（搜索 → 设计评估维度，约 1-2 分钟）",
+                }
+                _typing_ctx = None
+                if cmd in _long_running_cmds:
+                    await message.channel.send(_long_running_hints.get(cmd, "⏳ 处理中…"))
+                    _typing_ctx = message.channel.typing()
+                    await _typing_ctx.__aenter__()
+
                 iface = _DiscordInterface(_loader, channel_id=message.channel.id)
-                reply = await iface.handle_command(cmd, arg)
+                try:
+                    reply = await iface.handle_command(cmd, arg)
+                finally:
+                    if _typing_ctx:
+                        await _typing_ctx.__aexit__(None, None, None)
                 if reply is not None:
                     if cmd == "!topology":
                         # Mermaid 文本 + PNG 图片

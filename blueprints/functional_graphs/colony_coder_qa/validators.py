@@ -38,6 +38,24 @@ def inject_e2e_context(state: dict) -> dict:
     working_dir = state.get("working_directory", "")
     e2e_tests_generated = state.get("e2e_tests_generated", False)
 
+    # Fallback: infer working_directory from e2e_plan or tasks
+    if not working_dir:
+        import re as _re
+        # Try e2e_plan.run_command
+        run_cmd = e2e_plan.get("run_command", "")
+        m = _re.search(r"(/tmp/[\w._-]+)", run_cmd)
+        if m:
+            working_dir = m.group(1)
+        else:
+            # Try task descriptions
+            for t in (state.get("tasks") or []):
+                m = _re.search(r"(/tmp/[\w._-]+)", t.get("description", ""))
+                if m:
+                    working_dir = m.group(1)
+                    break
+        if working_dir:
+            logger.info(f"[inject_e2e_context] inferred working_dir={working_dir!r}")
+
     logger.info(
         f"[inject_e2e_context] working_dir={working_dir!r} "
         f"e2e_tests_generated={e2e_tests_generated} "
@@ -107,11 +125,14 @@ def inject_e2e_context(state: dict) -> dict:
 
     prompt_len = sum(len(l) for l in lines)
     logger.info(f"[inject_e2e_context] built prompt ({prompt_len} chars) → generate_e2e")
-    return {
+    updates = {
         "messages": [HumanMessage(content="\n".join(lines))],
         "routing_target": "generate_e2e",
         "e2e_tests_generated": True,
     }
+    if working_dir:
+        updates["working_directory"] = working_dir
+    return updates
 
 
 # ---------------------------------------------------------------------------
@@ -213,9 +234,13 @@ def e2e_route(state: dict) -> dict:
 
     if qa_fail_count + 1 >= QA_FAIL_CAP:
         logger.warning(
-            f"[e2e_route] QA fail cap ({QA_FAIL_CAP}) reached → rescue"
+            f"[e2e_route] QA fail cap ({QA_FAIL_CAP}) reached → abort (no rescue)"
         )
-        return {"routing_target": "inject_rescue_context"}
+        return {
+            "routing_target": "__end__",
+            "success": False,
+            "qa_fail_count": qa_fail_count + 1,
+        }
 
     stdout = state.get("execution_stdout", "")
     stderr = state.get("execution_stderr", "")
@@ -225,15 +250,58 @@ def e2e_route(state: dict) -> dict:
     for m in re.finditer(r"FAILED\s+([\w/.:]+)", output):
         failed_tests.append(m.group(1))
 
+    # ── Extract per-test failure tracebacks ──
+    # pytest FAILURES section is delimited by ____ TestName ____ headers
+    failure_blocks: list[str] = []
+    seen_root_causes: set[str] = set()
+    for m in re.finditer(
+        r"^_{3,}\s+(.+?)\s+_{3,}\n(.*?)(?=^_{3,}|\n={3,}\s+short)",
+        output,
+        re.MULTILINE | re.DOTALL,
+    ):
+        test_name = m.group(1).strip()
+        traceback_text = m.group(2).strip()
+
+        # Deduplicate by root cause error type
+        root_cause_match = re.search(r"^E\s+(\w+Error:.+)$", traceback_text, re.MULTILINE)
+        root_cause = root_cause_match.group(1).strip() if root_cause_match else ""
+
+        # Skip if we already have a block with the same root cause
+        if root_cause and root_cause in seen_root_causes:
+            continue
+        if root_cause:
+            seen_root_causes.add(root_cause)
+
+        # Truncate very long tracebacks (keep last 600 chars per block)
+        if len(traceback_text) > 600:
+            traceback_text = "...\n" + traceback_text[-600:]
+        failure_blocks.append(f"### {test_name}\n```\n{traceback_text}\n```")
+
     qa_analysis_lines = [
         f"E2E test failed (attempt {qa_fail_count + 1}/{QA_FAIL_CAP}).\n",
     ]
+
+    # Per-test tracebacks — most actionable info for the coder
+    if failure_blocks:
+        qa_analysis_lines.append("**Failure details (fix these):**\n")
+        # Cap at 5 unique failure blocks to stay within context budget
+        for block in failure_blocks[:5]:
+            qa_analysis_lines.append(block)
+            qa_analysis_lines.append("")
+        if len(failure_blocks) > 5:
+            qa_analysis_lines.append(
+                f"*... {len(failure_blocks) - 5} more unique failures omitted*\n"
+            )
+
     if failed_tests:
-        qa_analysis_lines.append("Failed tests:")
-        for t in failed_tests:
+        qa_analysis_lines.append(f"**All failed tests ({len(failed_tests)}):**")
+        for t in failed_tests[:15]:
             qa_analysis_lines.append(f"  - {t}")
+        if len(failed_tests) > 15:
+            qa_analysis_lines.append(f"  - ... and {len(failed_tests) - 15} more")
         qa_analysis_lines.append("")
-    qa_analysis_lines.append(f"Test output:\n{output[-2500:]}")
+
+    qa_analysis_lines.append(f"Summary: {output.splitlines()[-1] if output else ''}")
     qa_analysis = "\n".join(qa_analysis_lines)
 
     logger.info(

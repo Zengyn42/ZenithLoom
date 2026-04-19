@@ -347,6 +347,17 @@ def inject_task_context(state: dict) -> dict:
     qa_analysis = state.get("qa_analysis", "")
     qa_fail_count = state.get("qa_fail_count", 0)
 
+    # Fallback: infer working_directory from task descriptions if Planner omitted it
+    if not working_dir and tasks:
+        import re as _re
+        for t in tasks:
+            desc = t.get("description", "")
+            m = _re.search(r"(/tmp/[\w._-]+)", desc)
+            if m:
+                working_dir = m.group(1)
+                logger.info(f"[inject_task_context] inferred working_dir={working_dir!r} from tasks")
+                break
+
     logger.info(
         f"[inject_task_context] working_dir={working_dir!r} "
         f"tasks={len(tasks)} qa_fail_count={qa_fail_count} "
@@ -430,6 +441,9 @@ def inject_task_context(state: dict) -> dict:
         "prev_snapshot_hash": None,
         "intent_snippet": "",
     }
+    # Persist working_directory (may have been inferred from tasks)
+    if working_dir:
+        updates["working_directory"] = working_dir
     updates.update(_clear_executor_session(state))
     return updates
 

@@ -12,9 +12,11 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
 RUN pip install --no-cache-dir pytest pytest-timeout
 
 # Non-root user for safety
-RUN useradd -m sandbox
-USER sandbox
+RUN useradd -m -u 1000 sandbox
 
 WORKDIR /workspace
+
+# Default to sandbox user; tmpfs mount needs uid=1000 from docker run
+USER sandbox
 
 CMD ["/bin/bash"]

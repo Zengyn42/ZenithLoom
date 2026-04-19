@@ -87,8 +87,8 @@ def test_debate_design_has_fresh_per_call():
         f"debate_design session_mode should be fresh_per_call, got {design.get('session_mode')}"
 
 
-def test_persistent_is_default_for_nodes_without_session_mode():
-    """Nodes without session_mode should default to persistent (no wrapper)."""
+def test_apex_coder_uses_inherit_session_mode():
+    """apex_coder subgraph uses inherit mode (fork parent session, cleanup on exit)."""
     entity_path = Path("blueprints/role_agents/technical_architect/entity.json")
     if not entity_path.exists():
         pytest.skip("technical_architect entity.json not found")
@@ -96,8 +96,7 @@ def test_persistent_is_default_for_nodes_without_session_mode():
     nodes = data.get("graph", {}).get("nodes", [])
     apex = next((n for n in nodes if n["id"] == "apex_coder"), None)
     assert apex is not None, "apex_coder node not found"
-    # apex_coder has agent_dir but no session_mode → defaults to persistent
-    assert apex.get("session_mode") is None or apex.get("session_mode") == "persistent"
+    assert apex.get("session_mode") == "inherit"
 
 
 # ---------------------------------------------------------------------------

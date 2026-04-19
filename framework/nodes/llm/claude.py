@@ -237,6 +237,12 @@ class ClaudeSDKNode(AgentNode):
                     _is_error = msg.is_error
                     if msg.usage:
                         update_token_stats(msg.usage)
+                        # message_start.output_tokens is a placeholder;
+                        # patch with the real value from ResultMessage
+                        _u = msg.usage
+                        real_out = _u.get("output_tokens", 0) if isinstance(_u, dict) else getattr(_u, "output_tokens", 0)
+                        if real_out and _last_msg_usage:
+                            _last_msg_usage["output_tokens"] = real_out
                     if msg.result:
                         _result = msg.result.strip()
 
@@ -292,22 +298,21 @@ class ClaudeSDKNode(AgentNode):
         if is_debug():
             logger.debug(f"[claude] output_preview={result_text[:200]!r}")
 
-        # Inline token usage line — last message_start.usage, NOT ResultMessage
-        # (ResultMessage.usage is cumulative across tool-use sub-calls and
-        # overstates the real context window on tool-heavy turns).
+        # Inline token usage line.
+        # Context sizes from message_start (per-API-call, not cumulative).
+        # output_tokens patched from ResultMessage (message_start only has placeholder).
         if is_token_display_enabled() and last_msg_usage:
             cb = _stream_cb.get()
             if cb is not None:
-                ctx_total = (
-                    last_msg_usage.get("input_tokens", 0)
-                    + last_msg_usage.get("cache_read_input_tokens", 0)
-                    + last_msg_usage.get("cache_creation_input_tokens", 0)
-                )
+                _in_new = last_msg_usage.get("input_tokens", 0)
+                _cache_read = last_msg_usage.get("cache_read_input_tokens", 0)
+                _cache_create = last_msg_usage.get("cache_creation_input_tokens", 0)
+                _out = last_msg_usage.get("output_tokens", 0)
+                ctx_total = _in_new + _cache_read + _cache_create
                 line = (
                     f"\n[tokens: ctx={ctx_total:,} "
-                    f"in={last_msg_usage.get('input_tokens', 0):,} "
-                    f"out={last_msg_usage.get('output_tokens', 0):,} "
-                    f"cache_read={last_msg_usage.get('cache_read_input_tokens', 0):,}]\n"
+                    f"out={_out:,} "
+                    f"cache_read={_cache_read:,}]\n"
                 )
                 cb(line, False)
 

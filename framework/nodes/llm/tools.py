@@ -25,7 +25,39 @@ from pathlib import Path
 
 async def read_file(path: str) -> dict:
     try:
-        return {"content": Path(path).read_text(encoding="utf-8")}
+        content = Path(path).read_text(encoding="utf-8")
+        lines = content.splitlines()
+        numbered = "\n".join(f"{i + 1}\t{line}" for i, line in enumerate(lines))
+        return {"content": numbered, "total_lines": len(lines)}
+    except Exception as exc:
+        return {"error": str(exc)}
+
+
+async def replace_lines(
+    path: str, start_line: int, end_line: int, new_content: str
+) -> dict:
+    """Replace lines start_line..end_line (1-indexed, inclusive) with new_content."""
+    try:
+        p = Path(path)
+        lines = p.read_text(encoding="utf-8").splitlines(keepends=True)
+        total = len(lines)
+        if start_line < 1 or end_line > total or start_line > end_line:
+            return {
+                "error": f"Invalid range {start_line}-{end_line}. "
+                f"File has {total} lines (1-indexed)."
+            }
+        new_lines = new_content.splitlines(keepends=True)
+        # Ensure trailing newline
+        if new_lines and not new_lines[-1].endswith("\n"):
+            new_lines[-1] += "\n"
+        lines[start_line - 1 : end_line] = new_lines
+        p.write_text("".join(lines), encoding="utf-8")
+        return {
+            "replaced": True,
+            "old_line_count": end_line - start_line + 1,
+            "new_line_count": len(new_lines),
+            "total_lines": len(lines),
+        }
     except Exception as exc:
         return {"error": str(exc)}
 
@@ -39,7 +71,7 @@ async def write_file(path: str, content: str) -> dict:
         return {"error": str(exc)}
 
 
-def _exec_cmd(args: list[str], timeout: int) -> dict:
+def _exec_cmd(args: list[str], timeout: int, cwd: str | None = None) -> dict:
     """Synchronous helper: run args (no shell) and capture output."""
     try:
         proc = subprocess.run(
@@ -47,6 +79,7 @@ def _exec_cmd(args: list[str], timeout: int) -> dict:
             capture_output=True,
             text=True,
             timeout=timeout,
+            cwd=cwd or None,
         )
         return {
             "stdout": proc.stdout,
@@ -59,10 +92,10 @@ def _exec_cmd(args: list[str], timeout: int) -> dict:
         return {"stdout": "", "stderr": str(exc), "returncode": 127}
 
 
-async def bash_exec(command: str, timeout: int = 30) -> dict:
-    """Execute a command by splitting it with shlex (no shell expansion)."""
+async def bash_exec(command: str, timeout: int = 30, cwd: str = "") -> dict:
+    """Execute a shell command. Use cwd to set the working directory."""
     args = shlex.split(command)
-    return await asyncio.to_thread(_exec_cmd, args, timeout)
+    return await asyncio.to_thread(_exec_cmd, args, timeout, cwd or None)
 
 
 async def list_dir(path: str) -> dict:
@@ -102,6 +135,7 @@ async def submit_validation(
 TOOL_REGISTRY: dict = {
     "read_file": read_file,
     "write_file": write_file,
+    "replace_lines": replace_lines,
     "bash_exec": bash_exec,
     "list_dir": list_dir,
     "submit_validation": submit_validation,
@@ -135,16 +169,37 @@ TOOL_SCHEMAS: dict = {
             },
         },
     },
+    "replace_lines": {
+        "type": "function",
+        "function": {
+            "name": "replace_lines",
+            "description": (
+                "Replace a range of lines in a file. Lines are 1-indexed, inclusive. "
+                "IMPORTANT: Always read_file first to get current line numbers."
+            ),
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "path": {"type": "string", "description": "File path"},
+                    "start_line": {"type": "integer", "description": "First line to replace (1-indexed)"},
+                    "end_line": {"type": "integer", "description": "Last line to replace (inclusive)"},
+                    "new_content": {"type": "string", "description": "Replacement content"},
+                },
+                "required": ["path", "start_line", "end_line", "new_content"],
+            },
+        },
+    },
     "bash_exec": {
         "type": "function",
         "function": {
             "name": "bash_exec",
-            "description": "Execute a shell command and return stdout/stderr/returncode",
+            "description": "Execute a shell command and return stdout/stderr/returncode. Use cwd to set the working directory.",
             "parameters": {
                 "type": "object",
                 "properties": {
                     "command": {"type": "string"},
                     "timeout": {"type": "integer", "default": 30},
+                    "cwd": {"type": "string", "description": "Working directory for the command"},
                 },
                 "required": ["command"],
             },

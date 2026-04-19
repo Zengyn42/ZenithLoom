@@ -24,7 +24,7 @@ logging.basicConfig(
 import blueprints.functional_graphs.colony_coder.state  # noqa: F401
 
 from framework.agent_loader import EntityLoader
-from framework.debug import set_debug
+from framework.debug import set_debug, set_debug_output_file
 from framework.debug_reporter import DebugConsoleReporter
 from langchain_core.messages import HumanMessage
 
@@ -60,6 +60,10 @@ SNAKE_TASK = (
 
 async def main():
     set_debug(True)
+    from datetime import datetime
+    debug_file = f"logs/{datetime.now().strftime('%Y-%m-%d')}/colony_coder_debug_output.md"
+    set_debug_output_file(debug_file)
+    print(f"  Debug output file: {debug_file}\n", flush=True)
 
     loader = EntityLoader(Path("blueprints/functional_graphs/colony_coder"))
     graph = await loader.build_graph(checkpointer=None)

@@ -260,11 +260,10 @@ def _static_scan_suspicious(repo_dir: Path) -> list[str]:
     return warnings
 
 
-def _eval_single_repo_venv(repo_url: str, repo_name: str, tmpdir: str, timeout: int = 120) -> dict:
+def _eval_single_repo_static(repo_url: str, repo_name: str) -> dict:
     """
-    Evaluate a single repo using venv (降级方案: no Docker).
-
-    Steps: clone → detect type → static scan → venv install → run tests
+    Static-only evaluation for languages without Docker sandbox support.
+    Clone → detect type → count lines → check docs/examples.
     """
     result = {
         "repo": repo_name,
@@ -278,154 +277,46 @@ def _eval_single_repo_venv(repo_url: str, repo_name: str, tmpdir: str, timeout: 
         "has_docs": False,
         "has_examples": False,
         "project_type": "unknown",
-        "eval_mode": "venv",
+        "eval_mode": "static",
         "errors": [],
         "security_warnings": [],
     }
 
-    repo_dir = Path(tmpdir) / repo_name.replace("/", "_")
-
-    # 1. Clone (shallow)
-    try:
-        subprocess.run(
-            ["git", "clone", "--depth=1", repo_url, str(repo_dir)],
-            capture_output=True, text=True, timeout=60,
-        )
-        if not repo_dir.exists():
-            result["errors"].append("Clone produced no directory")
-            return result
-        result["clone_ok"] = True
-    except subprocess.TimeoutExpired:
-        result["errors"].append("Clone timed out (60s)")
-        return result
-    except Exception as e:
-        result["errors"].append(f"Clone failed: {e}")
-        return result
-
-    # 2. Detect project type
-    project_type = _detect_project_type(repo_dir)
-    result["project_type"] = project_type
-
-    # 3. Static security scan
-    warnings = _static_scan_suspicious(repo_dir)
-    result["security_warnings"] = warnings
-
-    # 4. Metadata
-    result["code_lines"] = _count_code_lines(repo_dir, project_type)
-    result["has_docs"] = (repo_dir / "docs").is_dir() or (repo_dir / "README.md").exists()
-    result["has_examples"] = (repo_dir / "examples").is_dir() or (repo_dir / "example").is_dir()
-
-    # 5. Install (Python only for now)
-    if project_type == "python":
-        venv_dir = repo_dir / ".venv"
+    with tempfile.TemporaryDirectory(prefix="bb_static_") as tmpdir:
+        repo_dir = Path(tmpdir) / repo_name.replace("/", "_")
         try:
-            # Create venv
             subprocess.run(
-                ["python3", "-m", "venv", str(venv_dir)],
-                capture_output=True, text=True, timeout=30,
+                ["git", "clone", "--depth=1", repo_url, str(repo_dir)],
+                capture_output=True, text=True, timeout=60,
             )
-            pip = str(venv_dir / "bin" / "pip")
-
-            # Install
-            import time
-            t0 = time.time()
-            install_result = subprocess.run(
-                [pip, "install", "-e", ".", "--no-deps", "-q"],
-                capture_output=True, text=True, timeout=timeout,
-                cwd=str(repo_dir),
-            )
-            result["install_time_s"] = round(time.time() - t0, 1)
-            result["install_ok"] = install_result.returncode == 0
-            if install_result.returncode != 0:
-                result["errors"].append(
-                    f"Install failed (exit={install_result.returncode}): "
-                    f"{install_result.stderr[:300]}"
-                )
-
-            # Count dependencies
-            try:
-                freeze = subprocess.run(
-                    [pip, "freeze"], capture_output=True, text=True, timeout=10,
-                )
-                result["dependency_count"] = len(freeze.stdout.strip().splitlines())
-            except Exception:
-                pass
-
-            # 6. Run tests (best-effort)
-            if result["install_ok"]:
-                python = str(venv_dir / "bin" / "python")
-                try:
-                    test_result = subprocess.run(
-                        [python, "-m", "pytest", "--tb=no", "-q", "--no-header"],
-                        capture_output=True, text=True, timeout=60,
-                        cwd=str(repo_dir),
-                    )
-                    # Parse pytest output: "X passed, Y failed"
-                    out = test_result.stdout
-                    passed = 0
-                    failed = 0
-                    m = re.search(r"(\d+) passed", out)
-                    if m:
-                        passed = int(m.group(1))
-                    m = re.search(r"(\d+) failed", out)
-                    if m:
-                        failed = int(m.group(1))
-                    total = passed + failed
-                    result["test_count"] = total
-                    result["test_pass_rate"] = round(passed / total, 2) if total > 0 else 0.0
-                except subprocess.TimeoutExpired:
-                    result["errors"].append("Tests timed out (60s)")
-                except Exception as e:
-                    result["errors"].append(f"Test run error: {e}")
-
+            if not repo_dir.exists():
+                result["errors"].append("Clone produced no directory")
+                return result
+            result["clone_ok"] = True
         except subprocess.TimeoutExpired:
-            result["errors"].append("Venv creation timed out")
+            result["errors"].append("Clone timed out (60s)")
+            return result
         except Exception as e:
-            result["errors"].append(f"Venv setup error: {e}")
+            result["errors"].append(f"Clone failed: {e}")
+            return result
 
-    elif project_type == "node":
-        # Node.js: npm install + npm test
-        try:
-            import time
-            t0 = time.time()
-            install_result = subprocess.run(
-                ["npm", "install", "--ignore-scripts"],
-                capture_output=True, text=True, timeout=timeout,
-                cwd=str(repo_dir),
-            )
-            result["install_time_s"] = round(time.time() - t0, 1)
-            result["install_ok"] = install_result.returncode == 0
-            if install_result.returncode != 0:
-                result["errors"].append(
-                    f"npm install failed: {install_result.stderr[:300]}"
-                )
-
-            # Count deps
-            try:
-                pkg = json.loads((repo_dir / "package.json").read_text())
-                deps = pkg.get("dependencies", {})
-                dev_deps = pkg.get("devDependencies", {})
-                result["dependency_count"] = len(deps) + len(dev_deps)
-            except Exception:
-                pass
-
-        except subprocess.TimeoutExpired:
-            result["errors"].append("npm install timed out")
-        except Exception as e:
-            result["errors"].append(f"Node setup error: {e}")
-
-    else:
-        # Static analysis only for other languages
-        result["eval_mode"] = "static"
+        project_type = _detect_project_type(repo_dir)
+        result["project_type"] = project_type
+        result["security_warnings"] = _static_scan_suspicious(repo_dir)
+        result["code_lines"] = _count_code_lines(repo_dir, project_type)
+        result["has_docs"] = (repo_dir / "docs").is_dir() or (repo_dir / "README.md").exists()
+        result["has_examples"] = (repo_dir / "examples").is_dir() or (repo_dir / "example").is_dir()
+        result["errors"].append(f"No Docker sandbox for {project_type}, static analysis only")
 
     return result
 
 
 def _eval_single_repo_docker(repo_url: str, repo_name: str, project_type: str, timeout: int = 300) -> dict:
     """
-    Evaluate a single repo using Docker sandbox.
+    Evaluate a single repo using Docker sandbox (--rm: auto-cleanup).
 
-    Uses pre-built sandbox images with resource limits.
+    Steps: clone → install (with deps) → test → collect metrics.
+    Container is always removed after execution via --rm.
     """
     result = {
         "repo": repo_name,
@@ -451,9 +342,7 @@ def _eval_single_repo_docker(repo_url: str, repo_name: str, project_type: str, t
     }
     image = image_map.get(project_type)
     if not image:
-        result["eval_mode"] = "static"
-        result["errors"].append(f"No Docker sandbox for {project_type}, static analysis only")
-        return result
+        return None  # caller falls back to static
 
     # Check if image exists
     check = subprocess.run(
@@ -461,26 +350,49 @@ def _eval_single_repo_docker(repo_url: str, repo_name: str, project_type: str, t
         capture_output=True, text=True,
     )
     if check.returncode != 0:
-        result["eval_mode"] = "venv"
-        result["errors"].append(f"Docker image {image} not found, falling back to venv")
-        return result
+        result["errors"].append(f"Docker image {image} not found")
+        return None  # caller falls back to static
 
-    # Run in Docker
+    # Build install+test script per project type
+    if project_type == "python":
+        eval_script = (
+            "cd /workspace && git clone --depth=1 {url} repo && cd repo && "
+            "echo '===CLONE_OK===' && "
+            # Install with full dependencies
+            "if [ -f requirements.txt ]; then "
+            "  pip install -r requirements.txt -q 2>&1; "
+            "elif [ -f pyproject.toml ] || [ -f setup.py ]; then "
+            "  pip install -e . -q 2>&1; "
+            "fi && "
+            "echo '===INSTALL_OK===' && "
+            # Metrics
+            "pip freeze 2>/dev/null | wc -l && echo '===DEP_COUNT===' && "
+            "find . -name '*.py' | xargs wc -l 2>/dev/null | tail -1 && echo '===CODE_LINES===' && "
+            "[ -d docs ] || [ -f README.md ] && echo '===HAS_DOCS===' || true && "
+            "[ -d examples ] || [ -d example ] && echo '===HAS_EXAMPLES===' || true && "
+            # Tests
+            "python -m pytest --tb=no -q --no-header 2>&1; echo \"===TEST_EXIT=$?===\""
+        ).format(url=repo_url)
+    else:  # node
+        eval_script = (
+            "cd /workspace && git clone --depth=1 {url} repo && cd repo && "
+            "echo '===CLONE_OK===' && "
+            "npm install 2>&1 && "
+            "echo '===INSTALL_OK===' && "
+            "find . -name '*.js' -o -name '*.ts' -o -name '*.mjs' | xargs wc -l 2>/dev/null | tail -1 && echo '===CODE_LINES===' && "
+            "[ -d docs ] || [ -f README.md ] && echo '===HAS_DOCS===' || true && "
+            "[ -d examples ] || [ -d example ] && echo '===HAS_EXAMPLES===' || true && "
+            "npm test 2>&1; echo \"===TEST_EXIT=$?===\""
+        ).format(url=repo_url)
+
     docker_cmd = [
         "docker", "run", "--rm",
-        "--memory=1g", "--cpus=1", "--pids-limit=256",
-        "--read-only",
-        "--tmpfs", "/workspace:rw,size=512m",
-        "--tmpfs", "/tmp:rw,size=256m",
+        "--memory=2g", "--cpus=1", "--pids-limit=512",
+        "--tmpfs", "/workspace:rw,size=1g,uid=1000",
+        "--tmpfs", "/tmp:rw,size=256m,uid=1000",
         "--network=bridge",
         image,
-        "/bin/bash", "-c",
-        f"cd /workspace && git clone --depth=1 {repo_url} repo && cd repo && "
-        f"if [ -f requirements.txt ]; then pip install -r requirements.txt -q 2>&1; "
-        f"elif [ -f pyproject.toml ] || [ -f setup.py ]; then pip install -e . -q 2>&1; "
-        f"elif [ -f package.json ]; then npm install --ignore-scripts 2>&1; fi && "
-        f"echo '===INSTALL_OK===' && "
-        f"python -m pytest --tb=no -q --no-header 2>&1 || npm test 2>&1 || echo '===NO_TESTS==='"
+        "/bin/bash", "-c", eval_script,
     ]
 
     try:
@@ -489,18 +401,37 @@ def _eval_single_repo_docker(repo_url: str, repo_name: str, project_type: str, t
             capture_output=True, text=True, timeout=timeout,
         )
         output = proc.stdout
-        result["clone_ok"] = "===INSTALL_OK===" in output or proc.returncode == 0
-        result["install_ok"] = "===INSTALL_OK===" in output
+        stderr = proc.stderr
 
-        # Parse test results from output
-        m = re.search(r"(\d+) passed", output)
-        if m:
-            passed = int(m.group(1))
-            failed_m = re.search(r"(\d+) failed", output)
-            failed = int(failed_m.group(1)) if failed_m else 0
-            total = passed + failed
+        result["clone_ok"] = "===CLONE_OK===" in output
+        result["install_ok"] = "===INSTALL_OK===" in output
+        result["has_docs"] = "===HAS_DOCS===" in output
+        result["has_examples"] = "===HAS_EXAMPLES===" in output
+
+        # Parse dependency count
+        dep_match = re.search(r"(\d+)\n===DEP_COUNT===", output)
+        if dep_match:
+            result["dependency_count"] = int(dep_match.group(1))
+
+        # Parse code lines (wc -l total line: "  12345 total")
+        code_match = re.search(r"(\d+)\s+total\n===CODE_LINES===", output)
+        if code_match:
+            result["code_lines"] = int(code_match.group(1))
+
+        # Parse test results
+        m_passed = re.search(r"(\d+) passed", output)
+        m_failed = re.search(r"(\d+) failed", output)
+        passed = int(m_passed.group(1)) if m_passed else 0
+        failed = int(m_failed.group(1)) if m_failed else 0
+        total = passed + failed
+        if total > 0:
             result["test_count"] = total
-            result["test_pass_rate"] = round(passed / total, 2) if total > 0 else 0.0
+            result["test_pass_rate"] = round(passed / total, 2)
+
+        if not result["install_ok"]:
+            # Capture install error from stderr/stdout
+            err_preview = (stderr or output)[-500:]
+            result["errors"].append(f"Install failed: {err_preview}")
 
     except subprocess.TimeoutExpired:
         result["errors"].append(f"Docker evaluation timed out ({timeout}s)")
@@ -563,34 +494,41 @@ def sandbox_eval(state: dict) -> dict:
             "discovery_errors": json.dumps(errors, ensure_ascii=False),
         }
 
-    use_docker = _is_docker_available()
+    if not _is_docker_available():
+        errors.append("Docker is not available — sandbox evaluation requires Docker")
+        from langchain_core.messages import AIMessage
+        return {
+            "messages": [AIMessage(content=f"评估失败：Docker 不可用。\n错误: {errors}")],
+            "filtered_candidates": json.dumps(filtered, ensure_ascii=False),
+            "evaluation_results": "[]",
+            "discovery_errors": json.dumps(errors, ensure_ascii=False),
+        }
+
     eval_results = []
 
-    with tempfile.TemporaryDirectory(prefix="bb_discovery_") as tmpdir:
-        for candidate in filtered[:5]:  # Max 5 repos
-            repo_name = candidate.get("repo", "")
-            repo_url = candidate.get("url", "")
-            if not repo_url:
-                repo_url = f"https://github.com/{repo_name}.git"
-            elif not repo_url.endswith(".git"):
-                repo_url = repo_url + ".git"
+    for candidate in filtered[:5]:  # Max 5 repos
+        repo_name = candidate.get("repo", "")
+        repo_url = candidate.get("url", "")
+        if not repo_url:
+            repo_url = f"https://github.com/{repo_name}.git"
+        elif not repo_url.endswith(".git"):
+            repo_url = repo_url + ".git"
 
-            logger.info(f"[sandbox_eval] evaluating {repo_name} (docker={use_docker})")
+        # Map language to Docker sandbox type
+        project_type = candidate.get("language", "unknown").lower()
+        project_type = {"javascript": "node", "typescript": "node"}.get(
+            project_type, project_type
+        )
 
-            if use_docker:
-                project_type = candidate.get("language", "unknown").lower()
-                if project_type in ("python", "javascript", "typescript"):
-                    project_type = {"javascript": "node", "typescript": "node"}.get(
-                        project_type, project_type
-                    )
-                result = _eval_single_repo_docker(repo_url, repo_name, project_type, timeout)
-                # If Docker fallback to venv
-                if result.get("eval_mode") == "venv":
-                    result = _eval_single_repo_venv(repo_url, repo_name, tmpdir, timeout)
-            else:
-                result = _eval_single_repo_venv(repo_url, repo_name, tmpdir, timeout)
+        logger.info(f"[sandbox_eval] evaluating {repo_name} type={project_type}")
 
-            eval_results.append(result)
+        # Docker evaluation; returns None if no sandbox image for this language
+        result = _eval_single_repo_docker(repo_url, repo_name, project_type, timeout)
+        if result is None:
+            # No Docker image for this language → static analysis only
+            result = _eval_single_repo_static(repo_url, repo_name)
+
+        eval_results.append(result)
 
     logger.info(f"[sandbox_eval] evaluated {len(eval_results)} repos")
 

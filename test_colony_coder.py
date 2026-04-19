@@ -58,7 +58,7 @@ async def test_code_execution_nonzero_exit():
 
 def test_tool_registry_has_all_tools():
     from framework.nodes.llm.tools import TOOL_REGISTRY, TOOL_SCHEMAS
-    expected = {"read_file", "write_file", "bash_exec", "list_dir", "submit_validation"}
+    expected = {"read_file", "write_file", "replace_lines", "bash_exec", "list_dir", "submit_validation"}
     assert set(TOOL_REGISTRY.keys()) == expected
     assert set(TOOL_SCHEMAS.keys()) == expected
 

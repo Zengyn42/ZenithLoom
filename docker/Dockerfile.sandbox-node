@@ -5,13 +5,12 @@
 FROM node:20-slim
 
 RUN apt-get update && apt-get install -y --no-install-recommends \
-    git \
+    git ca-certificates \
     && rm -rf /var/lib/apt/lists/*
 
-# Non-root user for safety
-RUN useradd -m sandbox
-USER sandbox
-
+# node:20-slim already has uid=1000 as 'node' user
 WORKDIR /workspace
+
+USER node
 
 CMD ["/bin/bash"]

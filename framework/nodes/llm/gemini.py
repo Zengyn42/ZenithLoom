@@ -37,7 +37,7 @@ from pathlib import Path
 from langchain_core.messages import AIMessage
 
 from framework.config import AgentConfig
-from framework.debug import is_debug, log_node_thinking, get_debug_output_file, log_node_output_to_file, get_graph_scope
+from framework.debug import is_debug, log_node_thinking, get_debug_output_file, log_node_output_to_file
 from framework.nodes.llm.llm_node import LlmNode as AgentNode, get_channel_send_callback
 from framework.resource_lock import acquire_resource
 from framework.token_guard import TokenLimitExceeded, check_before_llm
@@ -939,12 +939,11 @@ class GeminiCLINode(AgentNode):
         # 子图内部节点：通过 ch_cb 实时推送到 Discord（因 astream subgraphs=False，
         # 子图中间节点输出对顶层流不可见）。
         # 顶层节点：不推送，让标准图输出路径处理，避免重复发送。
-        scope = get_graph_scope()
-        if scope:
+        # _is_subgraph 由 agent_loader 在 build_graph(is_subgraph=True) 时注入。
+        if self._cfg.get("_is_subgraph"):
             ch_cb = get_channel_send_callback()
             if ch_cb and reply:
-                scope_str = " › ".join(scope)
-                header = f"\n⚙️ **{scope_str} › {self._node_id}**\n"
+                header = f"\n⚙️ **{self._node_id}**\n"
                 try:
                     await ch_cb(header + reply + "\n")
                 except Exception:

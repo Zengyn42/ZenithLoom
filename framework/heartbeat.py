@@ -597,7 +597,22 @@ class HeartbeatManager:
                     result = await entry.node(state={})
                     msgs = result.get("messages", [])
                     content = msgs[0].content if msgs else str(result)
-                    entry.status = "OK"
+
+                    # Probe nodes return content like "claude:OK" or "gemini:DEAD".
+                    # The status should reflect the service health, not just task execution.
+                    if ":" in content:
+                        parsed_status = content.split(":")[-1].strip()
+                        if parsed_status in ["OK", "DEAD"]:
+                            entry.status = parsed_status
+                        else:
+                            # If format is "service:SomethingElse", it's ambiguous.
+                            # Keep OK but log it.
+                            logger.warning(f"[heartbeat] task {task_id!r} returned ambiguous status in content: {content!r}")
+                            entry.status = "OK"
+                    else:
+                        # If no colon, assume it's a simple task, not a probe.
+                        entry.status = "OK"
+
                     entry.last_result = content
                     consecutive_failures = 0
 

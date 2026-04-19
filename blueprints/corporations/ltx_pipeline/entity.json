@@ -1,0 +1,30 @@
+{
+  "name": "ltx_pipeline",
+  "type": "corporation",
+  "description": "LTX-Video 2.3 video generation pipeline. No supervisor LLM — pure functional workflow.",
+
+  "graph": {
+    "nodes": [
+      {
+        "id": "generate_video",
+        "type": "LTX_VIDEO",
+        "node_config": {
+          "host": "localhost",
+          "port": 8188,
+          "workflow": "./templates/ltx_img2vid_api.json",
+          "workflow_type": "img2vid",
+          "prompt_expand": true,
+          "prompt_template": "./templates/提示词扩写优化指令.txt",
+          "timeout": 600,
+          "output_field": "comfyui_output"
+        }
+      }
+    ],
+    "edges": [
+      {"from": "__start__", "to": "generate_video"},
+      {"from": "generate_video", "to": "__end__"}
+    ]
+  },
+
+  "_note": "Workflow JSON templates need to be in ComfyUI API format. Export via ComfyUI 'Save (API Format)' or Dev Tools. The 4 workflow files from D: drive are UI format — API-format versions should be saved here as: ltx_img2vid_api.json, ltx_digital_human_api.json, ltx_keyframe2_api.json, ltx_keyframe3_api.json"
+}
