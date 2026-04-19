@@ -15,6 +15,13 @@
       "module_args": ["--transport", "sse", "--port", "8105"],
       "url": "http://localhost:8105/sse",
       "shared": true
+    },
+    {
+      "name": "comfyui-video",
+      "module": "mcp_servers.comfyui.server",
+      "module_args": ["--transport", "sse", "--port", "8103", "--comfyui-host", "localhost", "--comfyui-port", "8188"],
+      "url": "http://localhost:8103/sse",
+      "shared": true
     }
   ],
   "graph": {
