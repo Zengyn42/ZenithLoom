@@ -1,12 +1,14 @@
 {
   "mcpServers": {
-    "obsidian-vault": {
+    "prism-rag": {
       "command": "/usr/bin/python3",
       "args": [
         "-m",
-        "mcp_servers.obsidian.server",
-        "--vault",
-        "/home/kingy/Foundation/Vault"
+        "prism_rag.cli",
+        "serve",
+        "--transport", "stdio",
+        "--vault", "/home/kingy/Foundation/Vault",
+        "--data-dir", "/home/kingy/Foundation/PrismRag/data"
       ]
     }
   }

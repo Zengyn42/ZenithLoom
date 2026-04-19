@@ -68,10 +68,10 @@ class TestGeminiCLINodeRouting:
     @pytest.mark.asyncio
     async def test_routing_signal_detected(self, node_with_routing):
         """enable_routing=true 时，输出含路由信号 → 写入 routing_target。"""
-        reply = '{"route": "knowledge_shelf", "context": "搜索笔记"}\n'
+        reply = '{"route": "render_slides", "context": "搜索笔记"}\n'
         with patch.object(node_with_routing, "call_llm", new_callable=AsyncMock, return_value=(reply, "sid_123")):
             result = await node_with_routing(_make_state())
-        assert result["routing_target"] == "knowledge_shelf"
+        assert result["routing_target"] == "render_slides"
         assert result["routing_context"] == "搜索笔记"
 
     @pytest.mark.asyncio
@@ -86,7 +86,7 @@ class TestGeminiCLINodeRouting:
     @pytest.mark.asyncio
     async def test_routing_disabled_by_default(self, node_without_routing):
         """enable_routing 默认 false → 即使输出含路由信号也清除。"""
-        reply = '{"route": "knowledge_shelf", "context": "搜索笔记"}\n'
+        reply = '{"route": "render_slides", "context": "搜索笔记"}\n'
         with patch.object(node_without_routing, "call_llm", new_callable=AsyncMock, return_value=(reply, "sid_123")):
             result = await node_without_routing(_make_state())
         assert result["routing_target"] == ""
@@ -134,16 +134,16 @@ class TestGeminiCodeAssistNodeRouting:
     @pytest.mark.asyncio
     async def test_routing_signal_detected(self, node_with_routing):
         """enable_routing=true 时检测路由信号。"""
-        reply = '{"route": "knowledge_shelf", "context": "查找标签"}\n'
+        reply = '{"route": "render_slides", "context": "查找标签"}\n'
         with patch.object(node_with_routing, "call_llm", new_callable=AsyncMock, return_value=(reply, "sid_456")):
             result = await node_with_routing(_make_state())
-        assert result["routing_target"] == "knowledge_shelf"
+        assert result["routing_target"] == "render_slides"
         assert result["routing_context"] == "查找标签"
 
     @pytest.mark.asyncio
     async def test_routing_disabled_clears_signal(self, node_without_routing):
         """enable_routing=false 时清除信号。"""
-        reply = '{"route": "knowledge_shelf", "context": "test"}\n'
+        reply = '{"route": "render_slides", "context": "test"}\n'
         with patch.object(node_without_routing, "call_llm", new_callable=AsyncMock, return_value=(reply, "sid_456")):
             result = await node_without_routing(_make_state())
         assert result["routing_target"] == ""

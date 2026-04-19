@@ -3,10 +3,16 @@
   "channel_history_limit": 0,
   "mcp": [
     {
-      "name": "obsidian-vault",
-      "module": "mcp_servers.obsidian.server",
-      "module_args": ["--transport", "sse", "--port", "8101", "--vault", "/home/kingy/Foundation/Vault"],
-      "url": "http://localhost:8101/sse",
+      "name": "prism-rag",
+      "module": "prism_rag.cli",
+      "module_args": [
+        "serve",
+        "--transport", "sse",
+        "--port", "8102",
+        "--vault", "/home/kingy/Foundation/Vault",
+        "--data-dir", "/home/kingy/Foundation/PrismRag/data"
+      ],
+      "url": "http://localhost:8102/sse",
       "shared": true
     }
   ],
@@ -31,10 +37,6 @@
       {
         "id": "validate",
         "type": "VALIDATE"
-      },
-      {
-        "id": "knowledge_shelf",
-        "agent_dir": "blueprints/functional_graphs/knowledge_shelf"
       },
       {
         "id": "render_slides",
@@ -85,12 +87,6 @@
         "to": "validate"
       },
       {
-        "id": "e_validate_2_shelf",
-        "type": "routing_to",
-        "from": "validate",
-        "to": "knowledge_shelf"
-      },
-      {
         "id": "e_validate_2_render_slides",
         "type": "routing_to",
         "from": "validate",
@@ -119,11 +115,6 @@
         "type": "no_routing",
         "from": "validate",
         "to": "__end__"
-      },
-      {
-        "id": "e_shelf_2_gemini",
-        "from": "knowledge_shelf",
-        "to": "gemini_main"
       },
       {
         "id": "e_render_slides_2_gemini",
