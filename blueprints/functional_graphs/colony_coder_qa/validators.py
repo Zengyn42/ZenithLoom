@@ -12,6 +12,7 @@ Nodes (each function = one DETERMINISTIC node):
 import json
 import logging
 import os
+import re
 import subprocess
 
 logger = logging.getLogger(__name__)
@@ -25,22 +26,33 @@ RESCUE_FAIL_CAP = 5
 # ---------------------------------------------------------------------------
 
 def inject_e2e_context(state: dict) -> dict:
-    """Build a HumanMessage with e2e_plan + working_dir context for generate_e2e."""
+    """Route QA entry: generate E2E tests (first time) or skip to run_e2e (subsequent).
+
+    First entry: builds prompt for generate_e2e, sets e2e_tests_generated=True.
+    Subsequent entries: routes directly to run_e2e (tests already exist on disk).
+    """
     from langchain_core.messages import HumanMessage
 
     e2e_plan = state.get("e2e_plan") or {}
-    qa_plan = state.get("qa_plan", "")  # fallback to legacy field
+    qa_plan = state.get("qa_plan", "")
     working_dir = state.get("working_directory", "")
+    e2e_tests_generated = state.get("e2e_tests_generated", False)
 
     logger.info(
         f"[inject_e2e_context] working_dir={working_dir!r} "
-        f"has_e2e_plan={bool(e2e_plan)} has_qa_plan={bool(qa_plan)}"
+        f"e2e_tests_generated={e2e_tests_generated} "
+        f"has_e2e_plan={bool(e2e_plan)}"
     )
 
+    # ── Skip path: tests already exist, go straight to run_e2e ──
+    if e2e_tests_generated:
+        logger.info("[inject_e2e_context] E2E tests already generated → run_e2e")
+        return {"routing_target": "run_e2e"}
+
+    # ── First time: build prompt for generate_e2e ──
     lines = ["## E2E Test Generation Task\n"]
     lines.append(f"**Working directory**: `{working_dir}`\n")
 
-    # E2E plan from planner
     if e2e_plan:
         lines.append("### E2E Test Plan (from Planner)")
         lines.append(f"```json\n{json.dumps(e2e_plan, indent=2, ensure_ascii=False)}\n```\n")
@@ -67,11 +79,9 @@ def inject_e2e_context(state: dict) -> dict:
         if headless:
             lines.append(f"### Headless Testing Notes\n{headless}\n")
     elif qa_plan:
-        # Fallback to legacy qa_plan (plain string)
         lines.append("### QA Plan (legacy format)")
         lines.append(f"```\n{qa_plan}\n```\n")
 
-    # File listing
     if working_dir and os.path.isdir(working_dir):
         all_files = []
         for root, dirs, files in os.walk(working_dir):
@@ -86,8 +96,6 @@ def inject_e2e_context(state: dict) -> dict:
                 lines.append(f"- `{f}`")
         else:
             lines.append("### Files in Working Directory\n(empty)")
-    else:
-        logger.warning(f"[inject_e2e_context] working_dir not found or empty: {working_dir!r}")
 
     lines.append("\n### Your Task")
     lines.append("1. Read the acceptance criteria and test scenarios above.")
@@ -98,8 +106,12 @@ def inject_e2e_context(state: dict) -> dict:
     lines.append("6. Report E2E_VERDICT: PASS or E2E_VERDICT: FAIL.")
 
     prompt_len = sum(len(l) for l in lines)
-    logger.info(f"[inject_e2e_context] built prompt ({prompt_len} chars)")
-    return {"messages": [HumanMessage(content="\n".join(lines))]}
+    logger.info(f"[inject_e2e_context] built prompt ({prompt_len} chars) → generate_e2e")
+    return {
+        "messages": [HumanMessage(content="\n".join(lines))],
+        "routing_target": "generate_e2e",
+        "e2e_tests_generated": True,
+    }
 
 
 # ---------------------------------------------------------------------------
@@ -175,14 +187,10 @@ def run_e2e_rescue(state: dict) -> dict:
 def e2e_route(state: dict) -> dict:
     """Route E2E test results.
 
-    Pass (rc==0)                      → __end__ (routing_target="__end__", success=true)
-    Fail, qa_fail_count < QA_FAIL_CAP → __end__ (routing_target="execute", qa_analysis set)
-                                        Parent graph sees routing_target="execute" and loops back.
-    Fail, qa_fail_count >= QA_FAIL_CAP→ inject_rescue_context (escalate to rescue)
-
-    Internal E2E script errors (generate_e2e wrote buggy tests):
-      Detected by checking if generate_e2e's verdict was FAIL vs test runner exit code.
-      For simplicity, we route to generate_e2e for internal retry on first failure within a QA cycle.
+    Pass (rc==0)                       → __end__ (success)
+    Fail, qa_fail_count < QA_FAIL_CAP  → __end__ with routing_target="execute"
+                                         (parent graph loops back to executor)
+    Fail, qa_fail_count >= QA_FAIL_CAP → inject_rescue_context (escalate)
     """
     rc = state.get("execution_returncode")
     qa_fail_count = state.get("qa_fail_count", 0)
@@ -192,35 +200,41 @@ def e2e_route(state: dict) -> dict:
     )
 
     if rc == 0:
-        logger.info("[e2e_route] ✅ E2E tests PASSED → __end__ (success)")
+        logger.info("[e2e_route] E2E tests PASSED → __end__ (success)")
         return {
             "routing_target": "__end__",
             "success": True,
         }
 
-    # E2E failed
     logger.info(
-        f"[e2e_route] ❌ E2E tests FAILED "
+        f"[e2e_route] E2E tests FAILED "
         f"(qa_fail_count will be {qa_fail_count + 1}/{QA_FAIL_CAP})"
     )
 
     if qa_fail_count + 1 >= QA_FAIL_CAP:
-        # Exhausted → escalate to rescue
         logger.warning(
-            f"[e2e_route] QA fail cap ({QA_FAIL_CAP}) reached "
-            f"→ inject_rescue_context (escalate to rescue)"
+            f"[e2e_route] QA fail cap ({QA_FAIL_CAP}) reached → rescue"
         )
         return {"routing_target": "inject_rescue_context"}
 
-    # Send back to executor via parent graph
     stdout = state.get("execution_stdout", "")
     stderr = state.get("execution_stderr", "")
     output = (stdout + "\n" + stderr).strip()
 
-    qa_analysis = (
-        f"E2E test failed (attempt {qa_fail_count + 1}/{QA_FAIL_CAP}).\n\n"
-        f"Test output:\n{output[-3000:]}"
-    )
+    failed_tests = []
+    for m in re.finditer(r"FAILED\s+([\w/.:]+)", output):
+        failed_tests.append(m.group(1))
+
+    qa_analysis_lines = [
+        f"E2E test failed (attempt {qa_fail_count + 1}/{QA_FAIL_CAP}).\n",
+    ]
+    if failed_tests:
+        qa_analysis_lines.append("Failed tests:")
+        for t in failed_tests:
+            qa_analysis_lines.append(f"  - {t}")
+        qa_analysis_lines.append("")
+    qa_analysis_lines.append(f"Test output:\n{output[-2500:]}")
+    qa_analysis = "\n".join(qa_analysis_lines)
 
     logger.info(
         f"[e2e_route] → routing_target='execute' "
@@ -228,7 +242,7 @@ def e2e_route(state: dict) -> dict:
     )
 
     return {
-        "routing_target": "execute",  # exits QA subgraph; parent routes to execute
+        "routing_target": "execute",
         "qa_fail_count": qa_fail_count + 1,
         "qa_analysis": qa_analysis,
     }

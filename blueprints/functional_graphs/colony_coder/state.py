@@ -69,6 +69,14 @@ class ColonyCoderState(BaseAgentState):
     # Test files written by test_designer (ApexCoder) for integration verification
     test_files: list                   # list of test file paths relative to working_directory
 
+    # Context explosion fix: session reset state (2026-04-17)
+    prev_test_results: Optional[dict]   # previous iteration's parsed pytest results
+    prev_snapshot_hash: Optional[str]   # git commit hash of last good snapshot
+    intent_snippet: str                 # first assistant message excerpt for deterministic summary
+
+    # QA one-shot: E2E tests generated once, reused for all validation passes
+    e2e_tests_generated: bool           # True after generate_e2e runs successfully
+
     # Final output
     final_files: list
     abort_reason: Optional[str]

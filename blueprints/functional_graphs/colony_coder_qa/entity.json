@@ -46,17 +46,17 @@
     ],
     "entry": "inject_e2e_context",
     "edges": [
-      {"from": "inject_e2e_context",  "to": "generate_e2e"},
-      {"from": "generate_e2e",        "to": "run_e2e"},
-      {"from": "run_e2e",             "to": "e2e_route"},
-      {"from": "e2e_route",           "to": "generate_e2e",       "type": "routing_to"},
-      {"from": "e2e_route",           "to": "inject_rescue_context", "type": "routing_to"},
-      {"from": "e2e_route",           "to": "__end__",            "type": "routing_to", "id": "no_routing"},
+      {"from": "inject_e2e_context",    "to": "generate_e2e",          "type": "routing_to"},
+      {"from": "inject_e2e_context",    "to": "run_e2e",               "type": "routing_to"},
+      {"from": "generate_e2e",          "to": "run_e2e"},
+      {"from": "run_e2e",               "to": "e2e_route"},
+      {"from": "e2e_route",             "to": "inject_rescue_context",  "type": "routing_to"},
+      {"from": "e2e_route",             "to": "__end__",               "type": "routing_to", "id": "no_routing"},
       {"from": "inject_rescue_context", "to": "qa_rescue"},
-      {"from": "qa_rescue",           "to": "run_e2e_rescue"},
-      {"from": "run_e2e_rescue",      "to": "rescue_route"},
-      {"from": "rescue_route",        "to": "qa_rescue",          "type": "routing_to"},
-      {"from": "rescue_route",        "to": "__end__",            "type": "routing_to", "id": "no_routing"}
+      {"from": "qa_rescue",             "to": "run_e2e_rescue"},
+      {"from": "run_e2e_rescue",        "to": "rescue_route"},
+      {"from": "rescue_route",          "to": "qa_rescue",             "type": "routing_to"},
+      {"from": "rescue_route",          "to": "__end__",               "type": "routing_to", "id": "no_routing"}
     ]
   }
 }
