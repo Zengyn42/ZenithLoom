@@ -39,6 +39,7 @@ import os
 import subprocess
 import sys
 import time
+import urllib.error
 import urllib.request
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -55,11 +56,20 @@ _PROJECT_ROOT = Path(__file__).resolve().parent.parent
 # ---------------------------------------------------------------------------
 
 @dataclass
+class _DependencyEntry:
+    name: str
+    check_url: str
+    proc: Optional[subprocess.Popen] = None
+    refs: int = 0
+
+
+@dataclass
 class _ServerEntry:
     name: str
     url: str
     agents: set = field(default_factory=set)
     proc: Optional[subprocess.Popen] = None  # None = 外部已启动，不由我们管理
+    dependency_name: Optional[str] = None  # 关联的 dependency 名称
 
 
 # ---------------------------------------------------------------------------
@@ -85,6 +95,7 @@ class MCPManager:
 
     def __init__(self):
         self._servers: dict[str, _ServerEntry] = {}
+        self._deps: dict[str, _DependencyEntry] = {}  # dependency 进程管理
         self._lock: Optional[asyncio.Lock] = None  # 懒初始化，避免跨事件循环问题
 
     def _ensure_lock(self) -> asyncio.Lock:
@@ -96,32 +107,144 @@ class MCPManager:
     # 存活探测
     # ------------------------------------------------------------------
 
-    def _is_reachable(self, url: str) -> bool:
+    def _is_reachable(self, url: str, raw: bool = False) -> bool:
         """
-        GET url 的父路径（或 url 本身）检测 server 是否可达。
-        SSE URL 如 http://localhost:8101/sse → 探测 http://localhost:8101/
+        GET url 检测 server 是否可达。
+
+        raw=False（默认）：SSE URL 如 http://localhost:8101/sse → 探测 http://localhost:8101/
+        raw=True：直接用原始 URL 探测（用于 dependency check_url）。
         """
-        # 去掉 /sse 后缀后探测根路径
         check = url
-        if check.endswith("/sse"):
-            check = check[:-4]
-        if not check.endswith("/"):
-            check += "/"
+        if not raw:
+            # SSE URL → 去掉 /sse 后缀后探测根路径
+            if check.endswith("/sse"):
+                check = check[:-4]
+            if not check.endswith("/"):
+                check += "/"
         try:
             req = urllib.request.Request(check, method="GET")
             with urllib.request.urlopen(req, timeout=2):
                 return True
+        except urllib.error.HTTPError:
+            # 收到 HTTP 错误响应（如 404）也说明 server 在运行
+            return True
         except Exception:
             return False
 
-    def _wait_ready(self, url: str, timeout: int = 20) -> bool:
+    def _wait_ready(self, url: str, timeout: int = 20, raw: bool = False) -> bool:
         """轮询直到 server 可达或超时。"""
         deadline = time.monotonic() + timeout
         while time.monotonic() < deadline:
-            if self._is_reachable(url):
+            if self._is_reachable(url, raw=raw):
                 return True
             time.sleep(0.4)
         return False
+
+    # ------------------------------------------------------------------
+    # Dependency 管理（MCP Server 的外部依赖，如 Windows ComfyUI）
+    # ------------------------------------------------------------------
+
+    def _ensure_dependency(self, dep_spec: dict) -> bool:
+        """
+        确保 MCP Server 的外部依赖已就绪。
+
+        dep_spec 格式：
+          {
+            "name": "comfyui-backend",
+            "check_url": "http://localhost:8188/system_stats",
+            "start_cmd": ["/mnt/c/Windows/System32/cmd.exe", "/c", "..."],
+            "timeout": 60
+          }
+
+        返回 True 表示依赖可用，False 表示启动失败。
+        引用计数：多个 MCP Server 可共享同一个 dependency。
+        """
+        dep_name = dep_spec["name"]
+        check_url = dep_spec["check_url"]
+        timeout = dep_spec.get("timeout", 60)
+
+        # 已有记录：增加引用
+        if dep_name in self._deps:
+            self._deps[dep_name].refs += 1
+            logger.debug(f"[mcp_manager] dependency {dep_name}: refs={self._deps[dep_name].refs}")
+            # 仍需确认存活
+            if self._is_reachable(check_url, raw=True):
+                return True
+            # 进程可能挂了，尝试重启
+            logger.warning(f"[mcp_manager] dependency {dep_name}: was tracked but unreachable, restarting")
+            old = self._deps[dep_name]
+            if old.proc:
+                try:
+                    old.proc.kill()
+                except Exception:
+                    pass
+
+        # 已在运行（外部启动）
+        if self._is_reachable(check_url, raw=True):
+            self._deps[dep_name] = _DependencyEntry(name=dep_name, check_url=check_url, proc=None, refs=1)
+            logger.info(f"[mcp_manager] dependency {dep_name}: already running at {check_url} (external)")
+            return True
+
+        # 启动 dependency
+        start_cmd = dep_spec.get("start_cmd")
+        if not start_cmd:
+            logger.error(f"[mcp_manager] dependency {dep_name}: not reachable and no start_cmd configured")
+            return False
+
+        try:
+            proc = subprocess.Popen(
+                start_cmd,
+                stdout=subprocess.DEVNULL,
+                stderr=subprocess.DEVNULL,
+                start_new_session=True,
+            )
+            logger.info(
+                f"[mcp_manager] dependency {dep_name}: spawned pid={proc.pid} "
+                f"cmd={start_cmd[0]}...{start_cmd[-1]}"
+            )
+        except Exception as exc:
+            logger.error(f"[mcp_manager] dependency {dep_name}: spawn failed: {exc}")
+            return False
+
+        ready = self._wait_ready(check_url, timeout=timeout, raw=True)
+        if not ready:
+            logger.error(f"[mcp_manager] dependency {dep_name}: did not become ready (timeout={timeout}s)")
+            try:
+                proc.kill()
+            except Exception:
+                pass
+            return False
+
+        self._deps[dep_name] = _DependencyEntry(name=dep_name, check_url=check_url, proc=proc, refs=1)
+        logger.info(f"[mcp_manager] dependency {dep_name}: ready at {check_url}")
+        return True
+
+    def _release_dependency(self, dep_name: str) -> None:
+        """减少 dependency 引用计数，归零时终止进程。"""
+        dep = self._deps.get(dep_name)
+        if dep is None:
+            return
+
+        dep.refs -= 1
+        logger.debug(f"[mcp_manager] dependency {dep_name}: refs={dep.refs}")
+
+        if dep.refs > 0:
+            return
+
+        del self._deps[dep_name]
+
+        if dep.proc is not None:
+            try:
+                dep.proc.terminate()
+                dep.proc.wait(timeout=10)
+                logger.info(f"[mcp_manager] dependency {dep_name}: stopped (no more refs)")
+            except subprocess.TimeoutExpired:
+                dep.proc.kill()
+                logger.warning(f"[mcp_manager] dependency {dep_name}: SIGKILL after terminate timeout")
+            except Exception as exc:
+                logger.warning(f"[mcp_manager] dependency {dep_name}: stop error: {exc}")
+        else:
+            logger.info(f"[mcp_manager] dependency {dep_name}: released (external, not stopped)")
 
     # ------------------------------------------------------------------
     # 进程启动
@@ -161,6 +284,8 @@ class MCPManager:
         """
         name = spec["name"]
         url = spec["url"]
+        dep_spec = spec.get("dependency")
+        dep_name = dep_spec["name"] if dep_spec else None
 
         async with self._ensure_lock():
             if name in self._servers:
@@ -172,9 +297,16 @@ class MCPManager:
                 )
                 return True
 
+            # 先确保外部依赖就绪（如 Windows ComfyUI）
+            if dep_spec:
+                dep_ok = self._ensure_dependency(dep_spec)
+                if not dep_ok:
+                    logger.error(f"[mcp_manager] {name}: dependency {dep_name!r} failed, skipping MCP server")
+                    return False
+
             # 检测是否已在运行（外部启动或跨重启复用）
             if self._is_reachable(url):
-                entry = _ServerEntry(name=name, url=url, proc=None)
+                entry = _ServerEntry(name=name, url=url, proc=None, dependency_name=dep_name)
                 entry.agents.add(agent_name)
                 self._servers[name] = entry
                 logger.info(f"[mcp_manager] {name}: already running at {url} (external)")
@@ -185,6 +317,8 @@ class MCPManager:
                 proc = self._start_process(spec)
             except Exception as exc:
                 logger.error(f"[mcp_manager] {name}: spawn failed: {exc}")
+                if dep_name:
+                    self._release_dependency(dep_name)
                 return False
 
             ready = self._wait_ready(url)
@@ -194,9 +328,11 @@ class MCPManager:
                     proc.kill()
                 except Exception:
                     pass
+                if dep_name:
+                    self._release_dependency(dep_name)
                 return False
 
-            entry = _ServerEntry(name=name, url=url, proc=proc)
+            entry = _ServerEntry(name=name, url=url, proc=proc, dependency_name=dep_name)
             entry.agents.add(agent_name)
             self._servers[name] = entry
             logger.info(f"[mcp_manager] {name}: ready at {url}")
@@ -221,6 +357,7 @@ class MCPManager:
             if entry.agents:
                 return  # 还有其他 agent 在用
 
+            dep_name = entry.dependency_name
             del self._servers[server_name]
 
             if entry.proc is not None:
@@ -236,6 +373,10 @@ class MCPManager:
                     logger.warning(f"[mcp_manager] {server_name}: stop error: {exc}")
             else:
                 logger.info(f"[mcp_manager] {server_name}: released (external process, not stopped)")
+
+            # 释放关联的 dependency
+            if dep_name:
+                self._release_dependency(dep_name)
 
     async def release_all(self, agent_name: str) -> None:
         """释放指定 agent 持有的所有 server 引用。"""
