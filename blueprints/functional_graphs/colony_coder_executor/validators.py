@@ -1,9 +1,14 @@
 """Deterministic validator nodes for colony_coder_executor.
 
 Nodes (each function = one DETERMINISTIC node):
-  inject_task_context  — build prompt with task info, clear session, inject dependencies
+  inject_task_context  — build prompt with SINGLE task, clear session, inject dependencies
   run_tests            — git stash snapshot + run test_tool/run_tests.sh
-  test_route           — compound regression check, deterministic summary, session reset
+  test_route           — compound regression check, task advancement on pass
+
+Per-Task Sequential Execution (2026-04-19):
+  Tasks are executed one at a time. Each task gets its own code_gen session.
+  On pass → advance to next task → inject_task_context again.
+  On all tasks done → __end__.
 
 Context Explosion Fix (2026-04-17):
   Session reset + deterministic summary + git stash anti-regression + replace_lines.
@@ -328,24 +333,98 @@ def _extract_dependencies(state: dict, working_dir: str) -> str:
     return "\n".join(dep_lines) if dep_lines else ""
 
 
+# ── Existing Files Scanner ──────────────────────────────────────────
+
+
+def _list_existing_files(working_dir: str) -> list[str]:
+    """List .py files in working_dir (excluding test_tool, __pycache__)."""
+    if not working_dir or not os.path.isdir(working_dir):
+        return []
+    result = []
+    for root, dirs, files in os.walk(working_dir):
+        dirs[:] = [d for d in dirs if d not in ("__pycache__", ".git", "test_tool")]
+        for f in files:
+            if f.endswith(".py"):
+                result.append(os.path.relpath(os.path.join(root, f), working_dir))
+    return sorted(result)
+
+
+# ── QA Fix Mode ─────────────────────────────────────────────────────
+
+
+def _build_qa_fix_context(
+    state: dict, working_dir: str, qa_analysis: str, qa_fail_count: int, tasks: list
+) -> dict:
+    """Build context for fixing E2E test failures (QA re-entry).
+
+    Unlike per-task mode, this gives Qwen the full picture:
+    all existing source files + E2E failure details.
+    """
+    from langchain_core.messages import HumanMessage
+
+    if working_dir:
+        _ensure_git_repo(working_dir)
+
+    lines = ["## E2E Fix Task (QA re-entry)\n"]
+    lines.append(f"**Working directory**: `{working_dir}`")
+    lines.append(f"**QA attempt**: {qa_fail_count}\n")
+
+    lines.append("### E2E Test Failures (fix these)")
+    lines.append(f"```\n{qa_analysis[-3000:]}\n```\n")
+
+    existing_files = _list_existing_files(working_dir)
+    if existing_files:
+        lines.append("### Source Files to Fix")
+        lines.append("Use `read_file` to examine these, then fix with `replace_lines`.\n")
+        for f in existing_files:
+            lines.append(f"- `{f}`")
+        lines.append("")
+
+    lines.append("### Instructions")
+    lines.append("1. Read the E2E failure details above carefully.")
+    lines.append("2. Use `read_file` to examine the relevant source files.")
+    lines.append("3. Fix the issues using `replace_lines` (prefer over `write_file`).")
+    lines.append("4. Run unit tests: `bash test_tool/run_tests.sh` via bash_exec")
+    lines.append("5. Make sure unit tests still pass after your fixes.")
+    lines.append(
+        "\n**IMPORTANT**: Do NOT rewrite entire files. "
+        "Use `replace_lines` to make targeted fixes. "
+        "Always `read_file` first to get current line numbers."
+    )
+
+    updates: dict = {
+        "routing_target": "code_gen",
+        "messages": [HumanMessage(content="\n".join(lines))],
+        "retry_count": 0,
+        "prev_test_results": None,
+        "prev_snapshot_hash": None,
+        "intent_snippet": "",
+    }
+    if working_dir:
+        updates["working_directory"] = working_dir
+    updates.update(_clear_executor_session(state))
+    return updates
+
+
 # ── Node: inject_task_context ────────────────────────────────────────
 
 
 def inject_task_context(state: dict) -> dict:
-    """Build initial context for code_gen. Clears session for fresh start.
+    """Build context for code_gen with SINGLE current task. Clears session.
 
-    Runs on:
-      - First entry (plan -> execute)
-      - QA re-entry (qa -> execute)
+    Per-task sequential execution:
+      - Only injects tasks[current_task_index]
+      - Lists existing files from previous tasks as context
+      - Resets session and retry counters per task
     """
     from langchain_core.messages import HumanMessage
 
-    refined_plan = state.get("refined_plan", "")
     tasks = state.get("tasks") or []
     execution_order = state.get("execution_order") or []
     working_dir = state.get("working_directory", "")
     qa_analysis = state.get("qa_analysis", "")
     qa_fail_count = state.get("qa_fail_count", 0)
+    task_idx = state.get("current_task_index", 0)
 
     # Fallback: infer working_directory from task descriptions if Planner omitted it
     if not working_dir and tasks:
@@ -358,90 +437,144 @@ def inject_task_context(state: dict) -> dict:
                 logger.info(f"[inject_task_context] inferred working_dir={working_dir!r} from tasks")
                 break
 
+    # Resolve current task
+    total_tasks = len(execution_order) if execution_order else len(tasks)
+
+    # ── QA re-entry: all tasks done, but E2E failed ──
+    # Switch to "fix mode": inject qa_analysis + existing files, no per-task split
+    if task_idx >= total_tasks and qa_analysis:
+        logger.info(
+            f"[inject_task_context] QA re-entry: E2E failed "
+            f"→ fix mode with qa_analysis ({len(qa_analysis)} chars)"
+        )
+        return _build_qa_fix_context(state, working_dir, qa_analysis, qa_fail_count, tasks)
+
+    if task_idx >= total_tasks:
+        logger.info(f"[inject_task_context] all {total_tasks} tasks done → __end__")
+        return {"routing_target": "__end__"}
+
+    current_tid = execution_order[task_idx] if execution_order else f"t{task_idx + 1}"
+    current_task = next((t for t in tasks if t.get("id") == current_tid), None)
+    if not current_task and tasks and task_idx < len(tasks):
+        current_task = tasks[task_idx]
+
     logger.info(
-        f"[inject_task_context] working_dir={working_dir!r} "
-        f"tasks={len(tasks)} qa_fail_count={qa_fail_count} "
-        f"has_qa_analysis={bool(qa_analysis)}"
+        f"[inject_task_context] task {task_idx + 1}/{total_tasks} "
+        f"id={current_tid} working_dir={working_dir!r} "
+        f"qa_fail_count={qa_fail_count}"
     )
 
     # Ensure git repo for stash snapshots
     if working_dir:
         _ensure_git_repo(working_dir)
 
-    lines = ["## Coding Task\n"]
+    lines = [f"## Task {task_idx + 1} of {total_tasks}: `{current_tid}`\n"]
     lines.append(f"**Working directory**: `{working_dir}`\n")
 
-    # ── Acceptance Criteria from Planner (tells Qwen what QA will test) ──
-    e2e_plan = state.get("e2e_plan") or {}
-    criteria = e2e_plan.get("acceptance_criteria") or []
-    if criteria:
-        lines.append("### Acceptance Criteria (your code MUST pass ALL of these)")
-        lines.append("The QA engineer will test your code against these criteria.")
-        lines.append("Your unit tests should cover each one.\n")
-        for i, c in enumerate(criteria, 1):
-            lines.append(f"  AC{i}: {c}")
+    # ── Current task description ──
+    if current_task:
+        lines.append("### Your Task")
+        lines.append(current_task.get("description", "(no description)"))
         lines.append("")
 
-    # QA feedback from previous cycle
+    # ── Completed tasks summary (so Qwen knows what exists) ──
+    if task_idx > 0:
+        completed_tids = execution_order[:task_idx] if execution_order else []
+        if completed_tids:
+            lines.append("### Already Completed Tasks")
+            for tid in completed_tids:
+                lines.append(f"- ✅ {tid}")
+            lines.append("")
+
+        # Show existing files from previous tasks
+        existing_files = _list_existing_files(working_dir)
+        if existing_files:
+            lines.append("### Existing Files (from previous tasks)")
+            lines.append("Use `read_file` to examine these before writing code that depends on them.\n")
+            for f in existing_files:
+                lines.append(f"- `{f}`")
+            lines.append("")
+
+    # ── Upcoming tasks (brief, so Qwen knows what comes next) ──
+    remaining_tids = execution_order[task_idx + 1:] if execution_order else []
+    if remaining_tids:
+        lines.append("### Upcoming Tasks (DO NOT implement these now)")
+        for tid in remaining_tids:
+            t = next((t for t in tasks if t.get("id") == tid), None)
+            desc_preview = (t.get("description", "")[:80] + "...") if t else ""
+            lines.append(f"- {tid}: {desc_preview}")
+        lines.append("")
+
+    # ── QA feedback (only on QA re-entry, applies to all tasks) ──
     if qa_analysis:
         logger.info(
             f"[inject_task_context] injecting QA feedback "
             f"({len(qa_analysis)} chars, qa_fail_count={qa_fail_count})"
         )
-        lines.append("### QA Feedback (from previous attempt)")
-        lines.append("The QA engineer tested your code and found issues:")
+        lines.append("### QA Feedback (from E2E testing)")
+        lines.append("Fix these issues in your implementation:")
         lines.append(f"```\n{qa_analysis[-3000:]}\n```\n")
-        lines.append("Fix these issues in your implementation.\n")
 
-    # Planner-declared dependencies
-    deps = _extract_dependencies(state, working_dir)
-    if deps:
-        lines.append("### External Dependencies (interfaces you must use)")
-        lines.append(deps + "\n")
+    # ── Planner-declared dependencies for current task ──
+    if current_task:
+        task_deps_info = []
+        for dep in current_task.get("dependencies", []):
+            if not isinstance(dep, dict):
+                continue
+            dep_file = dep.get("file", "")
+            full_path = os.path.join(working_dir, dep_file) if dep_file else ""
+            if full_path and os.path.isfile(full_path):
+                symbols = dep.get("symbols", [])
+                if symbols:
+                    task_deps_info.append(f"#### {dep_file}")
+                    try:
+                        content = open(full_path, encoding="utf-8").read()
+                        for sym in symbols:
+                            sym_name = sym.split("(")[0].split(".")[-1].strip()
+                            pattern = rf"^((?:class|def|async\s+def)\s+{re.escape(sym_name)}\b.*)"
+                            match = re.search(pattern, content, re.MULTILINE)
+                            if match:
+                                task_deps_info.append(f"```python\n{match.group(1)}\n```")
+                            else:
+                                task_deps_info.append(f"- `{sym}` (signature not found)")
+                    except Exception:
+                        pass
+        if task_deps_info:
+            lines.append("### Dependencies (interfaces from previous tasks)")
+            lines.extend(task_deps_info)
+            lines.append("")
 
-    # Plan
-    if refined_plan:
-        lines.append("### Design Plan")
-        lines.append(f"```\n{refined_plan[:2000]}\n```\n")
-
-    # Tasks
-    if tasks:
-        lines.append("### Tasks to Implement")
-        for tid in execution_order:
-            task = next((t for t in tasks if t.get("id") == tid), None)
-            if task:
-                task_deps = task.get("dependencies") or []
-                dep_str = f" (depends on: {', '.join(task_deps)})" if task_deps else ""
-                lines.append(
-                    f"- **{tid}**: {task.get('description', '')}{dep_str}"
-                )
-
-    lines.append("\n### Instructions")
+    # ── Instructions ──
+    lines.append("### Instructions")
     lines.append("⚠️ **STEP 1 IS CRITICAL — DO NOT SKIP IT.**")
-    lines.append("1. **FIRST: Write the PRODUCT CODE** — create the main source files described in the task. This is your PRIMARY job. Do NOT skip to writing tests.")
-    lines.append("2. Use `read_file` to examine existing files (output includes line numbers).")
-    lines.append("3. Use `write_file` for NEW files, `replace_lines` for EDITING existing files.")
-    lines.append("4. AFTER product code is complete, write unit tests in test_tool/unit_tests/.")
-    lines.append("5. Write test_tool/run_tests.sh to run all tests.")
-    lines.append("6. Run tests via `bash_exec` and fix until all pass.")
-    if criteria:
-        lines.append(
-            f"\n**REMINDER**: Your code will be tested against {len(criteria)} "
-            f"acceptance criteria listed above. Make sure every AC is satisfied."
-        )
+    lines.append("1. **FIRST: Write the PRODUCT CODE** for this task only. Do NOT implement upcoming tasks.")
+    if task_idx > 0:
+        lines.append("2. Use `read_file` to examine existing files from previous tasks.")
+        lines.append("3. Use `write_file` for NEW files, `replace_lines` for EDITING existing files.")
+    else:
+        lines.append("2. Use `write_file` to create new source files.")
+    lines.append(f"{'3' if task_idx == 0 else '4'}. Write unit tests for THIS task in test_tool/unit_tests/.")
+    lines.append(f"{'4' if task_idx == 0 else '5'}. Write test_tool/run_tests.sh to run all tests.")
+    lines.append(f"{'5' if task_idx == 0 else '6'}. Run tests via `bash_exec` and fix until all pass.")
     lines.append(
-        "\n**IMPORTANT**: Always `read_file` before `replace_lines` to get current line numbers."
+        "\n**IMPORTANT**: Only implement what this task describes. "
+        "Do NOT write code for future tasks. Do NOT import classes/functions that don't exist yet."
+    )
+    lines.append(
+        "**IMPORTANT**: Always `read_file` before `replace_lines` to get current line numbers."
     )
 
-    # State updates: clear session, reset counters
+    # State updates: clear session, reset retry counters
     updates: dict = {
+        "routing_target": "code_gen",
         "messages": [HumanMessage(content="\n".join(lines))],
+        "current_task_index": task_idx,
+        "current_task_id": current_tid,
         "retry_count": 0,
         "prev_test_results": None,
         "prev_snapshot_hash": None,
         "intent_snippet": "",
     }
-    # Persist working_directory (may have been inferred from tasks)
     if working_dir:
         updates["working_directory"] = working_dir
     updates.update(_clear_executor_session(state))
@@ -513,11 +646,13 @@ def run_tests(state: dict) -> dict:
 
 
 def test_route(state: dict) -> dict:
-    """Route based on test results. Session reset + deterministic summary on retry.
+    """Route based on test results with per-task advancement.
 
-    Pass  -> __end__
+    Pass  -> advance current_task_index:
+             - more tasks? → inject_task_context (next task)
+             - all done?   → __end__
     Fail  -> compound regression check -> rollback if needed -> code_gen (retry)
-    Cap   -> __end__ (QA will catch remaining issues)
+    Cap   -> skip to next task (or __end__ if last task)
     """
     from langchain_core.messages import HumanMessage
 
@@ -527,17 +662,42 @@ def test_route(state: dict) -> dict:
     stdout = state.get("execution_stdout", "")
     stderr = state.get("execution_stderr", "")
     output = (stdout + "\n" + stderr).strip()
+    task_idx = state.get("current_task_index", 0)
+    execution_order = state.get("execution_order") or []
+    total_tasks = len(execution_order) if execution_order else len(state.get("tasks") or [])
 
     # Parse test results
     curr_results = _parse_pytest_results(stdout, stderr)
 
     if rc == 0:
-        logger.info(
-            f"[test_route] tests PASSED "
-            f"({curr_results['passed']} passed) -> __end__"
-        )
-        return {"routing_target": "__end__", "prev_test_results": curr_results}
+        # ── Task passed → advance to next task ──
+        next_idx = task_idx + 1
+        current_tid = execution_order[task_idx] if task_idx < len(execution_order) else f"t{task_idx + 1}"
 
+        if next_idx >= total_tasks:
+            logger.info(
+                f"[test_route] task {current_tid} PASSED "
+                f"({curr_results['passed']} passed) — ALL {total_tasks} tasks done → __end__"
+            )
+            return {
+                "routing_target": "__end__",
+                "prev_test_results": curr_results,
+                "current_task_index": next_idx,
+            }
+        else:
+            next_tid = execution_order[next_idx] if next_idx < len(execution_order) else f"t{next_idx + 1}"
+            logger.info(
+                f"[test_route] task {current_tid} PASSED "
+                f"({curr_results['passed']} passed) → next task {next_tid} "
+                f"({next_idx + 1}/{total_tasks})"
+            )
+            return {
+                "routing_target": "inject_task_context",
+                "prev_test_results": curr_results,
+                "current_task_index": next_idx,
+            }
+
+    # ── Task failed ──
     logger.info(
         f"[test_route] tests FAILED rc={rc} "
         f"(attempt {retry_count + 1}/{TEST_RETRY_CAP}) "
@@ -545,10 +705,28 @@ def test_route(state: dict) -> dict:
     )
 
     if retry_count >= TEST_RETRY_CAP:
-        logger.warning(
-            f"[test_route] retry cap ({TEST_RETRY_CAP}) exhausted -> __end__"
-        )
-        return {"routing_target": "__end__", "prev_test_results": curr_results}
+        # Skip to next task (don't block entire pipeline on one failing task)
+        next_idx = task_idx + 1
+        if next_idx >= total_tasks:
+            logger.warning(
+                f"[test_route] retry cap ({TEST_RETRY_CAP}) exhausted on last task → __end__"
+            )
+            return {
+                "routing_target": "__end__",
+                "prev_test_results": curr_results,
+                "current_task_index": next_idx,
+            }
+        else:
+            next_tid = execution_order[next_idx] if next_idx < len(execution_order) else f"t{next_idx + 1}"
+            logger.warning(
+                f"[test_route] retry cap ({TEST_RETRY_CAP}) exhausted "
+                f"→ skipping to next task {next_tid}"
+            )
+            return {
+                "routing_target": "inject_task_context",
+                "prev_test_results": curr_results,
+                "current_task_index": next_idx,
+            }
 
     # ── Compound regression check ──
     prev_results = state.get("prev_test_results")
