@@ -24,12 +24,18 @@ async def main():
 
     async with async_playwright() as p:
         browser_args = [
+            "--headless=new",
             "--disable-background-networking",
             "--disable-sync",
             "--disable-extensions",
             "--no-first-run",
             "--no-default-browser-check"
         ]
+        
+        # Clear display environment variables to prevent WSLg from showing a window
+        clean_env = os.environ.copy()
+        clean_env.pop("DISPLAY", None)
+        clean_env.pop("WAYLAND_DISPLAY", None)
 
         try:
             ctx = await p.chromium.launch_persistent_context(
@@ -38,6 +44,7 @@ async def main():
                 headless=True,
                 args=browser_args,
                 no_viewport=True,
+                env=clean_env,
             )
         except Exception as e:
             print(json.dumps({"error": f"Failed to launch Chrome: {e}"}), flush=True)
@@ -70,12 +77,17 @@ async def main():
             
             # Try to click send button as fallback
             try:
-                send_button = page.locator('button[aria-label*="Send"], button:has(svg)').last
-                if await send_button.is_visible():
-                    print("DEBUG: Clicking send button...", file=sys.stderr, flush=True)
-                    await send_button.click()
-            except:
-                pass
+                send_button = page.locator('button[aria-label="Submit"]:visible, button[aria-label*="Send"]:visible')
+                if await send_button.count() > 0:
+                    print("DEBUG: Clicking submit/send button...", file=sys.stderr, flush=True)
+                    await send_button.last.click(timeout=3000, force=True)
+                else:
+                    svg_btn = page.locator('button:has(svg):visible').last
+                    if await svg_btn.is_visible():
+                        print("DEBUG: Clicking svg button...", file=sys.stderr, flush=True)
+                        await svg_btn.click(timeout=3000, force=True)
+            except Exception as e:
+                print(f"DEBUG: Failed to click send button: {e}", file=sys.stderr, flush=True)
             
             print("DEBUG: Waiting for response to start...", file=sys.stderr, flush=True)
             await page.wait_for_timeout(2000)

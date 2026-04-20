@@ -22,7 +22,7 @@ import subprocess
 
 logger = logging.getLogger(__name__)
 
-TEST_RETRY_CAP = 5
+TEST_RETRY_CAP = 2
 
 
 # ── Git Stash Snapshot Helpers ───────────────────────────────────────
@@ -77,6 +77,37 @@ def _ensure_git_repo(working_dir: str) -> bool:
         return True
     except Exception as e:
         logger.warning(f"[git] ensure repo failed: {e}")
+        return False
+
+
+def _git_commit_task(working_dir: str, task_id: str) -> bool:
+    """Commit current state as a permanent checkpoint after task passes.
+
+    Creates a real git commit (not stash) as a durable transaction boundary.
+    Later tasks failing can roll back to this commit via git reset.
+    """
+    if not _ensure_git_repo(working_dir):
+        return False
+    try:
+        subprocess.run(
+            ["git", "add", "-A"], cwd=working_dir,
+            capture_output=True, timeout=10,
+        )
+        r = subprocess.run(
+            ["git", "commit", "-m", f"[colony] task {task_id} complete"],
+            cwd=working_dir, capture_output=True, text=True, timeout=10,
+        )
+        if r.returncode == 0:
+            logger.info(f"[git] committed task {task_id}")
+            return True
+        elif "nothing to commit" in (r.stdout + r.stderr):
+            logger.info(f"[git] nothing to commit for task {task_id}")
+            return True
+        else:
+            logger.warning(f"[git] commit failed: {r.stderr[:200]}")
+            return False
+    except Exception as e:
+        logger.warning(f"[git] commit task failed: {e}")
         return False
 
 
@@ -683,9 +714,11 @@ def test_route(state: dict) -> dict:
     curr_results = _parse_pytest_results(stdout, stderr)
 
     if rc == 0:
-        # ── Task passed → advance to next task ──
+        # ── Task passed → git commit as transaction boundary → advance ──
         next_idx = task_idx + 1
         current_tid = execution_order[task_idx] if task_idx < len(execution_order) else f"t{task_idx + 1}"
+        if working_dir:
+            _git_commit_task(working_dir, current_tid)
 
         if next_idx >= total_tasks:
             logger.info(
