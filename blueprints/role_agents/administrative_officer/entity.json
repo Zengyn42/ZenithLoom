@@ -1,6 +1,24 @@
 {
   "llm": "llama",
   "channel_history_limit": 0,
+  "mcp": [
+    {
+      "name": "comfyui-video",
+      "module": "mcp_servers.comfyui.server",
+      "module_args": ["--transport", "sse", "--port", "8103", "--comfyui-host", "localhost", "--comfyui-port", "8188"],
+      "url": "http://localhost:8103/sse",
+      "shared": true,
+      "dependency": {
+        "name": "comfyui-backend",
+        "check_url": "http://localhost:8188/system_stats",
+        "start_cmd": ["/mnt/c/Windows/System32/cmd.exe", "/c",
+          "D:\\ComfyUI_windows_portable\\python_embeded\\python.exe",
+          "D:\\ComfyUI_windows_portable\\ComfyUI\\main.py",
+          "--listen", "0.0.0.0", "--port", "8188"],
+        "timeout": 60
+      }
+    }
+  ],
   "graph": {
     "nodes": [
       {

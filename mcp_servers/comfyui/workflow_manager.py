@@ -20,13 +20,20 @@ from typing import Any
 
 logger = logging.getLogger(__name__)
 
-TEMPLATE_DIR = Path(__file__).resolve().parent.parent.parent / "blueprints" / "corporations" / "ltx_pipeline" / "templates"
+TEMPLATE_DIR = Path(__file__).resolve().parent / "templates"
 
 # ---------------------------------------------------------------------------
 # Node ID mappings per workflow type
 # ---------------------------------------------------------------------------
 
 NODE_IDS = {
+    "txt2vid": {
+        "prompt": "303",
+        "width": "314",
+        "height": "299",
+        "frame_rate": "300",
+        "num_frames": "301",
+    },
     "img2vid": {
         "image": "269",
         "prompt": "303",
@@ -68,6 +75,7 @@ NODE_IDS = {
 }
 
 TEMPLATE_FILES = {
+    "txt2vid": "ltx_txt2vid_api.json",
     "img2vid": "ltx_img2vid_api.json",
     "digital_human": "ltx_digital_human_api.json",
     "keyframe_2": "ltx_keyframe2_api.json",

@@ -11,7 +11,7 @@ sys.stdout.reconfigure(line_buffering=True)
 async def main():
     parser = argparse.ArgumentParser(description="Grok Playwright Stream Bridge")
     parser.add_argument("prompt", type=str, help="The prompt to send to Grok")
-    parser.add_argument("--url", type=str, help="Grok project URL to resume chat", default="https://grok.com/")
+    parser.add_argument("--url", type=str, help="Grok project URL to resume chat", default="https://grok.com/project/50afbd22-0176-4dc8-a46e-43255b9943f7?tab=conversations")
     parser.add_argument("--timeout", type=int, help="Timeout in seconds", default=180)
     parser.add_argument("--user-data-dir", type=str, help="Path to Chrome user data dir", default=None)
     args = parser.parse_args()

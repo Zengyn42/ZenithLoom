@@ -1,6 +1,7 @@
 """ComfyUI MCP Server — exposes LTX-Video workflows as MCP tools.
 
 Tools:
+  - ltx_txt2vid:          Text prompt only → video
   - ltx_img2vid:          Single image + prompt → video
   - ltx_keyframe_2:       Start/end frame + prompt → video
   - ltx_keyframe_3:       Start/mid/end frame + prompt → video
@@ -213,6 +214,34 @@ async def _execute_workflow(
 # ---------------------------------------------------------------------------
 # MCP Tools
 # ---------------------------------------------------------------------------
+
+@mcp.tool()
+async def ltx_txt2vid(
+    prompt: str,
+    width: int = 1280,
+    height: int = 720,
+    frame_rate: int = 24,
+    num_frames: int = 241,
+    seed: int | None = None,
+) -> str:
+    """Generate a video from a text prompt only (no image input) using LTX-Video 2.3.
+
+    Args:
+        prompt: Cinematic description of the desired video content, motion and style
+        width: Output video width (default 1280)
+        height: Output video height (default 720)
+        frame_rate: Frames per second (default 24)
+        num_frames: Total frames to generate, 241 ≈ 10s at 24fps (default 241)
+        seed: Optional seed for reproducibility
+    """
+    result = await _execute_workflow(
+        "txt2vid",
+        prompt=prompt,
+        files_to_upload={},
+        width=width, height=height, frame_rate=frame_rate, num_frames=num_frames, seed=seed,
+    )
+    return json.dumps(result, ensure_ascii=False, indent=2)
+
 
 @mcp.tool()
 async def ltx_img2vid(

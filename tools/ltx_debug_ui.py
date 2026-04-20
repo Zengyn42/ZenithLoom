@@ -206,6 +206,14 @@ def check_comfyui_sync() -> str:
     return asyncio.run(_check_comfyui())
 
 
+def run_txt2vid(prompt, width, height, fps, frames):
+    video, log = asyncio.run(_run_workflow(
+        "txt2vid", prompt, image=None,
+        width=int(width), height=int(height), frame_rate=int(fps), num_frames=int(frames),
+    ))
+    return video, log
+
+
 def run_img2vid(prompt, image, width, height, fps, frames):
     video, log = asyncio.run(_run_workflow(
         "img2vid", prompt, image,
@@ -236,6 +244,21 @@ def run_digital_human(prompt, image, audio, width, height, fps, frames):
         width=int(width), height=int(height), frame_rate=int(fps), num_frames=int(frames),
     ))
     return video, log
+
+
+def query_job_status(prompt_id: str) -> str:
+    """Query ComfyUI job status by prompt_id."""
+    if not prompt_id or not prompt_id.strip():
+        return "Please enter a prompt_id"
+    async def _query():
+        try:
+            history = await client.get_history(prompt_id.strip())
+            if history:
+                return json.dumps({"status": "completed", "prompt_id": prompt_id.strip(), "history": history}, ensure_ascii=False, indent=2)
+            return json.dumps({"status": "unknown", "prompt_id": prompt_id.strip()}, indent=2)
+        except Exception as e:
+            return json.dumps({"status": "error", "error": str(e)}, indent=2)
+    return asyncio.run(_query())
 
 
 # ---------------------------------------------------------------------------
@@ -272,6 +295,22 @@ def build_ui() -> gr.Blocks:
             check_btn.click(fn=check_comfyui_sync, outputs=status)
 
         with gr.Tabs():
+            # ===== Tab 0: txt2vid =====
+            with gr.TabItem("✏️ txt2vid（纯文字）"):
+                with gr.Row():
+                    with gr.Column(scale=1):
+                        t2v_prompt = _prompt_section("txt2vid")
+                        t2v_w, t2v_h, t2v_fps, t2v_frames = _common_params()
+                        t2v_btn = gr.Button("🚀 Generate Video", variant="primary", size="lg")
+                    with gr.Column(scale=1):
+                        t2v_video = gr.Video(label="Generated Video")
+                        t2v_log = gr.Textbox(label="Log", lines=12, interactive=False)
+                t2v_btn.click(
+                    fn=run_txt2vid,
+                    inputs=[t2v_prompt, t2v_w, t2v_h, t2v_fps, t2v_frames],
+                    outputs=[t2v_video, t2v_log],
+                )
+
             # ===== Tab 1: img2vid =====
             with gr.TabItem("🖼️ img2vid"):
                 with gr.Row():
@@ -346,13 +385,28 @@ def build_ui() -> gr.Blocks:
                     outputs=[dh_video, dh_log],
                 )
 
+            # ===== Tab 5: Job Status =====
+            with gr.TabItem("📋 Job Status"):
+                gr.Markdown("查询 ComfyUI 任务状态（输入生成时返回的 prompt_id）")
+                with gr.Row():
+                    with gr.Column(scale=1):
+                        job_prompt_id = gr.Textbox(label="Prompt ID", placeholder="输入 prompt_id...")
+                        job_btn = gr.Button("🔍 Query Status", variant="primary")
+                    with gr.Column(scale=1):
+                        job_result = gr.Textbox(label="Result", lines=15, interactive=False)
+                job_btn.click(
+                    fn=query_job_status,
+                    inputs=job_prompt_id,
+                    outputs=job_result,
+                )
+
         # ===== Workflow Inspector =====
         with gr.Accordion("🔧 Workflow Inspector", open=False):
             gr.Markdown("查看实际发送给 ComfyUI 的 workflow JSON（调试用）")
             with gr.Row():
                 insp_type = gr.Dropdown(
-                    choices=["img2vid", "keyframe_2", "keyframe_3", "digital_human"],
-                    value="img2vid",
+                    choices=["txt2vid", "img2vid", "keyframe_2", "keyframe_3", "digital_human"],
+                    value="txt2vid",
                     label="Workflow Type",
                 )
                 insp_btn = gr.Button("Load Template")
