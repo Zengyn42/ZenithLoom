@@ -14,6 +14,10 @@ data/
 blueprints/role_agents/*/sessions.json
 blueprints/functional_graphs/*/sessions.json
 
+# Browser cache (Playwright)
+bot-chrome-data/
+**/bot-chrome-data/
+
 # Claude sessions
 .claude/
 
