@@ -596,13 +596,26 @@ def run_tests(state: dict) -> dict:
     stash_hash = _stash_snapshot(working_dir, f"pre-test-attempt-{retry_count}")
 
     if not os.path.isfile(runner):
-        logger.warning(f"[run_tests] runner not found: {runner}")
-        return {
-            "execution_stdout": "",
-            "execution_stderr": f"test_tool/run_tests.sh not found in {working_dir}",
-            "execution_returncode": 1,
-            "prev_snapshot_hash": stash_hash,
-        }
+        # Auto-generate run_tests.sh if test directory exists
+        test_dir = os.path.join(working_dir, "test_tool", "unit_tests")
+        if os.path.isdir(test_dir):
+            logger.info(f"[run_tests] auto-generating {runner} (model didn't create it)")
+            os.makedirs(os.path.dirname(runner), exist_ok=True)
+            with open(runner, "w") as f:
+                f.write(
+                    '#!/bin/bash\nset -e\n'
+                    'cd "$(dirname "$0")/.."\n'
+                    'python3 -m pytest test_tool/unit_tests/ -v 2>&1\n'
+                )
+            os.chmod(runner, 0o755)
+        else:
+            logger.warning(f"[run_tests] no runner and no test_tool/unit_tests/: {runner}")
+            return {
+                "execution_stdout": "",
+                "execution_stderr": f"test_tool/run_tests.sh not found and no test_tool/unit_tests/ in {working_dir}",
+                "execution_returncode": 1,
+                "prev_snapshot_hash": stash_hash,
+            }
 
     try:
         r = subprocess.run(
