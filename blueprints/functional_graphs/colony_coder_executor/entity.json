@@ -10,7 +10,7 @@
       {
         "id": "code_gen",
         "type": "OLLAMA",
-        "model": "qwen3.5:27b",
+        "model": "gemma4:31b",
         "timeout": 300,
         "max_iterations": 10,
         "options": {"think": false},
