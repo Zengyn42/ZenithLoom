@@ -317,28 +317,23 @@ class TestGradioUI(unittest.TestCase):
 
 
 # ---------------------------------------------------------------------------
-# Old node preservation test
+# Old nodes removed test
 # ---------------------------------------------------------------------------
 
-class TestOldNodesPreserved(unittest.TestCase):
-    """Verify old ComfyUI/LTX nodes still exist."""
+class TestOldNodesRemoved(unittest.TestCase):
+    """Verify old ComfyUI/LTX nodes have been cleaned up."""
 
-    def test_comfyui_node_exists(self):
-        """framework/nodes/comfyui/comfyui_node.py exists."""
-        path = _ROOT / "framework" / "nodes" / "comfyui" / "comfyui_node.py"
-        self.assertTrue(path.exists(), "ComfyUINode file missing")
+    def test_comfyui_node_dir_removed(self):
+        """framework/nodes/comfyui/ should not exist."""
+        path = _ROOT / "framework" / "nodes" / "comfyui"
+        self.assertFalse(path.exists(), "Old comfyui node directory should be removed")
 
-    def test_ltx_video_node_exists(self):
-        """framework/nodes/comfyui/ltx_video_node.py exists."""
-        path = _ROOT / "framework" / "nodes" / "comfyui" / "ltx_video_node.py"
-        self.assertTrue(path.exists(), "LTXVideoNode file missing")
-
-    def test_builtins_registers_nodes(self):
-        """builtins.py registers ComfyUI and LTX_VIDEO node types."""
+    def test_builtins_no_old_nodes(self):
+        """builtins.py should not register COMFYUI or LTX_VIDEO node types."""
         builtins_path = _ROOT / "framework" / "builtins.py"
         content = builtins_path.read_text()
-        self.assertIn("ComfyUINode", content)
-        self.assertIn("LTXVideoNode", content)
+        self.assertNotIn("ComfyUINode", content)
+        self.assertNotIn("LTXVideoNode", content)
 
 
 if __name__ == "__main__":

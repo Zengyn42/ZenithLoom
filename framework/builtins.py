@@ -148,17 +148,6 @@ def _(config, node_config):
     return HeartbeatNode(node_config)
 
 
-@register_node("COMFYUI")
-def _(config, node_config):
-    from framework.nodes.comfyui.comfyui_node import ComfyUINode
-    return ComfyUINode(config, node_config)
-
-
-@register_node("LTX_VIDEO")
-def _(config, node_config):
-    from framework.nodes.comfyui.ltx_video_node import LTXVideoNode
-    return LTXVideoNode(config, node_config)
-
 
 @register_node("TASK_MONITOR")
 def _(config, node_config):
