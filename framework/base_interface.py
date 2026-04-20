@@ -258,6 +258,11 @@ class BaseInterface:
     # Agent 调用
     # ------------------------------------------------------------------
 
+    async def _ensure_controller(self) -> None:
+        """确保 controller 已初始化。"""
+        if self._controller is None:
+            await self.setup()
+
     async def invoke_agent(
         self,
         user_input: str,
@@ -265,8 +270,12 @@ class BaseInterface:
     ) -> str:
         from framework.nodes.llm.llm_node import set_stream_callback
 
+        print(f"DEBUG: invoke_agent started for input: {user_input[:20]}...", flush=True)
+        await self._ensure_controller()
+        print("DEBUG: Controller ensured", flush=True)
         thread_id = self._resolve_thread_id()
         workspace = self._resolve_workspace()
+        print(f"DEBUG: Resolved thread_id={thread_id}, workspace={workspace}", flush=True)
         config = {"configurable": {"thread_id": thread_id}}
 
         init_state: dict = {"messages": [HumanMessage(content=user_input)]}
@@ -276,6 +285,8 @@ class BaseInterface:
             init_state["workspace"] = workspace
         if extra_state:
             init_state.update(extra_state)
+        
+        print("DEBUG: Entering _astream_graph loop...", flush=True)
 
         self._last_stream_chunk_count = 0
         self._on_stream_reset()

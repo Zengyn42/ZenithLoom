@@ -510,6 +510,17 @@ class LlmNode:
                 "node_sessions": {self._session_key: new_session_id},
             }
 
+        # ── 消费后清理子图结论字段 ─────────────────────────────────────────
+        # _build_gemini_section 已经在本轮把 debate_conclusion / apex_conclusion /
+        # knowledge_result / discovery_report 注入到 prompt。清空它们可以避免
+        # 下一个用户轮次重复注入已经看过的上下文（主图 Claude Main 首要受益方）。
+        # 注意：若本节点是子图末尾的 output_field 生产者，下方的 output_field
+        # 写入会覆盖此处的 ""，故不影响子图 → 父图的结论传递。
+        result["debate_conclusion"] = ""
+        result["apex_conclusion"] = ""
+        result["knowledge_result"] = ""
+        result["discovery_report"] = ""
+
         # ── output_field 映射（子图末尾节点用）──────────────────────────────
         # 当节点配置了 output_field 时，把 LLM 输出自动写入指定 state 字段，
         # 使子图结论通过 LangGraph 原生 state 合并传回父图。

@@ -60,6 +60,12 @@ def _(config, node_config):
     return GeminiCLINode(config, node_config)
 
 
+@register_node("GROK")
+def _(config, node_config):
+    from framework.nodes.llm.grok import GrokNode
+    return GrokNode(config, node_config)
+
+
 @register_node("GEMINI_API")
 def _(config, node_config):
     from framework.nodes.llm.gemini import GeminiCodeAssistNode

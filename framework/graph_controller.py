@@ -81,6 +81,9 @@ class GraphController:
 
         返回最终 result dict（等价于原 ainvoke 的返回值）。
         """
+        print(f"DEBUG: astream_graph received input: {init_state}", flush=True)
+        print("DEBUG: Starting graph iteration...", flush=True)
+
         final_state: dict = {}
 
         async for event in self._graph.astream(

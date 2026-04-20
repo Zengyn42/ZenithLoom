@@ -9,6 +9,7 @@ Chrome 异步执行器 — framework/utils/chrome_executor.py
 import asyncio
 import logging
 import os
+import sys
 import uuid
 
 from framework.debug import is_debug
@@ -64,6 +65,8 @@ class ChromeExecutor:
             
         cmd.extend(["--timeout", str(self._timeout)])
         
+        print(f"DEBUG: Starting bridge with command: {' '.join(cmd)}", flush=True)
+        logger.info(f"[{self._model}] full_cmd: {' '.join(cmd)}")
         logger.info(f"[{self._model}] executing bridge script (url={session_id[:30] if session_id else 'new'})")
 
         proc = await asyncio.create_subprocess_exec(
@@ -72,43 +75,49 @@ class ChromeExecutor:
             stderr=asyncio.subprocess.PIPE,
             cwd=cwd or None
         )
+        print(f"DEBUG: Bridge process started (PID: {proc.pid})", flush=True)
 
         result_text = ""
-
-        async def _read_stdout():
-            nonlocal result_text
-            while True:
-                chunk = await proc.stdout.read(1024)
-                if not chunk:
-                    break
-                text = chunk.decode(errors="replace")
-                result_text += text
-                if stream_cb:
-                    stream_cb(text, False)
-
         stderr_lines = []
         new_session_id = session_id
         
-        async def _read_stderr():
+        async def read_stdout():
+            nonlocal result_text
+            while True:
+                line = await proc.stdout.readline()
+                if not line: break
+                text = line.decode(errors="replace").strip()
+                if not text: continue
+                print(f"DEBUG: Bridge output: {text}", flush=True)
+                if stream_cb:
+                    stream_cb(text, False)
+                result_text += text + "\n"
+
+        async def read_stderr():
             nonlocal new_session_id
-            async for raw in proc.stderr:
-                line = raw.decode(errors="replace").rstrip()
-                stderr_lines.append(line)
-                logger.debug(f"[{self._model}/stderr] {line}")
-                # Parse JSON tokens from stderr
-                if line.startswith("{") and "__session_url__" in line:
-                    try:
-                        import json
-                        data = json.loads(line)
-                        if "__session_url__" in data:
-                            new_session_id = data["__session_url__"]
-                    except:
-                        pass
+            while True:
+                line = await proc.stderr.readline()
+                if not line: break
+                text = line.decode(errors="replace").strip()
+                if text:
+                    stderr_lines.append(text)
+                    logger.debug(f"[{self._model}/stderr] {text}")
+                    if text.startswith("DEBUG:"):
+                        print(text, flush=True)
+                    # Parse JSON tokens from stderr
+                    if text.startswith("{") and "__session_url__" in text:
+                        try:
+                            import json
+                            data = json.loads(text)
+                            if "__session_url__" in data:
+                                new_session_id = data["__session_url__"]
+                        except:
+                            pass
 
         try:
             await asyncio.gather(
-                _read_stdout(),
-                _read_stderr(),
+                read_stdout(),
+                read_stderr(),
                 asyncio.wait_for(proc.wait(), timeout=self._timeout + 30)
             )
         except asyncio.TimeoutError:

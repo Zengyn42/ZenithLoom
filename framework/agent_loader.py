@@ -774,8 +774,16 @@ async def _build_declarative(
         _state_py = Path(blueprint_dir) / "state.py"
         if _state_py.exists() and _schema_name not in get_all_schemas():
             import importlib.util as _ilu
-            _spec = _ilu.spec_from_file_location(f"_schema_{_schema_name}", _state_py)
+            import sys as _sys
+            _mod_name = f"_schema_{_schema_name}"
+            _spec = _ilu.spec_from_file_location(_mod_name, _state_py)
             _mod = _ilu.module_from_spec(_spec)
+            # Register BEFORE exec_module so typing.get_type_hints() can look up
+            # the module via sys.modules[cls.__module__] when resolving forward
+            # references (state.py files use `from __future__ import annotations`,
+            # which stores annotations as strings that need the module's globals
+            # to eval — e.g. `Annotated`, `_merge_dict`).
+            _sys.modules[_mod_name] = _mod
             _spec.loader.exec_module(_mod)
             logger.debug(f"[agent_loader] auto-imported state.py for schema {_schema_name!r}")
 

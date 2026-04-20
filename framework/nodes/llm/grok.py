@@ -32,15 +32,17 @@ class GrokNode(LlmNode):
 
     def __init__(self, config: AgentConfig, node_config: dict, system_prompt: str = ""):
         super().__init__(config, node_config)
-        self._model = node_config.get("model", "grok")
-        self._timeout = node_config.get("timeout", 180)
+        # 解析配置：优先从嵌套的 node_config 取，其次从顶层取
+        real_config = node_config.get("node_config", {})
+        self._model = node_config.get("model") or real_config.get("model", "grok")
+        self._timeout = real_config.get("timeout") or node_config.get("timeout", 180)
         
         base_prompt: str = node_config.get("system_prompt", system_prompt)
         skill_content = self._load_skill_content()
         self._system_prompt = f"{base_prompt}\n\n{skill_content}" if skill_content else base_prompt
         
         # 运行时数据隔离：从图配置读取 chrome profile
-        self._chrome_profile_dir = node_config.get("chrome_profile_dir", None)
+        self._chrome_profile_dir = real_config.get("chrome_profile_dir") or node_config.get("chrome_profile_dir")
         
         # 实例化执行器
         bridge_script = os.path.join(
@@ -86,19 +88,23 @@ class GrokNode(LlmNode):
                     
         messages.append({"role": "user", "content": prompt})
 
+        print(f"DEBUG: GrokNode.call_llm started for node {self._node_id}", flush=True)
         # Token 安全检查
         check_before_llm(messages=messages, node_id=self._node_id, limit=self._token_limit)
+        print("DEBUG: Token check passed", flush=True)
 
-        # 拼接全量对话
-        full_prompt = ""
-        for m in messages:
-            role_label = "System" if m["role"] == "system" else "User" if m["role"] == "user" else "Assistant"
-            full_prompt += f"[{role_label}]: {m['content']}\n\n"
+        # 只发送最新的消息，因为 Grok 网页端已经有历史记录了
+        full_prompt = prompt
         
-        full_prompt += "请作为 Assistant 回复上面最后一条 User 的消息。不要带前缀。"
+        # 如果有 System Prompt，则作为前缀注入（或者在首轮发送）
+        if sys_prompt and not session_id:
+            full_prompt = f"{sys_prompt}\n\n{prompt}"
+        
+        print(f"DEBUG: Prepared prompt (len={len(full_prompt)})", flush=True)
 
         # 交给 Executor 执行
         cb = _stream_cb.get()
+        print("DEBUG: Calling executor.execute...", flush=True)
         return await self._executor.execute(
             prompt=full_prompt,
             session_id=session_id,

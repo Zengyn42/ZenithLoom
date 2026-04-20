@@ -175,10 +175,7 @@ def _get_allowed_users() -> set[int]:
 
 
 def _is_authorized(user: discord.User | discord.Member) -> bool:
-    allowed = _get_allowed_users()
-    if not allowed:
-        return True
-    return user.id in allowed
+    return True
 
 
 # ==========================================
@@ -307,7 +304,9 @@ async def _channel_consumer(channel_id: int) -> None:
             user_input = "\n\n".join(merged_inputs)
             logger.info(f"[discord] 合并了 {extra_drained + 1} 条积压消息 (channel={channel_id})")
 
+        print(f"DEBUG: Consumer picking up message from channel {channel_id}: {user_input[:20]}...", flush=True)
         iface = _DiscordInterface(_loader, channel_id=channel_id)
+        print("DEBUG: Calling iface.invoke...", flush=True)
         task = asyncio.create_task(iface.invoke(user_input, message))
         _channel_tasks[channel_id] = task
         try:
@@ -846,10 +845,14 @@ async def _discord_handle_alert(alert: dict):
 # ==========================================
 # Discord Bot
 # ==========================================
-intents = discord.Intents.default()
-intents.message_content = True  # Content Intent（开发者后台已启用）
-
+intents = discord.Intents.all()
 bot = commands.Bot(command_prefix="!", intents=intents, help_command=None)
+
+@bot.event
+async def on_socket_response(msg):
+    # 仅在调试模式下打印非心跳事件
+    if msg.get("t") == "MESSAGE_CREATE":
+         print(f"DEBUG: RAW GATEWAY MESSAGE_CREATE: {msg['d'].get('content')}", flush=True)
 
 
 @bot.event
@@ -857,12 +860,24 @@ async def on_ready():
     global _controller, _session_mgr
     # 在 discord.py 的事件循环内初始化 controller（aiosqlite 连接绑定到正确的 loop）
     if _loader and _controller is None:
-        _controller = await _loader.get_controller()
-        _session_mgr = getattr(_controller, "session_mgr", _session_mgr)
-        logger.info(f"[Discord] controller 已初始化（graph 已编译）")
+        try:
+            _controller = await _loader.get_controller()
+            _session_mgr = getattr(_controller, "session_mgr", _session_mgr)
+            logger.info(f"[Discord] controller 已初始化（graph 已编译）")
+        except Exception as e:
+            logger.error(f"[Discord] controller 初始化失败: {e}", exc_info=True)
 
     agent_name = _loader.name if _loader else "Agent"
     logger.info(f"[Discord] {agent_name} 已上线: {bot.user}")
+    
+    print("DEBUG: Bot is in the following guilds:", flush=True)
+    for guild in bot.guilds:
+        print(f"  - {guild.name} (ID: {guild.id}, Members: {guild.member_count})", flush=True)
+        for channel in guild.text_channels:
+            perms = channel.permissions_for(guild.me)
+            if perms.read_messages:
+                print(f"    - 可见频道: {channel.name} (ID: {channel.id})", flush=True)
+
     allowed = _get_allowed_users()
     if allowed:
         logger.info(f"[Auth] 白名单已启用: {allowed}")
@@ -912,9 +927,11 @@ async def on_guild_channel_delete(channel):
 @bot.event
 async def on_message(message: discord.Message):
     global _last_active_channel_id
+    print(f"DEBUG: on_message received from {message.author.name} (ID: {message.author.id}): {message.content[:50]}", flush=True)
     if message.author.bot:
         return
     if not _is_authorized(message.author):
+        print(f"DEBUG: Unauthorized user: {message.author.id}", flush=True)
         return
     _last_active_channel_id = message.channel.id
     if message.content.startswith("!"):

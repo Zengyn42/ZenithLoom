@@ -92,7 +92,15 @@ def make_subgraph_exit(session_mode="persistent", subgraph_session_keys=None):
         msgs = state.get("messages", [])
         removals = [RemoveMessage(id=m.id) for m in msgs]
         logger.debug("[subgraph_exit] removing %d internal messages", len(msgs))
-        result = {"messages": removals}
+        # subgraph_topic / previous_node_output are subgraph-internal transient
+        # fields (per base.py docstring: "_subgraph_init 入口写入、出口清空").
+        # Clear here so they don't leak back to the parent graph and pollute
+        # subsequent parent LlmNode prompts via _topic_inject / _prev_inject.
+        result = {
+            "messages": removals,
+            "subgraph_topic": "",
+            "previous_node_output": "",
+        }
 
         if _is_inherit and _keys_to_clear:
             ns = dict(state.get("node_sessions", {}))
