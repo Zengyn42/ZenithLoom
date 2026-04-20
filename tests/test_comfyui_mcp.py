@@ -31,7 +31,7 @@ class TestWorkflowManager(unittest.TestCase):
         import importlib.util
         spec = importlib.util.spec_from_file_location(
             "workflow_manager",
-            _ROOT / "mcp_servers" / "comfyui" / "workflow_manager.py",
+            _ROOT / "framework" / "clients" / "comfyui" / "workflow_manager.py",
         )
         mod = importlib.util.module_from_spec(spec)
         spec.loader.exec_module(mod)
@@ -152,7 +152,7 @@ class TestComfyUIClient(unittest.TestCase):
         import importlib.util
         spec = importlib.util.spec_from_file_location(
             "comfyui_client",
-            _ROOT / "mcp_servers" / "comfyui" / "comfyui_client.py",
+            _ROOT / "framework" / "clients" / "comfyui" / "comfyui_client.py",
         )
         mod = importlib.util.module_from_spec(spec)
         spec.loader.exec_module(mod)

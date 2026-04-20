@@ -50,8 +50,8 @@ EVAL_PROMPT_TEMPLATE = """你是视频质量评估专家。以下是一组来自
 def _get_comfyui_client():
     """Lazy import ComfyUIClient to avoid import-time issues."""
     import importlib.util
-    mcp_dir = Path(__file__).resolve().parent.parent.parent.parent / "mcp_servers" / "comfyui"
-    spec = importlib.util.spec_from_file_location("comfyui_client", mcp_dir / "comfyui_client.py")
+    clients_dir = Path(__file__).resolve().parent.parent.parent.parent / "framework" / "clients" / "comfyui"
+    spec = importlib.util.spec_from_file_location("comfyui_client", clients_dir / "comfyui_client.py")
     mod = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(mod)
     return mod.ComfyUIClient(host=COMFYUI_HOST, port=COMFYUI_PORT)
@@ -60,8 +60,8 @@ def _get_comfyui_client():
 def _get_workflow_manager():
     """Lazy import WorkflowManager."""
     import importlib.util
-    mcp_dir = Path(__file__).resolve().parent.parent.parent.parent / "mcp_servers" / "comfyui"
-    spec = importlib.util.spec_from_file_location("workflow_manager", mcp_dir / "workflow_manager.py")
+    clients_dir = Path(__file__).resolve().parent.parent.parent.parent / "framework" / "clients" / "comfyui"
+    spec = importlib.util.spec_from_file_location("workflow_manager", clients_dir / "workflow_manager.py")
     mod = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(mod)
     return mod.WorkflowManager()

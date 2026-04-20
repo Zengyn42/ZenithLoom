@@ -37,13 +37,13 @@ sys.path.insert(0, str(_ROOT))
 import gradio as gr
 
 # Import MCP comfyui modules (sibling to this tools/ dir)
-_MCP_COMFYUI_DIR = _ROOT / "mcp_servers" / "comfyui"
+_COMFYUI_CLIENT_DIR = _ROOT / "framework" / "clients" / "comfyui"
 
 import importlib.util
 
 def _import_mcp_module(name: str):
     """Import a module from mcp/comfyui/ by direct file path."""
-    spec = importlib.util.spec_from_file_location(name, _MCP_COMFYUI_DIR / f"{name}.py")
+    spec = importlib.util.spec_from_file_location(name, _COMFYUI_CLIENT_DIR / f"{name}.py")
     mod = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(mod)
     return mod

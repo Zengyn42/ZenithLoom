@@ -52,18 +52,20 @@ from mcp.server.fastmcp import FastMCP  # noqa: E402 — now resolves to pip SDK
 for _p in _hidden:
     sys.path.insert(0, _p)
 
-# Sibling imports — use direct file import to avoid namespace issues
+# Import shared client library from framework/clients/comfyui/
 import importlib.util
 
-def _import_sibling(name: str):
-    """Import a .py file from the same directory."""
-    spec = importlib.util.spec_from_file_location(name, _THIS_DIR / f"{name}.py")
+_CLIENTS_DIR = Path(_ZENITHLOOM_ROOT) / "framework" / "clients" / "comfyui"
+
+def _import_client_module(name: str):
+    """Import a .py file from framework/clients/comfyui/."""
+    spec = importlib.util.spec_from_file_location(name, _CLIENTS_DIR / f"{name}.py")
     mod = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(mod)
     return mod
 
-_client_mod = _import_sibling("comfyui_client")
-_wf_mod = _import_sibling("workflow_manager")
+_client_mod = _import_client_module("comfyui_client")
+_wf_mod = _import_client_module("workflow_manager")
 ComfyUIClient = _client_mod.ComfyUIClient
 WorkflowManager = _wf_mod.WorkflowManager
 
