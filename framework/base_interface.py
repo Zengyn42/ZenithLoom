@@ -599,43 +599,70 @@ class BaseInterface:
 
     @staticmethod
     def split_fence_aware(text: str, max_chars: int = 1900) -> list[str]:
-        """Markdown fence-aware 文本分块，用于 Discord / GChat 消息长度限制。"""
+        """
+        更智能的 Markdown 分块：优先按段落 (\n\n) 切分，其次按行 (\n) 切分。
+        确保代码块 (```) 不被切断。
+        """
         if len(text) <= max_chars:
             return [text]
 
-        chunks: list[str] = []
-        remaining = text
-        in_fence  = False
+        chunks = []
+        lines = text.split("\n")
+        current_chunk = []
+        current_len = 0
+        in_fence = False
         fence_lang = ""
 
-        while len(remaining) > max_chars:
-            candidate   = remaining[:max_chars]
-            cur_in_fence = in_fence
-            cur_lang     = fence_lang
+        for line in lines:
+            line_len = len(line) + 1  # +1 for newline
+            
+            # 追踪代码块状态
+            if line.strip().startswith("```"):
+                if in_fence:
+                    in_fence = False
+                    fence_lang = ""
+                else:
+                    in_fence = True
+                    fence_lang = line.strip()[3:]
 
-            for line in candidate.split("\n"):
-                stripped = line.strip()
-                if stripped.startswith("```"):
-                    if cur_in_fence:
-                        cur_in_fence = False
-                        cur_lang = ""
-                    else:
-                        cur_in_fence = True
-                        cur_lang = stripped[3:].strip()
+            # 如果单行超长，强制切分（兜底）
+            if line_len > max_chars:
+                # 先把当前的存了
+                if current_chunk:
+                    chunks.append("\n".join(current_chunk))
+                    current_chunk = []
+                    current_len = 0
+                
+                # 强制切分这一长行
+                sub_remaining = line
+                while len(sub_remaining) > max_chars:
+                    chunks.append(sub_remaining[:max_chars])
+                    sub_remaining = sub_remaining[max_chars:]
+                current_chunk = [sub_remaining]
+                current_len = len(sub_remaining)
+                continue
 
-            if cur_in_fence:
-                chunk     = candidate + "\n```"
-                remaining = f"```{cur_lang}\n" + remaining[max_chars:]
+            # 正常入队或切分
+            if current_len + line_len > max_chars:
+                # 达到限制，打包当前块
+                full_chunk = "\n".join(current_chunk)
+                if in_fence:
+                    full_chunk += "\n```"  # 补齐关闭标签
+                chunks.append(full_chunk)
+                
+                # 开启新块
+                if in_fence:
+                    current_chunk = [f"```{fence_lang}", line]
+                    current_len = len(fence_lang) + 4 + line_len
+                else:
+                    current_chunk = [line]
+                    current_len = line_len
             else:
-                chunk     = candidate
-                remaining = remaining[max_chars:]
+                current_chunk.append(line)
+                current_len += line_len
 
-            in_fence   = cur_in_fence
-            fence_lang = cur_lang
-            chunks.append(chunk)
-
-        if remaining:
-            chunks.append(remaining)
+        if current_chunk:
+            chunks.append("\n".join(current_chunk))
 
         return chunks
 

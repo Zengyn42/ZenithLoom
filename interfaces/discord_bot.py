@@ -255,9 +255,19 @@ def format_persona_response(text: str) -> str:
             continue
 
         ansi_code, emoji = seen_tags.get(tag_name, ("", "▪️"))
-        # 粗体 emoji 标题 + 正文，不用代码块或 blockquote（避免字体变小/变灰）
-        block = f"{emoji} **{tag_name}**\n{content}"
+        
+        # 预处理 content: 确保列表 1. 2. 后面有空格（Grok 有时会漏掉）
+        content = re.sub(r'^(\d+)\.([^\s])', r'\1. \2', content, flags=re.MULTILINE)
+        
+        # 粗体 emoji 标题 + 双换行 + 正文，确保列表 (1. 2.) 能够被 Discord 识别为列表起始
+        block = f"{emoji} **{tag_name}**\n\n{content}"
         result_blocks.append(block)
+
+    # 🚨 修复：处理最后一个标签之后可能存在的文字（总结等）
+    if i < len(parts):
+        trailing = parts[i].strip()
+        if trailing:
+            result_blocks.append(trailing)
 
     return "\n\n".join(result_blocks)
 

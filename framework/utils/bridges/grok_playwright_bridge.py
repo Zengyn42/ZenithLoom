@@ -143,9 +143,15 @@ async def main():
                         stable_count = 0
                     elif current_text.strip() == last_text.strip() and last_text != "":
                         stable_count += 1
-                        if stable_count >= 5: 
+                        
+                        # 只有在文本稳定且“发送按钮”重新出现时，才确定回复结束
+                        # 如果没有发送按钮，说明还在生成中，即使文本没变也要多等一会儿
+                        submit_visible = await page.locator('button[aria-label="Submit"]:visible, button[aria-label*="Send"]:visible').count() > 0
+                        
+                        if (stable_count >= 15) or (stable_count >= 5 and submit_visible): 
                             media_data = await page.evaluate("""() => {
                             const bubbles = document.querySelectorAll('div.message-bubble, [data-testid="message-bubble"], .message-bubble, [class*="message-bubble"]');
+                            if (!bubbles.length) return { imgs: [], videos: [] };
                             const last = bubbles[bubbles.length - 1];
                             const imgs = Array.from(last.querySelectorAll('img')).map(i => i.src);
                             const videos = Array.from(last.querySelectorAll('source')).map(v => v.src).concat(Array.from(last.querySelectorAll('video')).map(v => v.src));
@@ -162,7 +168,7 @@ async def main():
                                     if vid:
                                         sys.stdout.write(f"[Video]({vid})\n")
                                 sys.stdout.flush()
-                        break
+                            break
 
             final_url = page.url
             print(json.dumps({"__session_url__": final_url}), file=sys.stderr, flush=True)
