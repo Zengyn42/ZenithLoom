@@ -5,8 +5,8 @@ Agent Mail MCP 客户端代理 — framework/mcp_proxy_agent_mail.py
 ack_mail / list_agents / register_agent / unregister_agent 工具暴露给
 框架内所有 LLM 节点。
 
-与 HeartbeatMCPProxy 保持相同的接口风格，由 MCPLauncher.ensure_and_connect()
-统一管理连接生命周期。
+与 HeartbeatMCPProxy 保持相同的接口风格，由 MCPManager + EntityLoader
+统一管理连接生命周期（entity.json "mcp" 数组声明，proxy 字段触发连接）。
 """
 
 import logging
@@ -23,13 +23,14 @@ class AgentMailProxy:
     Agent Mail MCP 客户端代理。
 
     connect(server_url) 建立 SSE 连接后，可通过 call_tool() 调用 mail server 工具。
-    connect() 由 MCPLauncher.ensure_and_connect() 统一调用，server 已就绪。
+    MCPManager.acquire() 确保 server 进程已启动，EntityLoader._connect_proxy() 调用 connect()。
 
     生命周期：
-      1. connect()  — 建立 SSE 连接（server 由 MCPLauncher 保证已运行）
-      2. call_tool() — 调用 mail server 工具
-      3. register()  — 连接成功后注册当前 agent PID（连接即注册）
-      4. disconnect() — 断开连接（agent 关闭时注销）
+      1. MCPManager.acquire() — 启动/复用 MCP Server 进程
+      2. connect()  — 建立 SSE 连接
+      3. call_tool() — 调用 mail server 工具
+      4. register()  — 连接成功后注册当前 agent PID
+      5. disconnect() — 断开连接（agent 关闭时注销）
     """
 
     def __init__(self, server_url: str = "http://127.0.0.1:8200/sse"):
@@ -41,7 +42,7 @@ class AgentMailProxy:
         self._session_cm = None  # context manager for ClientSession
 
     async def connect(self):
-        """建立 SSE 连接到 Agent Mail MCP Server（server 已由 MCPLauncher 保证就绪）。"""
+        """建立 SSE 连接到 Agent Mail MCP Server（server 已由 MCPManager 保证就绪）。"""
         self._cm = sse_client(self._server_url)
         try:
             self._read_stream, self._write_stream = await self._cm.__aenter__()

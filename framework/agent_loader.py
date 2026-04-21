@@ -64,7 +64,7 @@ class EntityLoader:
         self._controller = None
         self._session_mgr = None
         self._heartbeat_proxy = None  # HeartbeatMCPProxy | None
-        self._mcp_proxies: dict = {}  # name → proxy（由 start_mcps() 填充）
+        self._mcp_proxies: dict = {}  # name → proxy（由 start_mcp_servers() 的 proxy 连接填充）
 
         if is_debug():
             logger.debug(
@@ -334,17 +334,33 @@ class EntityLoader:
         """
         按 entity.json 顶层 "mcp" 数组启动所需的 MCP Server 进程。
 
+        统一入口：同时处理：
+          1. MCPManager acquire → SSE 配置注入 Claude SDK（Claude 节点直接用）
+          2. 可选 proxy 连接 → 工具注册到 TOOL_REGISTRY（Gemini/Ollama 节点用）
+
         读取格式：
           "mcp": [
             {
-              "name": "obsidian-vault",
-              "module": "mcp_servers.obsidian.server",
-              "module_args": ["--transport", "sse", "--port", "8101",
-                              "--vault", "/home/kingy/Foundation/Vault"],
-              "url": "http://localhost:8101/sse",
-              "shared": true
+              "name": "comfyui-video",
+              "module": "mcp_servers.comfyui.server",
+              "module_args": ["--transport", "sse", "--port", "8103"],
+              "url": "http://localhost:8103/sse",
+              "shared": true,
+              "dependency": { ... }
+            },
+            {
+              "name": "agent_mail",
+              "module": "mcp_servers.agent_mail",
+              "module_args": ["--transport", "sse", "--port", "8200"],
+              "url": "http://localhost:8200/sse",
+              "shared": true,
+              "proxy": "agent_mail"
             }
           ]
+
+        可选字段：
+          "proxy" — 指定 proxy class 名称（"agent_mail" / "heartbeat"），
+                    连接后注册工具到 TOOL_REGISTRY，供非 Claude 节点使用。
 
         返回成功启动/已运行的 server 名称列表。
         """
@@ -364,16 +380,66 @@ class EntityLoader:
             if ok:
                 started.append(name)
                 logger.info(f"[agent_loader] {self.name!r}: mcp server {name!r} acquired")
+
+                # Optional proxy: connect + register tools for non-Claude LLM nodes
+                proxy_type = spec.get("proxy")
+                if proxy_type:
+                    await self._connect_proxy(name, spec, proxy_type)
             else:
                 logger.error(f"[agent_loader] {self.name!r}: mcp server {name!r} failed to start")
 
         return started
 
+    async def _connect_proxy(self, name: str, spec: dict, proxy_type: str) -> None:
+        """Connect a proxy for framework tool registration (Gemini/Ollama nodes).
+
+        Also handles lifecycle hooks like agent_mail register/unregister.
+        """
+        proxy_class = _resolve_proxy_class(proxy_type)
+        if proxy_class is None:
+            logger.debug(f"[agent_loader] {self.name!r}: no proxy class for {proxy_type!r}, skip")
+            return
+
+        url = spec.get("url", "")
+        try:
+            proxy = proxy_class(url)
+            await proxy.connect()
+            self._mcp_proxies[name] = proxy
+            logger.info(f"[agent_loader] {self.name!r}: proxy {name!r} connected")
+
+            # agent_mail: register online status
+            if proxy_type == "agent_mail" and hasattr(proxy, "register"):
+                try:
+                    await proxy.register(self.name)
+                except Exception as e:
+                    logger.warning(f"[agent_loader] {self.name!r}: agent_mail register failed: {e}")
+
+            # Register tools to framework TOOL_REGISTRY
+            _register_mcp_tools(proxy_type, proxy)
+        except Exception as e:
+            logger.error(f"[agent_loader] {self.name!r}: proxy {name!r} connect failed: {e}")
+
     async def stop_mcp_servers(self) -> None:
         """
-        释放本 agent 持有的所有 MCP Server 引用。
+        释放本 agent 持有的所有 MCP Server 引用 + 断开 proxy 连接。
         引用归零时 MCPManager 负责停止进程。
         """
+        # 1. Disconnect proxies (agent_mail unregister, etc.)
+        for name, proxy in list(self._mcp_proxies.items()):
+            # agent_mail: unregister before disconnect
+            if hasattr(proxy, "unregister"):
+                try:
+                    await proxy.unregister(self.name)
+                except Exception as e:
+                    logger.warning(f"[agent_loader] {self.name!r}: {name!r} unregister failed: {e}")
+            try:
+                await proxy.disconnect()
+                logger.info(f"[agent_loader] {self.name!r}: proxy {name!r} disconnected")
+            except Exception as e:
+                logger.warning(f"[agent_loader] {self.name!r}: proxy {name!r} disconnect failed: {e}")
+        self._mcp_proxies.clear()
+
+        # 2. Release MCPManager refs
         from framework.mcp_manager import MCPManager
         mgr = MCPManager.get_instance()
         specs = self._json.get("mcp", [])
@@ -487,85 +553,6 @@ class EntityLoader:
             from framework.nodes.llm.heartbeat_tools import set_active_proxy
             set_active_proxy(None)
 
-    async def start_mcps(self):
-        """
-        遍历 identity.json 的 'mcps' 字段，对每个 MCP 调用
-        MCPLauncher.ensure_and_connect()，将结果存入 self._mcp_proxies。
-
-        连接成功后，若 proxy 提供 make_tools() 方法，则注册工具到框架 TOOL_REGISTRY。
-        适用于 agent_mail 等通用 MCP，与 heartbeat 完全同等地位。
-        """
-        from framework.mcp_launcher import MCPLauncher
-
-        entity_path = self._data_dir / "identity.json"
-        if not entity_path.exists():
-            logger.debug(f"[agent_loader] {self.name!r}: no identity.json, skip start_mcps")
-            return
-
-        try:
-            entity = json.loads(entity_path.read_text(encoding="utf-8"))
-        except Exception as e:
-            logger.warning(f"[agent_loader] {self.name!r}: failed to read identity.json: {e}")
-            return
-
-        mcps_conf = entity.get("mcps", [])
-        if not mcps_conf:
-            logger.debug(f"[agent_loader] {self.name!r}: no 'mcps' field, skip start_mcps")
-            return
-
-        for mcp_conf in mcps_conf:
-            mcp_name = mcp_conf.get("name", "unknown")
-            proxy_class = _resolve_proxy_class(mcp_name)
-            if proxy_class is None:
-                logger.warning(
-                    f"[agent_loader] {self.name!r}: no proxy class for MCP {mcp_name!r}, skip"
-                )
-                continue
-
-            proxy = await MCPLauncher.ensure_and_connect(mcp_conf, proxy_class)
-            if proxy is None:
-                logger.error(
-                    f"[agent_loader] {self.name!r}: failed to connect MCP {mcp_name!r}"
-                )
-                continue
-
-            self._mcp_proxies[mcp_name] = proxy
-            logger.info(f"[agent_loader] {self.name!r}: MCP {mcp_name!r} connected")
-
-            # agent_mail: 连接成功后立即注册在线状态
-            if mcp_name == "agent_mail" and hasattr(proxy, "register"):
-                try:
-                    await proxy.register(self.name)
-                except Exception as e:
-                    logger.warning(
-                        f"[agent_loader] {self.name!r}: agent_mail register failed: {e}"
-                    )
-
-            # 注册工具到框架 tool registry（若 proxy 提供工厂方法）
-            _register_mcp_tools(mcp_name, proxy)
-
-    async def stop_mcps(self) -> None:
-        """断开所有由 start_mcps() 建立的 MCP proxy 连接，并清空 _mcp_proxies。
-
-        应在 agent 关闭时调用，与 stop_heartbeat() 同等地位。
-        """
-        for mcp_name, proxy in list(self._mcp_proxies.items()):
-            # agent_mail: 注销在线状态再断连
-            if mcp_name == "agent_mail" and hasattr(proxy, "unregister"):
-                try:
-                    await proxy.unregister(self.name)
-                except Exception as e:
-                    logger.warning(
-                        f"[agent_loader] {self.name!r}: agent_mail unregister failed: {e}"
-                    )
-            try:
-                await proxy.disconnect()
-                logger.info(f"[agent_loader] {self.name!r}: MCP {mcp_name!r} disconnected")
-            except Exception as e:
-                logger.warning(
-                    f"[agent_loader] {self.name!r}: MCP {mcp_name!r} disconnect failed: {e}"
-                )
-        self._mcp_proxies.clear()
 
     def invalidate_engine(self) -> None:
         """使引擎和控制器缓存失效（compact/reset 后调用）。"""
