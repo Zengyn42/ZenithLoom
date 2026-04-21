@@ -577,6 +577,8 @@ class GeminiCLINode(AgentNode):
         skill_content = self._load_skill_content()
         self._system_prompt = f"{base_prompt}\n\n{skill_content}" if skill_content else base_prompt
         self._timeout: int = node_config.get("timeout") or self._DEFAULT_TIMEOUT
+        # 降级通知：call_llm 设置，__call__ 消费后清空
+        self._fallback_notice: str = ""
         logger.info(f"[gemini-cli] node={self._node_id} model={self._model} timeout={self._timeout}s enable_routing={self._enable_routing}")
 
     def _build_fallback_chain(self) -> list[str]:
@@ -778,6 +780,12 @@ class GeminiCLINode(AgentNode):
                     _unavailable_models.pop(model, None)
                     if j > 0:
                         logger.warning(f"[gemini-cli] resume 降级成功: → {model}")
+                        self._fallback_notice = (
+                            f"⚠️ 模型降级：{self._model} 不可用，"
+                            f"已自动切换到 {model}"
+                        )
+                    else:
+                        self._fallback_notice = ""
                     logger.info(f"[gemini-cli] done sid={new_sid[:8] if new_sid else '?'}")
                     return reply, new_sid
                 except _GeminiCapacityError as e:
@@ -822,6 +830,12 @@ class GeminiCLINode(AgentNode):
                     logger.warning(
                         f"[gemini-cli] 降级成功: {self._model} → {model}"
                     )
+                    self._fallback_notice = (
+                        f"⚠️ 模型降级：{self._model} 不可用，"
+                        f"已自动切换到 {model}"
+                    )
+                else:
+                    self._fallback_notice = ""
                 if is_debug():
                     logger.debug(f"[gemini-cli] reply_preview={reply[:100]!r}")
                 logger.info(f"[gemini-cli] done model={model} sid={new_sid[:8] if new_sid else '?'}")
@@ -933,6 +947,12 @@ class GeminiCLINode(AgentNode):
                 "routing_context": "",
                 "node_sessions": {self._session_key: session_id},
             }
+
+        # 消费降级通知，追加到回复末尾
+        fallback_notice = self._fallback_notice
+        self._fallback_notice = ""
+        if fallback_notice and reply:
+            reply = f"{reply}\n\n---\n{fallback_notice}"
 
         logger.info(f"[{self._node_id}] done")
 

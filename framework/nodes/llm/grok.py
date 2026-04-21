@@ -36,6 +36,7 @@ class GrokNode(LlmNode):
         real_config = node_config.get("node_config", {})
         self._model = node_config.get("model") or real_config.get("model", "grok")
         self._timeout = real_config.get("timeout") or node_config.get("timeout", 180)
+        self._default_url = real_config.get("default_url") or node_config.get("default_url", "")
         
         base_prompt: str = node_config.get("system_prompt", system_prompt)
         skill_content = self._load_skill_content()
@@ -53,7 +54,8 @@ class GrokNode(LlmNode):
             script_path=bridge_script,
             timeout=self._timeout,
             model_name=self._model,
-            user_data_dir=self._chrome_profile_dir
+            user_data_dir=self._chrome_profile_dir,
+            default_url=self._default_url
         )
 
         logger.info(f"[grok] initialized via ChromeExecutor (profile={self._chrome_profile_dir})")

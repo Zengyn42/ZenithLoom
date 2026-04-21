@@ -185,6 +185,70 @@ def split_fence_aware(text: str, max_chars: int = DISCORD_MAX_CHARS) -> list[str
     return BaseInterface.split_fence_aware(text, max_chars)
 
 
+def format_persona_response(text: str) -> str:
+    """
+    将含有 [任意标签] 的 Grok 多人格响应格式化为 Discord 带颜色区分的段落。
+
+    检测格式：文本中出现的 [WORD] 或 [MULTI WORD] 标签
+    每个不同标签分配一个 ANSI 颜色，循环使用调色板。
+    无标签的单段落响应 → 原样返回。
+    """
+    import re
+
+    text = text.strip()
+
+    # 检测 [任意标签] 格式，标签内允许字母、数字、空格、连字符
+    tag_pattern = re.compile(r'\[([A-Za-z][A-Za-z0-9 _\-]{0,30})\]')
+    if not tag_pattern.search(text):
+        return text  # 无标签，原样返回
+
+    # ANSI 颜色调色板（Discord 支持的 ansi 代码块颜色）
+    # 格式: (ansi_code, emoji, 标签颜色)
+    PALETTE = [
+        ("1;34", "🔵"),   # 亮蓝
+        ("1;31", "🔴"),   # 亮红
+        ("1;32", "🟢"),   # 亮绿
+        ("1;33", "🟡"),   # 亮黄
+        ("1;35", "🟣"),   # 亮紫
+        ("1;36", "🩵"),   # 亮青
+    ]
+
+    # 按出现顺序为每个唯一标签分配颜色
+    seen_tags: dict[str, tuple] = {}
+    color_idx = 0
+    for m in tag_pattern.finditer(text):
+        tag_name = m.group(1).upper()
+        if tag_name not in seen_tags:
+            seen_tags[tag_name] = PALETTE[color_idx % len(PALETTE)]
+            color_idx += 1
+
+    # 按标签切分段落
+    parts = tag_pattern.split(text)
+    # parts 结构: [pre_text, tag1, content1, tag2, content2, ...]
+
+    result_blocks = []
+
+    pre = parts[0].strip()
+    if pre:
+        result_blocks.append(pre)
+
+    i = 1
+    while i < len(parts) - 1:
+        tag_name = parts[i].upper()
+        content = parts[i + 1].strip()
+        i += 2
+
+        if not content:
+            continue
+
+        ansi_code, emoji = seen_tags.get(tag_name, ("0", "▪️"))
+        label = f"{emoji} {tag_name}"
+        block = f"**{label}**\n```ansi\n\u001b[{ansi_code}m{content}\u001b[0m\n```"
+        result_blocks.append(block)
+
+    return "\n\n".join(result_blocks)
+
+
 # ==========================================
 # 统一消息发送工具 — send_to_channel
 # ==========================================
@@ -417,6 +481,7 @@ class _DiscordInterface(BaseInterface):
             set_channel_send_callback(None)
         if result:
             clean_text, file_paths = _extract_attachments(result)
+            clean_text = format_persona_response(clean_text)
             await send_to_channel(message.channel, clean_text)
             for path in file_paths:
                 if not os.path.isfile(path):
@@ -600,6 +665,7 @@ class _DiscordInterface(BaseInterface):
             return
 
         clean_text, file_paths = _extract_attachments(final_text)
+        clean_text = format_persona_response(clean_text)
         chunks = split_fence_aware(clean_text) if clean_text else []
 
         if text_draft[0] and chunks:
@@ -909,8 +975,8 @@ async def on_ready():
             # 注册 SSE 推送告警回调
             _register_discord_alert_callback()
 
-        await _loader.start_mcps()
-        logger.info(f"[Discord] mcps 已启动（agent={agent_name}）")
+        await _loader.start_mcp_servers()
+        logger.info(f"[Discord] mcp servers 已启动（agent={agent_name}）")
 
 
 @bot.event
@@ -1206,7 +1272,7 @@ def run_discord(loader=None):
 
         async def _cleanup():
             await _loader.stop_heartbeat()
-            await _loader.stop_mcps()
+            await _loader.stop_mcp_servers()
 
         try:
             asyncio.run(_cleanup())

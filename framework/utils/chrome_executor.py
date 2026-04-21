@@ -22,18 +22,20 @@ class ChromeExecutor:
     负责启动底层桥接脚本并处理异步流式通信。
     """
 
-    def __init__(self, script_path: str, timeout: int = 180, model_name: str = "chrome", user_data_dir: str | None = None):
+    def __init__(self, script_path: str, timeout: int = 180, model_name: str = "chrome", user_data_dir: str | None = None, default_url: str = ""):
         """
         初始化执行器。
-        :param script_path: 底层桥接脚本的绝对路径 (例如 ~/ChromeHeadless/grok_playwright_bridge.py)
+        :param script_path: 底层桥接脚本的绝对路径
         :param timeout: 超时时间 (秒)
         :param model_name: 用于日志的前缀名称
         :param user_data_dir: Chrome 持久化配置目录 (传入绝对路径)
+        :param default_url: 新对话时默认打开的 URL（如 Grok Project 链接）
         """
         self._bridge_script = os.path.expanduser(script_path)
         self._timeout = timeout
         self._model = model_name
         self._user_data_dir = user_data_dir
+        self._default_url = default_url
         self._bridge_python = sys.executable
 
     async def execute(
@@ -57,8 +59,11 @@ class ChromeExecutor:
             prompt
         ]
         
-        if session_id and session_id.startswith("http"):
-            cmd.extend(["--url", session_id])
+        # 如果没有 session_id，使用 default_url（如 Grok Project），否则用 grok.com 根目录
+        effective_url = session_id if (session_id and session_id.startswith("http")) else (self._default_url or "")
+        
+        if effective_url:
+            cmd.extend(["--url", effective_url])
             
         if self._user_data_dir:
             cmd.extend(["--user-data-dir", self._user_data_dir])

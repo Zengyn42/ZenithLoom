@@ -25,6 +25,7 @@ async def main():
     async with async_playwright() as p:
         browser_args = [
             "--headless=new",
+            "--password-store=basic",
             "--disable-background-networking",
             "--disable-sync",
             "--disable-extensions",
