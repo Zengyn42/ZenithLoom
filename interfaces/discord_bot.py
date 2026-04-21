@@ -202,8 +202,18 @@ def format_persona_response(text: str) -> str:
     if not tag_pattern.search(text):
         return text  # 无标签，原样返回
 
-    # ANSI 颜色调色板（Discord 支持的 ansi 代码块颜色）
-    # 格式: (ansi_code, emoji, 标签颜色)
+    # 已知人格 → 固定 emoji
+    PERSONA_EMOJI: dict[str, str] = {
+        "JAILBREAK": "😈",
+        "CLASSIC":   "🎩",
+        "DAN":       "🤖",
+        "SIGMA":     "⚡",
+        "BASED":     "🔥",
+        "EVIL":      "💀",
+        "DEVELOPER": "👨‍💻",
+    }
+
+    # ANSI 颜色调色板（Discord ansi 代码块）
     PALETTE = [
         ("1;34", "🔵"),   # 亮蓝
         ("1;31", "🔴"),   # 亮红
@@ -219,7 +229,10 @@ def format_persona_response(text: str) -> str:
     for m in tag_pattern.finditer(text):
         tag_name = m.group(1).upper()
         if tag_name not in seen_tags:
-            seen_tags[tag_name] = PALETTE[color_idx % len(PALETTE)]
+            ansi_code, palette_emoji = PALETTE[color_idx % len(PALETTE)]
+            # 已知人格用固定 emoji，否则用调色板圆点
+            emoji = PERSONA_EMOJI.get(tag_name, palette_emoji)
+            seen_tags[tag_name] = (ansi_code, emoji)
             color_idx += 1
 
     # 按标签切分段落
@@ -241,9 +254,9 @@ def format_persona_response(text: str) -> str:
         if not content:
             continue
 
-        ansi_code, emoji = seen_tags.get(tag_name, ("0", "▪️"))
-        label = f"{emoji} {tag_name}"
-        block = f"**{label}**\n```ansi\n\u001b[{ansi_code}m{content}\u001b[0m\n```"
+        ansi_code, emoji = seen_tags.get(tag_name, ("", "▪️"))
+        # 粗体 emoji 标题 + 正文，不用代码块或 blockquote（避免字体变小/变灰）
+        block = f"{emoji} **{tag_name}**\n{content}"
         result_blocks.append(block)
 
     return "\n\n".join(result_blocks)
@@ -681,12 +694,20 @@ class _DiscordInterface(BaseInterface):
                     await message.channel.send(chunk)
             else:
                 # 无子图：就地 edit draft 成最终内容（位置正确，无顺序问题）
-                try:
-                    await text_draft[0].edit(content=chunks[0])
-                except Exception:
-                    await message.channel.send(chunks[0])
-                for chunk in chunks[1:]:
-                    await message.channel.send(chunk)
+                if len(chunks) == 1:
+                    try:
+                        await text_draft[0].edit(content=chunks[0])
+                    except Exception:
+                        await message.channel.send(chunks[0])
+                else:
+                    # 多段（多人格格式化）：删掉草稿，顺序发出所有段
+                    try:
+                        await text_draft[0].delete()
+                    except Exception:
+                        pass
+                    text_draft[0] = None
+                    for chunk in chunks:
+                        await message.channel.send(chunk)
         elif text_draft[0]:
             # 有草稿但 clean_text 为空（纯附件），删除草稿
             try:
