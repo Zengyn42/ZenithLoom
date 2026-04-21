@@ -256,10 +256,12 @@ def format_persona_response(text: str) -> str:
 
         ansi_code, emoji = seen_tags.get(tag_name, ("", "▪️"))
         
-        # 预处理 content: 确保列表 1. 2. 后面有空格（Grok 有时会漏掉）
+        # 1. 修复可能丢失的换行：在 "文字1. " 之间强制插入换行
+        content = re.sub(r'([^\n])(\s\d+\.\s)', r'\1\n\2', content)
+        # 2. 确保列表 1. 2. 后面有空格
         content = re.sub(r'^(\d+)\.([^\s])', r'\1. \2', content, flags=re.MULTILINE)
         
-        # 粗体 emoji 标题 + 双换行 + 正文，确保列表 (1. 2.) 能够被 Discord 识别为列表起始
+        # 3. 粗体 emoji 标题 + 双换行 + 正文
         block = f"{emoji} **{tag_name}**\n\n{content}"
         result_blocks.append(block)
 
