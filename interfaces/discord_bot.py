@@ -185,13 +185,30 @@ def split_fence_aware(text: str, max_chars: int = DISCORD_MAX_CHARS) -> list[str
     return BaseInterface.split_fence_aware(text, max_chars)
 
 
+def fix_list_formatting(text: str) -> str:
+    """
+    修复 Markdown 列表在 Discord 中显示不正常的问题。
+    1. 确保列表项前有换行（例如 "文本 1. " -> "文本\n1. "）
+    2. 确保列表项标记后有空格
+    """
+    import re
+    # 针对数字列表：匹配 [非换行] + [空格] + [数字.] + [空格]
+    # 增加对无空格情况的兼容，但要求前面不是换行
+    text = re.sub(r'([^\n])(\s+\d+\.\s)', r'\1\n\2', text)
+    # 针对无序列表：匹配 [非换行] + [空格] + [*或-] + [空格]
+    text = re.sub(r'([^\n])(\s+[*+\-] )', r'\1\n\2', text)
+    # 确保行首数字列表后面有空格（例如 "1.Item" -> "1. Item"）
+    text = re.sub(r'^(\d+)\.([^\s])', r'\1. \2', text, flags=re.MULTILINE)
+    return text
+
+
 def format_persona_response(text: str) -> str:
     """
     将含有 [任意标签] 的 Grok 多人格响应格式化为 Discord 带颜色区分的段落。
 
     检测格式：文本中出现的 [WORD] 或 [MULTI WORD] 标签
     每个不同标签分配一个 ANSI 颜色，循环使用调色板。
-    无标签的单段落响应 → 原样返回。
+    无标签的单段落响应 → 进行基础列表格式修复后返回。
     """
     import re
 
@@ -200,7 +217,7 @@ def format_persona_response(text: str) -> str:
     # 检测 [任意标签] 格式，标签内允许字母、数字、空格、连字符
     tag_pattern = re.compile(r'\[([A-Za-z][A-Za-z0-9 _\-]{0,30})\]')
     if not tag_pattern.search(text):
-        return text  # 无标签，原样返回
+        return fix_list_formatting(text)
 
     # 已知人格 → 固定 emoji
     PERSONA_EMOJI: dict[str, str] = {
@@ -243,7 +260,7 @@ def format_persona_response(text: str) -> str:
 
     pre = parts[0].strip()
     if pre:
-        result_blocks.append(pre)
+        result_blocks.append(fix_list_formatting(pre))
 
     i = 1
     while i < len(parts) - 1:
@@ -256,10 +273,8 @@ def format_persona_response(text: str) -> str:
 
         ansi_code, emoji = seen_tags.get(tag_name, ("", "▪️"))
         
-        # 1. 修复可能丢失的换行：在 "文字1. " 之间强制插入换行
-        content = re.sub(r'([^\n])(\s\d+\.\s)', r'\1\n\2', content)
-        # 2. 确保列表 1. 2. 后面有空格
-        content = re.sub(r'^(\d+)\.([^\s])', r'\1. \2', content, flags=re.MULTILINE)
+        # 修复列表格式
+        content = fix_list_formatting(content)
         
         # 3. 粗体 emoji 标题 + 双换行 + 正文
         block = f"{emoji} **{tag_name}**\n\n{content}"
@@ -269,7 +284,7 @@ def format_persona_response(text: str) -> str:
     if i < len(parts):
         trailing = parts[i].strip()
         if trailing:
-            result_blocks.append(trailing)
+            result_blocks.append(fix_list_formatting(trailing))
 
     return "\n\n".join(result_blocks)
 
@@ -906,7 +921,11 @@ async def _discord_handle_alert(alert: dict):
 
     # ── 完成报告（info / warning）────────────────────────────────────────
     if level in ("info", "warning"):
-        icon = "✅" if level == "info" else "⚠️"
+        status = alert.get("status", "")
+        if status == "DEAD":
+            icon = "❌"
+        else:
+            icon = "✅" if level == "info" else "⚠️"
         content = alert.get("content", "")
         next_line = f" | 下次: `{next_run}`" if next_run else ""
         msg = f"{icon} `{task_id}` | 时间: `{time_}`{next_line}"
@@ -1079,6 +1098,9 @@ async def on_message(message: discord.Message):
         return
 
     user_input = message.content.strip()
+    author_name = message.author.display_name
+    if user_input:
+        user_input = f"{author_name} (DISCORD): {user_input}"
     channel_id = message.channel.id
 
     # ── 软停止关键词：stop / wait / 停 / 停止（整行，大小写不限）──────

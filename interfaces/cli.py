@@ -147,7 +147,7 @@ class _CliInterface(BaseInterface):
 
             # --- 正常对话（流式 / 非流式）---
             print(f"\n\x1b[90m[{agent_name}]\x1b[0m ", end="", flush=True)
-            agent_task = asyncio.create_task(self.invoke_agent(user_input))
+            agent_task = asyncio.create_task(self.invoke_agent(f"User: {user_input}"))
             self._current_agent_task = agent_task
             try:
                 response = await agent_task

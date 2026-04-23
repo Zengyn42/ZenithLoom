@@ -209,7 +209,10 @@ class HeartbeatManager:
                 result = await entry.node(state={})
                 msgs = result.get("messages", [])
                 content = msgs[0].content if msgs else str(result)
-                entry.status = "OK"
+                
+                # Update status based on content (Probe nodes return "service:OK" etc.)
+                self._update_task_status(entry, content)
+                
                 entry.last_result = content
             except Exception as e:
                 entry.status = f"FAILED: {e}"
@@ -242,7 +245,8 @@ class HeartbeatManager:
             event = {
                 "task_id": task_id,
                 "type": entry.type,
-                "level": "info",
+                "level": "warning" if entry.status == "DEAD" else "info",
+                "status": entry.status,
                 "content": content,
                 "time": datetime.now().isoformat(timespec="seconds"),
                 "next_run": next_run_str,
@@ -598,26 +602,16 @@ class HeartbeatManager:
                     msgs = result.get("messages", [])
                     content = msgs[0].content if msgs else str(result)
 
-                    # Probe nodes return content like "claude:OK" or "gemini:DEAD".
-                    # The status should reflect the service health, not just task execution.
-                    if ":" in content:
-                        parsed_status = content.split(":")[-1].strip()
-                        if parsed_status in ["OK", "DEAD"]:
-                            entry.status = parsed_status
-                        else:
-                            # If format is "service:SomethingElse", it's ambiguous.
-                            # Keep OK but log it.
-                            logger.warning(f"[heartbeat] task {task_id!r} returned ambiguous status in content: {content!r}")
-                            entry.status = "OK"
-                    else:
-                        # If no colon, assume it's a simple task, not a probe.
-                        entry.status = "OK"
+                    # Update status based on content (Probe nodes return "service:OK" etc.)
+                    self._update_task_status(entry, content)
 
                     entry.last_result = content
                     consecutive_failures = 0
 
-                    # 判定完成事件级别（节点可在输出中标注 level=warning）
-                    if "level=warning" in content:
+                    # 判定完成事件级别
+                    if entry.status == "DEAD":
+                        level = "warning"
+                    elif "level=warning" in content:
                         level = "warning"
                     else:
                         level = "info"
@@ -628,6 +622,7 @@ class HeartbeatManager:
                         "task_id": task_id,
                         "type": entry.type,
                         "level": level,
+                        "status": entry.status,
                         "content": content,
                         "time": datetime.now().isoformat(timespec="seconds"),
                         "next_run": next_dt.isoformat(timespec="seconds"),
@@ -680,6 +675,25 @@ class HeartbeatManager:
                     f"[heartbeat] task {task_id!r} backing off "
                     f"(consecutive_failures={consecutive_failures})"
                 )
+
+    def _update_task_status(self, entry: TaskEntry, content: str):
+        """根据执行结果内容更新任务状态（主要是处理探针节点的 OK/DEAD）。"""
+        # Probe nodes return content like "claude:OK" or "gemini:DEAD".
+        # The status should reflect the service health, not just task execution.
+        if ":" in content:
+            parsed_status = content.split(":")[-1].strip()
+            if parsed_status in ["OK", "DEAD"]:
+                entry.status = parsed_status
+            else:
+                # If format is "service:SomethingElse", it's ambiguous.
+                # Keep OK but log it.
+                logger.warning(
+                    f"[heartbeat] task {entry.id!r} returned ambiguous status in content: {content!r}"
+                )
+                entry.status = "OK"
+        else:
+            # If no colon, assume it's a simple task, not a probe.
+            entry.status = "OK"
 
     def _save_state(self):
         """写 heartbeat_state.json — 只存用户修改和运行时数据，blueprint 默认值不重复存。"""

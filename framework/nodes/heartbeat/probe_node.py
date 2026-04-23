@@ -86,13 +86,17 @@ def _probe_claude(timeout: int = 30) -> bool:
 def _probe_gemini(timeout: int = 30) -> bool:
     try:
         r = subprocess.run(
-            ["gemini", "-m", "gemini-2.5-flash", "-p", "Reply with just OK."],
+            ["gemini", "-m", "gemini-2.5-flash", "-p", "Reply with just OK.", "--output-format", "json"],
             capture_output=True,
             text=True,
             timeout=timeout,
             stdin=subprocess.DEVNULL,
         )
-        return "ok" in r.stdout.lower()
+        data = json.loads(r.stdout)
+        # Gemini CLI json output has 'response' at top level
+        # and may have error info in 'stats' or other fields if it fails.
+        # Based on current behavior, if it returns 0 and response is OK, it's good.
+        return "ok" in data.get("response", "").lower()
     except Exception:
         return False
 
