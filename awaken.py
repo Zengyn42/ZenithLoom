@@ -127,7 +127,7 @@ def main():
 
     # ── 启动 connector ───────────────────────────────────────────────────────
     if connector == "discord":
-        from interfaces.discord_bot import run_discord
+        from interfaces.discord import run_discord
         run_discord(loader)
 
     elif connector == "tmux":
@@ -136,7 +136,7 @@ def main():
 
     elif connector == "gchat":
         import asyncio
-        from interfaces.gchat_bot import run_gchat
+        from interfaces.gchat import run_gchat
         asyncio.run(run_gchat(loader))
 
     else:  # cli (default)

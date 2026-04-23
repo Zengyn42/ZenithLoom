@@ -60,8 +60,8 @@ def _mock_loader(sm, name: str = "hani") -> MagicMock:
 
 
 def _setup_bot(sm, name: str = "hani"):
-    """Set module-level globals in discord_bot for testing."""
-    import interfaces.discord_bot as bot
+    """Set module-level globals in discord state for testing."""
+    import interfaces.discord.state as bot
     loader = _mock_loader(sm, name)
     bot._loader = loader
     bot._session_mgr = sm
@@ -193,7 +193,7 @@ def test_session_manager_prefix_ops():
 
 def test_per_channel_helpers():
     print("--- Per-channel helpers ---")
-    import interfaces.discord_bot as bot
+    import interfaces.discord.state as bot
 
     with tempfile.TemporaryDirectory() as tmp:
         sm = _make_session_mgr(tmp)
@@ -243,7 +243,8 @@ def test_per_channel_helpers():
 
 async def test_discord_new():
     print("--- Discord !new ---")
-    import interfaces.discord_bot as bot
+    import interfaces.discord.state as bot
+    from interfaces.discord.commands import new_session_cmd
 
     with tempfile.TemporaryDirectory() as tmp:
         sm = _make_session_mgr(tmp)
@@ -251,7 +252,7 @@ async def test_discord_new():
 
         # Success — creates discord-100-proj-a
         ctx = _mock_ctx(channel_id=100)
-        await bot.new_session_cmd(ctx, name="proj-a")
+        await new_session_cmd(ctx, name="proj-a")
         msg = ctx.send.call_args[0][0]
         assert "proj-a" in msg
         assert sm.get("discord-100-proj-a") is not None
@@ -260,21 +261,21 @@ async def test_discord_new():
 
         # No name provided
         ctx2 = _mock_ctx(channel_id=100)
-        await bot.new_session_cmd(ctx2, name="")
+        await new_session_cmd(ctx2, name="")
         msg2 = ctx2.send.call_args[0][0]
         assert "用法" in msg2
         print(f"   no name: {msg2}")
 
         # Duplicate
         ctx3 = _mock_ctx(channel_id=100)
-        await bot.new_session_cmd(ctx3, name="proj-a")
+        await new_session_cmd(ctx3, name="proj-a")
         msg3 = ctx3.send.call_args[0][0]
         assert "❌" in msg3
         print(f"   duplicate: {msg3[:60]}")
 
         # Different channel can use same name
         ctx4 = _mock_ctx(channel_id=200)
-        await bot.new_session_cmd(ctx4, name="proj-a")
+        await new_session_cmd(ctx4, name="proj-a")
         msg4 = ctx4.send.call_args[0][0]
         assert "proj-a" in msg4
         assert sm.get("discord-200-proj-a") is not None
@@ -289,7 +290,8 @@ async def test_discord_new():
 
 async def test_discord_switch():
     print("--- Discord !switch ---")
-    import interfaces.discord_bot as bot
+    import interfaces.discord.state as bot
+    from interfaces.discord.commands import switch_session_cmd
 
     with tempfile.TemporaryDirectory() as tmp:
         sm = _make_session_mgr(tmp)
@@ -301,7 +303,7 @@ async def test_discord_switch():
 
         # Switch to named session
         ctx = _mock_ctx(channel_id=100)
-        await bot.switch_session_cmd(ctx, name="dev")
+        await switch_session_cmd(ctx, name="dev")
         msg = ctx.send.call_args[0][0]
         assert "dev" in msg
         assert bot._channel_active_session[100] == "discord-100-dev"
@@ -309,21 +311,21 @@ async def test_discord_switch():
 
         # Switch to default
         ctx2 = _mock_ctx(channel_id=100)
-        await bot.switch_session_cmd(ctx2, name="default")
+        await switch_session_cmd(ctx2, name="default")
         msg2 = ctx2.send.call_args[0][0]
         assert bot._channel_active_session[100] == "discord-100"
         print(f"   switch to default: {msg2[:70]}")
 
         # No name
         ctx3 = _mock_ctx(channel_id=100)
-        await bot.switch_session_cmd(ctx3, name="")
+        await switch_session_cmd(ctx3, name="")
         msg3 = ctx3.send.call_args[0][0]
         assert "用法" in msg3
         print(f"   no name: {msg3}")
 
         # Nonexistent
         ctx4 = _mock_ctx(channel_id=100)
-        await bot.switch_session_cmd(ctx4, name="ghost")
+        await switch_session_cmd(ctx4, name="ghost")
         msg4 = ctx4.send.call_args[0][0]
         assert "❌" in msg4
         print(f"   nonexistent: {msg4[:60]}")
@@ -337,7 +339,8 @@ async def test_discord_switch():
 
 async def test_discord_session_info():
     print("--- Discord !session / !sessions ---")
-    import interfaces.discord_bot as bot
+    import interfaces.discord.state as bot
+    from interfaces.discord.commands import show_session, list_sessions_cmd
 
     with tempfile.TemporaryDirectory() as tmp:
         sm = _make_session_mgr(tmp)
@@ -350,7 +353,7 @@ async def test_discord_session_info():
 
         # !session
         ctx = _mock_ctx(channel_id=100)
-        await bot.show_session(ctx)
+        await show_session(ctx)
         msg = ctx.send.call_args[0][0]
         assert "default" in msg  # discord-100 → display "default"
         print(f"   !session: {msg}")
@@ -358,7 +361,7 @@ async def test_discord_session_info():
         # Switch and check display name
         bot._channel_active_session[100] = "discord-100-dev"
         ctx1b = _mock_ctx(channel_id=100)
-        await bot.show_session(ctx1b)
+        await show_session(ctx1b)
         msg1b = ctx1b.send.call_args[0][0]
         assert "dev" in msg1b
         print(f"   !session (dev): {msg1b}")
@@ -366,7 +369,7 @@ async def test_discord_session_info():
         # !sessions — shows only this channel's sessions, marks active with ◀
         bot._channel_active_session[100] = "discord-100-dev"
         ctx2 = _mock_ctx(channel_id=100)
-        await bot.list_sessions_cmd(ctx2)
+        await list_sessions_cmd(ctx2)
         msg2 = ctx2.send.call_args[0][0]
         assert "default" in msg2
         assert "dev" in msg2
@@ -375,7 +378,7 @@ async def test_discord_session_info():
 
         # !sessions — empty channel
         ctx3 = _mock_ctx(channel_id=999)
-        await bot.list_sessions_cmd(ctx3)
+        await list_sessions_cmd(ctx3)
         msg3 = ctx3.send.call_args[0][0]
         assert "没有" in msg3
         print(f"   !sessions (empty): {msg3}")
@@ -383,7 +386,7 @@ async def test_discord_session_info():
         # Other channel's sessions not shown
         sm.create_session("discord-200")
         ctx4 = _mock_ctx(channel_id=100)
-        await bot.list_sessions_cmd(ctx4)
+        await list_sessions_cmd(ctx4)
         msg4 = ctx4.send.call_args[0][0]
         assert "200" not in msg4
         print("   channel isolation OK")
@@ -397,19 +400,20 @@ async def test_discord_session_info():
 
 async def test_discord_whoami_debug():
     print("--- Discord !whoami / !debug ---")
-    import interfaces.discord_bot as bot
+    from interfaces.discord.commands import whoami
+    from interfaces.discord.interface import _DiscordInterface
 
     with tempfile.TemporaryDirectory() as tmp:
         sm = _make_session_mgr(tmp)
         _, loader = _setup_bot(sm)
 
         ctx_ok = _mock_ctx(user_id=12345)
-        await bot.whoami(ctx_ok)
+        await whoami(ctx_ok)
         msg_ok = ctx_ok.send.call_args[0][0]
         assert "12345" in msg_ok
         print(f"   !whoami: {msg_ok}")
 
-        iface_d = bot._DiscordInterface(loader)
+        iface_d = _DiscordInterface(loader)
         reply_d = await iface_d.handle_command("!debug", "")
         assert "Debug mode" in reply_d
         print(f"   !debug: {reply_d}")
@@ -423,9 +427,9 @@ async def test_discord_whoami_debug():
 
 async def test_discord_tokens():
     print("--- Discord !tokens ---")
-    import interfaces.discord_bot as bot
     import framework.token_tracker as tt
     from framework import token_display
+    from interfaces.discord.interface import _DiscordInterface
 
     with tempfile.TemporaryDirectory() as tmp:
         sm = _make_session_mgr(tmp)
@@ -440,7 +444,7 @@ async def test_discord_tokens():
             "calls": 5,
         })
 
-        iface = bot._DiscordInterface(loader)
+        iface = _DiscordInterface(loader)
 
         # 1) no-arg — cumulative stats + toggle state line
         reply = await iface.handle_command("!tokens", "")
@@ -488,7 +492,8 @@ async def test_discord_tokens():
 
 async def test_discord_memory():
     print("--- Discord !memory ---")
-    import interfaces.discord_bot as bot
+    import interfaces.discord.state as bot
+    from interfaces.discord.interface import _DiscordInterface
 
     with tempfile.TemporaryDirectory() as tmp:
         sm = _make_session_mgr(tmp)
@@ -498,7 +503,7 @@ async def test_discord_memory():
         sm.create_session("discord-100")
         bot._channel_active_session[100] = "discord-100"
 
-        iface = bot._DiscordInterface(loader, channel_id=100)
+        iface = _DiscordInterface(loader, channel_id=100)
         reply = await iface.handle_command("!memory", "")
         assert "discord-100" in reply  # session name
         assert "KB" in reply
@@ -513,7 +518,8 @@ async def test_discord_memory():
 
 async def test_discord_compact_reset():
     print("--- Discord !compact / !reset ---")
-    import interfaces.discord_bot as bot
+    import interfaces.discord.state as bot
+    from interfaces.discord.interface import _DiscordInterface
 
     with tempfile.TemporaryDirectory() as tmp:
         sm = _make_session_mgr(tmp)
@@ -522,7 +528,7 @@ async def test_discord_compact_reset():
         sm.create_session("discord-100")
         bot._channel_active_session[100] = "discord-100"
 
-        iface = bot._DiscordInterface(loader, channel_id=100)
+        iface = _DiscordInterface(loader, channel_id=100)
 
         # !compact (default keep=20) — now reports both checkpoint DB and Claude session
         reply = await iface.handle_command("!compact", "")
@@ -550,7 +556,8 @@ async def test_discord_compact_reset():
 
 async def test_discord_setproject_project():
     print("--- Discord !setproject / !project ---")
-    import interfaces.discord_bot as bot
+    import interfaces.discord.state as bot
+    from interfaces.discord.interface import _DiscordInterface
 
     with tempfile.TemporaryDirectory() as tmp:
         sm = _make_session_mgr(tmp)
@@ -560,7 +567,7 @@ async def test_discord_setproject_project():
         sm.create_session("discord-100")
         bot._channel_active_session[100] = "discord-100"
 
-        iface100 = bot._DiscordInterface(loader, channel_id=100)
+        iface100 = _DiscordInterface(loader, channel_id=100)
 
         with tempfile.TemporaryDirectory() as real_dir:
             # Valid path
@@ -581,7 +588,7 @@ async def test_discord_setproject_project():
             # Different channel unaffected
             sm.create_session("discord-200")
             bot._channel_active_session[200] = "discord-200"
-            iface200 = bot._DiscordInterface(loader, channel_id=200)
+            iface200 = _DiscordInterface(loader, channel_id=200)
             reply_other = await iface200.handle_command("!project", "")
             assert "未设置" in reply_other
             print(f"   other channel unaffected: {reply_other}")
@@ -605,7 +612,8 @@ async def test_discord_setproject_project():
 
 async def test_discord_stop():
     print("--- Discord !stop ---")
-    import interfaces.discord_bot as bot
+    import interfaces.discord.state as bot
+    from interfaces.discord.commands import stop_task
 
     with tempfile.TemporaryDirectory() as tmp:
         sm = _make_session_mgr(tmp)
@@ -613,7 +621,7 @@ async def test_discord_stop():
 
         # No running task
         ctx = _mock_ctx(channel_id=100)
-        await bot.stop_task(ctx)
+        await stop_task(ctx)
         msg = ctx.send.call_args[0][0]
         assert "没有" in msg
         print(f"   no task: {msg}")
@@ -626,7 +634,7 @@ async def test_discord_stop():
         bot._channel_tasks[100] = task
 
         ctx2 = _mock_ctx(channel_id=100)
-        await bot.stop_task(ctx2)
+        await stop_task(ctx2)
         msg2 = ctx2.send.call_args[0][0]
         assert "已停止" in msg2
         # Let event loop process the cancellation
@@ -645,7 +653,7 @@ async def test_discord_stop():
         bot._channel_tasks[100] = task2
 
         ctx3 = _mock_ctx(channel_id=100)
-        await bot.stop_task(ctx3)
+        await stop_task(ctx3)
         msg3 = ctx3.send.call_args[0][0]
         assert "没有" in msg3
         print(f"   completed task: {msg3}")
@@ -661,7 +669,8 @@ async def test_discord_stop():
 
 async def test_discord_channels():
     print("--- Discord !channels ---")
-    import interfaces.discord_bot as bot
+    import interfaces.discord.state as bot
+    from interfaces.discord.commands import list_channels_cmd
 
     with tempfile.TemporaryDirectory() as tmp:
         sm = _make_session_mgr(tmp)
@@ -669,7 +678,7 @@ async def test_discord_channels():
 
         # Empty
         ctx = _mock_ctx(channel_id=100)
-        await bot.list_channels_cmd(ctx)
+        await list_channels_cmd(ctx)
         msg = ctx.send.call_args[0][0]
         assert "没有" in msg
         print(f"   empty: {msg}")
@@ -688,7 +697,7 @@ async def test_discord_channels():
         ch200.name = "random"
         ctx2 = _mock_ctx(channel_id=100)
         ctx2.guild.get_channel = lambda cid: {100: ch100, 200: ch200}.get(cid)
-        await bot.list_channels_cmd(ctx2)
+        await list_channels_cmd(ctx2)
         msg2 = ctx2.send.call_args[0][0]
         assert "#general" in msg2
         assert "#random" in msg2
@@ -701,7 +710,7 @@ async def test_discord_channels():
         sm.create_session("discord-999")
         ctx3 = _mock_ctx(channel_id=100)
         ctx3.guild.get_channel = lambda cid: {100: ch100, 200: ch200}.get(cid)
-        await bot.list_channels_cmd(ctx3)
+        await list_channels_cmd(ctx3)
         msg3 = ctx3.send.call_args[0][0]
         assert "orphan" in msg3
         print("   orphan detection OK")
@@ -715,7 +724,7 @@ async def test_discord_channels():
 
 async def test_cleanup_channel():
     print("--- _cleanup_channel ---")
-    import interfaces.discord_bot as bot
+    import interfaces.discord.state as bot
 
     with tempfile.TemporaryDirectory() as tmp:
         sm = _make_session_mgr(tmp)
@@ -749,13 +758,13 @@ async def test_cleanup_channel():
 
 async def test_discord_help():
     print("--- Discord !help ---")
-    import interfaces.discord_bot as bot
+    from interfaces.discord.interface import _DiscordInterface
 
     with tempfile.TemporaryDirectory() as tmp:
         sm = _make_session_mgr(tmp)
         _, loader = _setup_bot(sm)
 
-        iface = bot._DiscordInterface(loader)
+        iface = _DiscordInterface(loader)
         reply = await iface.handle_command("!help", "")
         for keyword in ("!new", "!switch", "!sessions", "!session",
                         "!tokens", "!memory", "!compact", "!reset",
@@ -772,7 +781,7 @@ async def test_discord_help():
 
 def test_auth_whitelist():
     print("--- Authorization whitelist ---")
-    import interfaces.discord_bot as bot
+    import interfaces.discord.state as bot
 
     # With allowed_users set via loader
     with tempfile.TemporaryDirectory() as tmp:
@@ -806,7 +815,8 @@ def test_auth_whitelist():
 
 def test_split_fence_aware():
     print("--- split_fence_aware ---")
-    from interfaces.discord_bot import split_fence_aware
+    from interfaces.base_interface import BaseInterface
+    split_fence_aware = BaseInterface.split_fence_aware
 
     # Short text → 1 chunk
     chunks = split_fence_aware("hello world", max_chars=1900)
@@ -837,7 +847,7 @@ def test_split_fence_aware():
 
 def test_restart_recovery():
     print("--- Restart recovery ---")
-    import interfaces.discord_bot as bot
+    import interfaces.discord.state as bot
 
     with tempfile.TemporaryDirectory() as tmp:
         sm = _make_session_mgr(tmp)
