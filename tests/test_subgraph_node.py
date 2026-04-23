@@ -5,10 +5,10 @@ import inspect
 
 
 def test_subgraph_node_type_handled_in_agent_loader():
-    """external subgraph branch must exist in _build_declarative in agent_loader."""
-    import framework.agent_loader as al
-    src = inspect.getsource(al)
-    assert "agent_dir" in src and "not node_type" in src, "agent_dir detection not in agent_loader"
+    """external subgraph branch must exist in _build_declarative in graph_builder."""
+    import framework.loader.graph_builder as gb
+    src = inspect.getsource(gb)
+    assert "agent_dir" in src and "not node_type" in src, "agent_dir detection not in graph_builder"
 
 
 def test_no_circular_import_with_reducers():
@@ -20,8 +20,8 @@ def test_no_circular_import_with_reducers():
 
 def test_subgraph_node_uses_correct_entityloader_kwarg():
     """external subgraph branch must NOT use blueprint_dir kwarg (was wrong in original implementation)."""
-    import framework.agent_loader as al
-    src = inspect.getsource(al)
+    import framework.loader.graph_builder as gb
+    src = inspect.getsource(gb)
     # Must NOT use wrong kwarg
     assert "EntityLoader(blueprint_dir=" not in src, \
         "external subgraph must use positional agent_dir, not blueprint_dir kwarg"

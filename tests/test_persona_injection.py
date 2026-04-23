@@ -43,7 +43,7 @@ class TestLoadPersonaText:
 
     def test_missing_file_warns(self, tmp_path, caplog):
         import logging
-        with caplog.at_level(logging.WARNING, logger="framework.agent_loader"):
+        with caplog.at_level(logging.WARNING, logger="framework.loader.persona"):
             result = _load_persona_text(["MISSING.md"], tmp_path)
         assert result == ""
         assert "persona file not found" in caplog.text

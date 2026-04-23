@@ -87,8 +87,8 @@ class TestStartMcpServers:
         mock_proxy_class = MagicMock(return_value=mock_proxy_instance)
 
         with patch("framework.mcp_manager.MCPManager.get_instance", return_value=mock_mgr):
-            with patch("framework.agent_loader._resolve_proxy_class", return_value=mock_proxy_class):
-                with patch("framework.agent_loader._register_mcp_tools"):
+            with patch("framework.loader.entity_loader._resolve_proxy_class", return_value=mock_proxy_class):
+                with patch("framework.loader.entity_loader._register_mcp_tools"):
                     started = await loader.start_mcp_servers()
 
         # agent_mail proxy should be stored
