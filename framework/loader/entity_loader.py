@@ -307,6 +307,7 @@ class EntityLoader:
             return []
 
         started: list[str] = []
+        acquired_specs: list[dict] = []
         for spec in specs:
             name = spec.get("name", "")
             if not name:
@@ -315,6 +316,7 @@ class EntityLoader:
             ok = await mgr.acquire(spec, agent_name=self.name)
             if ok:
                 started.append(name)
+                acquired_specs.append(spec)
                 logger.info(f"[entity_loader] {self.name!r}: mcp server {name!r} acquired")
                 proxy_type = spec.get("proxy")
                 if proxy_type:
@@ -322,7 +324,65 @@ class EntityLoader:
             else:
                 logger.error(f"[entity_loader] {self.name!r}: mcp server {name!r} failed to start")
 
+        self._inject_gemini_mcp_configs(acquired_specs)
         return started
+
+    def _inject_gemini_mcp_configs(self, acquired_specs: list[dict]) -> None:
+        """如果 entity 包含 GEMINI_CLI 节点，将已启动的 MCP SSE URL 写入
+        工作区的 .gemini/settings.json，使 Gemini CLI 能发现这些 MCP Server。
+
+        写入格式：{"mcpServers": {"<name>": {"url": "<sse_url>"}}}
+        仅追加/更新，不覆盖已有的其他 MCP 条目。
+        写入位置：ZenithLoom 项目根（framework 上两级）及其父目录（Foundation workspace）。
+        """
+        if not acquired_specs:
+            return
+
+        nodes = self._json.get("graph", {}).get("nodes", [])
+        has_gemini_cli = any(n.get("type") == "GEMINI_CLI" for n in nodes)
+        if not has_gemini_cli:
+            return
+
+        # 确定要写入的 .gemini/settings.json 路径集合：
+        # project_root = ZenithLoom/（MCPManager 所在的父目录）
+        # workspace    = Foundation/（project_root 的父目录，即 agents 运行时的 cwd）
+        from framework.mcp_manager import _PROJECT_ROOT
+        candidate_dirs = [_PROJECT_ROOT, _PROJECT_ROOT.parent]
+
+        for workspace in candidate_dirs:
+            settings_path = workspace / ".gemini" / "settings.json"
+            if not settings_path.parent.exists():
+                continue  # 没有 .gemini/ 目录则跳过（避免意外创建）
+
+            try:
+                settings = json.loads(settings_path.read_text(encoding="utf-8")) if settings_path.exists() else {}
+            except Exception as exc:
+                logger.warning(f"[entity_loader] 读取 {settings_path} 失败: {exc}")
+                continue
+
+            mcp_servers: dict = settings.setdefault("mcpServers", {})
+            changed = False
+            for spec in acquired_specs:
+                name = spec.get("name", "")
+                url = spec.get("url", "")
+                if not name or not url:
+                    continue
+                new_entry: dict = {"url": url}
+                if mcp_servers.get(name) != new_entry:
+                    mcp_servers[name] = new_entry
+                    changed = True
+
+            if changed:
+                try:
+                    settings_path.write_text(
+                        json.dumps(settings, indent=2, ensure_ascii=False) + "\n",
+                        encoding="utf-8",
+                    )
+                    logger.info(
+                        f"[entity_loader] {self.name!r}: gemini mcp 配置已注入 → {settings_path}"
+                    )
+                except Exception as exc:
+                    logger.warning(f"[entity_loader] 写入 {settings_path} 失败: {exc}")
 
     async def _connect_proxy(self, name: str, spec: dict, proxy_type: str) -> None:
         """Connect a proxy for framework tool registration (Gemini/Ollama nodes)."""
@@ -464,10 +524,6 @@ class EntityLoader:
         lines = ["flowchart LR"]
         _mermaid_render(graph_spec, lines, "  ", "")
         return "\n".join(lines)
-
-
-# Backward compat alias
-AgentLoader = EntityLoader
 
 
 # ---------------------------------------------------------------------------
