@@ -175,7 +175,10 @@ def _get_allowed_users() -> set[int]:
 
 
 def _is_authorized(user: discord.User | discord.Member) -> bool:
-    return True
+    allowed = _get_allowed_users()
+    if not allowed:
+        return True  # 如果未设置白名单，默认允许所有人
+    return user.id in allowed
 
 
 # ==========================================
@@ -1098,7 +1101,7 @@ async def on_message(message: discord.Message):
         return
 
     user_input = message.content.strip()
-    author_name = message.author.display_name
+    author_name = message.author.name  # 使用用户名而非昵称
     if user_input:
         user_input = f"{author_name} (DISCORD): {user_input}"
     channel_id = message.channel.id
