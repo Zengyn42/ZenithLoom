@@ -25,49 +25,128 @@ RESCUE_FAIL_CAP = 5
 # inject_e2e_context
 # ---------------------------------------------------------------------------
 
-def inject_e2e_context(state: dict) -> dict:
-    """Route QA entry: generate E2E tests (first time) or skip to run_e2e (subsequent).
+def _infer_working_dir(state: dict) -> str:
+    """Infer working_directory from e2e_plan or task descriptions if not set."""
+    working_dir = state.get("working_directory", "")
+    if working_dir:
+        return working_dir
+    e2e_plan = state.get("e2e_plan") or {}
+    run_cmd = e2e_plan.get("run_command", "")
+    m = re.search(r"(/tmp/[\w._-]+)", run_cmd)
+    if m:
+        return m.group(1)
+    for t in (state.get("tasks") or []):
+        m = re.search(r"(/tmp/[\w._-]+)", t.get("description", ""))
+        if m:
+            return m.group(1)
+    return working_dir
 
-    First entry: builds prompt for generate_e2e, sets e2e_tests_generated=True.
-    Subsequent entries: routes directly to run_e2e (tests already exist on disk).
+
+def inject_e2e_context(state: dict) -> dict:
+    """Route QA entry: inject scoped prompt for the current qa_task (or full e2e_plan fallback).
+
+    qa_tasks mode (new):
+      - Each call covers ONE qa_task from state['qa_tasks'][current_qa_task_index]
+      - Always generates fresh tests for this qa_task's scope (smaller, faster)
+
+    Legacy mode (no qa_tasks):
+      - First entry: builds prompt for generate_e2e from e2e_plan
+      - Subsequent entries: skip to run_e2e (e2e_tests_generated flag)
     """
     from langchain_core.messages import HumanMessage
 
+    working_dir = _infer_working_dir(state)
+    qa_tasks = state.get("qa_tasks") or []
+    qa_task_index = state.get("current_qa_task_index", 0)
+
+    if working_dir and working_dir != state.get("working_directory", ""):
+        logger.info(f"[inject_e2e_context] inferred working_dir={working_dir!r}")
+
+    # ── qa_tasks mode ──────────────────────────────────────────────────
+    if qa_tasks:
+        if qa_task_index >= len(qa_tasks):
+            logger.info(
+                f"[inject_e2e_context] all {len(qa_tasks)} qa_tasks done → __end__"
+            )
+            return {"routing_target": "__end__", "success": True}
+
+        qa_task = qa_tasks[qa_task_index]
+        qa_id = qa_task.get("id", f"q{qa_task_index + 1}")
+        scope = qa_task.get("scope", "(no scope specified)")
+        test_file = qa_task.get("test_file", f"test_{qa_id}.py")
+        run_script = f"run_e2e_{qa_id}.sh"
+
+        logger.info(
+            f"[inject_e2e_context] qa_tasks mode: {qa_id} ({qa_task_index + 1}/{len(qa_tasks)}) "
+            f"test_file={test_file}"
+        )
+
+        # List only relevant source files (excluding test_tool)
+        source_files: list[str] = []
+        if working_dir and os.path.isdir(working_dir):
+            for root, dirs, files in os.walk(working_dir):
+                dirs[:] = [d for d in dirs if d not in ("__pycache__", ".git", "test_tool")]
+                for f in files:
+                    if f.endswith(".py"):
+                        source_files.append(
+                            os.path.relpath(os.path.join(root, f), working_dir)
+                        )
+
+        lines = [f"## QA Subtask {qa_task_index + 1}/{len(qa_tasks)}: `{qa_id}`\n"]
+        lines.append(f"**Working directory**: `{working_dir}`\n")
+        lines.append("### Test Scope")
+        lines.append(f"{scope}\n")
+
+        e2e_plan = state.get("e2e_plan") or {}
+        headless = e2e_plan.get("headless_notes", "")
+        if headless:
+            lines.append(f"### Headless Testing Notes\n{headless}\n")
+
+        if source_files:
+            lines.append("### Source Files (use `read_file` to examine before writing tests)")
+            for f in sorted(source_files):
+                lines.append(f"- `{f}`")
+            lines.append("")
+
+        lines.append("### Your Task")
+        lines.append(f"1. Use `read_file` to examine the relevant source files.")
+        lines.append(f"2. Write E2E tests for the scope above to `test_tool/e2e_tests/{test_file}`.")
+        lines.append(f"3. Write `test_tool/{run_script}` that runs ONLY `{test_file}`:")
+        lines.append(f"   ```bash\n   #!/bin/bash\n   set -e\n   cd \"$(dirname \"$0\")/..\"\n   python3 -m pytest test_tool/e2e_tests/{test_file} -v 2>&1\n   ```")
+        lines.append(f"4. Run: `bash test_tool/{run_script}` via bash_exec.")
+        lines.append("5. Fix until all tests pass.")
+        lines.append("6. Report E2E_VERDICT: PASS or E2E_VERDICT: FAIL.")
+        lines.append(
+            "\n**IMPORTANT**: Test ONLY what's in the scope above. "
+            "Do NOT write tests for other modules. Keep it focused and fast (<60s total)."
+        )
+
+        prompt_len = sum(len(l) for l in lines)
+        logger.info(
+            f"[inject_e2e_context] qa_tasks prompt ({prompt_len} chars) → generate_e2e"
+        )
+        updates = {
+            "messages": [HumanMessage(content="\n".join(lines))],
+            "routing_target": "generate_e2e",
+        }
+        if working_dir:
+            updates["working_directory"] = working_dir
+        return updates
+
+    # ── Legacy mode (no qa_tasks) ──────────────────────────────────────
     e2e_plan = state.get("e2e_plan") or {}
     qa_plan = state.get("qa_plan", "")
-    working_dir = state.get("working_directory", "")
     e2e_tests_generated = state.get("e2e_tests_generated", False)
 
-    # Fallback: infer working_directory from e2e_plan or tasks
-    if not working_dir:
-        import re as _re
-        # Try e2e_plan.run_command
-        run_cmd = e2e_plan.get("run_command", "")
-        m = _re.search(r"(/tmp/[\w._-]+)", run_cmd)
-        if m:
-            working_dir = m.group(1)
-        else:
-            # Try task descriptions
-            for t in (state.get("tasks") or []):
-                m = _re.search(r"(/tmp/[\w._-]+)", t.get("description", ""))
-                if m:
-                    working_dir = m.group(1)
-                    break
-        if working_dir:
-            logger.info(f"[inject_e2e_context] inferred working_dir={working_dir!r}")
-
     logger.info(
-        f"[inject_e2e_context] working_dir={working_dir!r} "
-        f"e2e_tests_generated={e2e_tests_generated} "
-        f"has_e2e_plan={bool(e2e_plan)}"
+        f"[inject_e2e_context] legacy mode: working_dir={working_dir!r} "
+        f"e2e_tests_generated={e2e_tests_generated} has_e2e_plan={bool(e2e_plan)}"
     )
 
-    # ── Skip path: tests already exist, go straight to run_e2e ──
     if e2e_tests_generated:
         logger.info("[inject_e2e_context] E2E tests already generated → run_e2e")
         return {"routing_target": "run_e2e"}
 
-    # ── First time: build prompt for generate_e2e ──
     lines = ["## E2E Test Generation Task\n"]
     lines.append(f"**Working directory**: `{working_dir}`\n")
 
@@ -117,14 +196,14 @@ def inject_e2e_context(state: dict) -> dict:
 
     lines.append("\n### Your Task")
     lines.append("1. Read the acceptance criteria and test scenarios above.")
-    lines.append("2. Examine the source files using Read.")
+    lines.append("2. Examine the source files using read_file.")
     lines.append("3. Write E2E test scripts to test_tool/e2e_tests/.")
     lines.append("4. Write test_tool/run_e2e.sh to run all E2E tests.")
     lines.append("5. Run: bash test_tool/run_e2e.sh")
     lines.append("6. Report E2E_VERDICT: PASS or E2E_VERDICT: FAIL.")
 
     prompt_len = sum(len(l) for l in lines)
-    logger.info(f"[inject_e2e_context] built prompt ({prompt_len} chars) → generate_e2e")
+    logger.info(f"[inject_e2e_context] legacy prompt ({prompt_len} chars) → generate_e2e")
     updates = {
         "messages": [HumanMessage(content="\n".join(lines))],
         "routing_target": "generate_e2e",
@@ -140,9 +219,27 @@ def inject_e2e_context(state: dict) -> dict:
 # ---------------------------------------------------------------------------
 
 def _run_e2e_tests(state: dict, caller: str = "run_e2e") -> dict:
-    """Shared implementation: run test_tool/run_e2e.sh mechanically."""
+    """Shared implementation: run E2E tests mechanically.
+
+    qa_tasks mode: runs test_tool/run_e2e_{qa_id}.sh for the current qa_task.
+    Legacy mode: runs test_tool/run_e2e.sh.
+    """
     working_dir = state.get("working_directory", "")
-    runner = os.path.join(working_dir, "test_tool", "run_e2e.sh")
+    qa_tasks = state.get("qa_tasks") or []
+    qa_task_index = state.get("current_qa_task_index", 0)
+
+    # qa_tasks mode: use per-task run script
+    if qa_tasks and qa_task_index < len(qa_tasks):
+        qa_id = qa_tasks[qa_task_index].get("id", f"q{qa_task_index + 1}")
+        runner = os.path.join(working_dir, "test_tool", f"run_e2e_{qa_id}.sh")
+        # Fallback to generic run_e2e.sh if per-task script missing
+        if not os.path.isfile(runner):
+            fallback = os.path.join(working_dir, "test_tool", "run_e2e.sh")
+            if os.path.isfile(fallback):
+                logger.info(f"[{caller}] per-task script missing, falling back to run_e2e.sh")
+                runner = fallback
+    else:
+        runner = os.path.join(working_dir, "test_tool", "run_e2e.sh")
 
     logger.info(f"[{caller}] runner={runner} exists={os.path.isfile(runner)}")
 
@@ -208,19 +305,49 @@ def run_e2e_rescue(state: dict) -> dict:
 def e2e_route(state: dict) -> dict:
     """Route E2E test results.
 
-    Pass (rc==0)                       → __end__ (success)
-    Fail, qa_fail_count < QA_FAIL_CAP  → __end__ with routing_target="execute"
-                                         (parent graph loops back to executor)
-    Fail, qa_fail_count >= QA_FAIL_CAP → inject_rescue_context (escalate)
+    qa_tasks mode:
+      Pass → advance current_qa_task_index; if more qa_tasks → inject_e2e_context; else → __end__
+      Fail → route back to execute (reset current_qa_task_index=0 so all tests re-run after fix)
+
+    Legacy mode:
+      Pass (rc==0)                       → __end__ (success)
+      Fail, qa_fail_count < QA_FAIL_CAP  → __end__ with routing_target="execute"
+      Fail, qa_fail_count >= QA_FAIL_CAP → inject_rescue_context (escalate)
     """
     rc = state.get("execution_returncode")
     qa_fail_count = state.get("qa_fail_count", 0)
+    qa_tasks = state.get("qa_tasks") or []
+    qa_task_index = state.get("current_qa_task_index", 0)
 
     logger.info(
-        f"[e2e_route] rc={rc} qa_fail_count={qa_fail_count}/{QA_FAIL_CAP}"
+        f"[e2e_route] rc={rc} qa_fail_count={qa_fail_count}/{QA_FAIL_CAP} "
+        f"qa_tasks_mode={bool(qa_tasks)} qa_task_index={qa_task_index}/{len(qa_tasks)}"
     )
 
     if rc == 0:
+        # ── qa_tasks mode: advance index ──
+        if qa_tasks:
+            next_idx = qa_task_index + 1
+            qa_id = qa_tasks[qa_task_index].get("id", f"q{qa_task_index + 1}") if qa_task_index < len(qa_tasks) else "?"
+            if next_idx >= len(qa_tasks):
+                logger.info(f"[e2e_route] qa_task {qa_id} PASSED — all {len(qa_tasks)} qa_tasks done → __end__")
+                return {
+                    "routing_target": "__end__",
+                    "current_qa_task_index": next_idx,
+                    "success": True,
+                }
+            else:
+                next_id = qa_tasks[next_idx].get("id", f"q{next_idx + 1}")
+                logger.info(
+                    f"[e2e_route] qa_task {qa_id} PASSED → next qa_task {next_id} "
+                    f"({next_idx + 1}/{len(qa_tasks)})"
+                )
+                return {
+                    "routing_target": "inject_e2e_context",
+                    "current_qa_task_index": next_idx,
+                }
+
+        # ── Legacy mode: all done ──
         logger.info("[e2e_route] E2E tests PASSED → __end__ (success)")
         return {
             "routing_target": "__end__",
@@ -241,6 +368,9 @@ def e2e_route(state: dict) -> dict:
             "success": False,
             "qa_fail_count": qa_fail_count + 1,
         }
+
+    # qa_tasks mode: reset index so all qa_tasks re-run after executor fix
+    extra = {"current_qa_task_index": 0} if qa_tasks else {}
 
     stdout = state.get("execution_stdout", "")
     stderr = state.get("execution_stderr", "")
@@ -313,6 +443,7 @@ def e2e_route(state: dict) -> dict:
         "routing_target": "execute",
         "qa_fail_count": qa_fail_count + 1,
         "qa_analysis": qa_analysis,
+        **extra,
     }
 
 

@@ -99,6 +99,10 @@ def decomposition_validator(state: dict) -> dict:
         if "e2e_plan" in parsed and isinstance(parsed["e2e_plan"], dict):
             parsed_updates["e2e_plan"] = parsed["e2e_plan"]
             logger.info(f"[decomposition_validator] e2e_plan keys: {list(parsed['e2e_plan'].keys())}")
+        if "qa_tasks" in parsed and isinstance(parsed["qa_tasks"], list):
+            parsed_updates["qa_tasks"] = parsed["qa_tasks"]
+            parsed_updates["current_qa_task_index"] = 0
+            logger.info(f"[decomposition_validator] qa_tasks: {[t.get('id') for t in parsed['qa_tasks']]}")
     else:
         logger.warning(f"[decomposition_validator] Failed to parse JSON from last message ({len(last_content)} chars)")
 

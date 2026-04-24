@@ -74,8 +74,12 @@ class ColonyCoderState(BaseAgentState):
     prev_snapshot_hash: Optional[str]   # git commit hash of last good snapshot
     intent_snippet: str                 # first assistant message excerpt for deterministic summary
 
+    # QA subtasks: split generate_e2e into smaller scoped calls (2026-04-23)
+    qa_tasks: list                      # list of {"id", "scope", "test_file", "depends_on"}
+    current_qa_task_index: int          # which qa_task is being worked on
+
     # QA one-shot: E2E tests generated once, reused for all validation passes
-    e2e_tests_generated: bool           # True after generate_e2e runs successfully
+    e2e_tests_generated: bool           # True after generate_e2e runs successfully (legacy, used when qa_tasks absent)
 
     # Final output
     final_files: list

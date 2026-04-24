@@ -56,6 +56,7 @@
       {"from": "inject_e2e_context",    "to": "run_e2e",               "type": "routing_to"},
       {"from": "generate_e2e",          "to": "run_e2e"},
       {"from": "run_e2e",               "to": "e2e_route"},
+      {"from": "e2e_route",             "to": "inject_e2e_context",    "type": "routing_to"},
       {"from": "e2e_route",             "to": "inject_rescue_context",  "type": "routing_to"},
       {"from": "e2e_route",             "to": "__end__",               "type": "routing_to", "id": "no_routing"},
       {"from": "inject_rescue_context", "to": "qa_rescue"},

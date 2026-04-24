@@ -23,3 +23,6 @@ bot-chrome-data/
 
 # Local session data
 *.jsonl
+
+# Gemini CLI local config (authoritative copy lives at ~/Foundation/.gemini/)
+.gemini/
