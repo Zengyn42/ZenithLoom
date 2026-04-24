@@ -11,7 +11,7 @@
         "id": "code_gen",
         "type": "OLLAMA",
         "model": "gemma4:31b",
-        "timeout": 300,
+        "timeout": 600,
         "max_iterations": 7,
         "options": {"think": false},
         "tools": ["read_file", "write_file", "replace_lines", "list_dir", "bash_exec"],

@@ -360,7 +360,13 @@ class LlmNode:
         user_msg = self._format_user_msg(latest_input, state)
 
         # ── Prompt 组装 ────────────────────────────────────────────────────
-        parts = [p for p in [dynamic_injections, user_msg] if p]
+        # 当 _prev_inject 存在时（子图跨节点桥接），user_msg = msgs[-1] = previous_node_output，
+        # 与 _prev_inject 内容完全相同。跳过 user_msg 避免双倍注入。
+        # 原始任务通过 _topic_inject 锚点已保留，信息不丢失。
+        if _prev_inject:
+            parts = [p for p in [dynamic_injections] if p]
+        else:
+            parts = [p for p in [dynamic_injections, user_msg] if p]
         prompt = "\n\n".join(parts)
         if not session_id:
             suffix = self._cfg.get("first_turn_suffix", "")

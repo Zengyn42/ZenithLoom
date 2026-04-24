@@ -47,6 +47,7 @@ for _k in list(sys.modules):
         del sys.modules[_k]
 
 from mcp.server.fastmcp import FastMCP  # noqa: E402 — now resolves to pip SDK
+from PIL import Image
 
 # Restore paths (but mcp SDK is already cached in sys.modules)
 for _p in _hidden:
@@ -220,20 +221,20 @@ async def _execute_workflow(
 @mcp.tool()
 async def ltx_txt2vid(
     prompt: str,
-    width: int = 1280,
-    height: int = 720,
+    width: int = 640,
+    height: int = 480,
     frame_rate: int = 24,
-    num_frames: int = 241,
+    num_frames: int = 240,
     seed: int | None = None,
 ) -> str:
     """Generate a video from a text prompt only (no image input) using LTX-Video 2.3.
 
     Args:
         prompt: Cinematic description of the desired video content, motion and style
-        width: Output video width (default 1280)
-        height: Output video height (default 720)
+        width: Output video width (default 640)
+        height: Output video height (default 480)
         frame_rate: Frames per second (default 24)
-        num_frames: Total frames to generate, 241 ≈ 10s at 24fps (default 241)
+        num_frames: Total frames to generate, 240 ≈ 10s at 24fps (default 240)
         seed: Optional seed for reproducibility
     """
     result = await _execute_workflow(
@@ -260,17 +261,37 @@ async def ltx_img2vid(
     Args:
         image_path: Absolute path to the input image file
         prompt: Cinematic description of the desired video motion and style
-        width: Output video width (default 1280)
-        height: Output video height (default 720)
+        width: Output video width. If not set, defaults to auto-detect.
+        height: Output video height. If not set, defaults to auto-detect.
         frame_rate: Frames per second (default 24)
         num_frames: Total frames to generate, 241 ≈ 10s at 24fps (default 241)
         seed: Optional seed for reproducibility
     """
+    final_width, final_height = width, height
+
+    # Auto-detect resolution if default values are unchanged
+    if width == 1280 and height == 720:
+        try:
+            with Image.open(image_path) as img:
+                img_width, img_height = img.size
+                aspect_ratio = img_width / img_height
+
+                if aspect_ratio > 1.1:  # Landscape
+                    final_width, final_height = 640, 480
+                elif aspect_ratio < 0.9:  # Portrait
+                    final_width, final_height = 480, 640
+                else:  # Square-ish
+                    final_width, final_height = 640, 640
+                logger.info(f"Image {Path(image_path).name} ({img_width}x{img_height}, ratio={aspect_ratio:.2f}) -> auto-selected resolution {final_width}x{final_height}")
+        except Exception as e:
+            logger.warning(f"Could not auto-detect image resolution: {e}. Falling back to default.")
+            final_width, final_height = 640, 480 # Fallback for safety
+
     result = await _execute_workflow(
         "img2vid",
         prompt=prompt,
         files_to_upload={"image": image_path},
-        width=width, height=height, frame_rate=frame_rate, num_frames=num_frames, seed=seed,
+        width=final_width, height=final_height, frame_rate=frame_rate, num_frames=num_frames, seed=seed,
     )
     return json.dumps(result, ensure_ascii=False, indent=2)
 
