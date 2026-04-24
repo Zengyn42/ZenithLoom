@@ -218,6 +218,11 @@ class _DiscordInterface(BaseInterface):
 
     async def invoke(self, user_input: str, message) -> None:
         """统一入口：处理历史刷新 + 流式/非流式 Discord UI，再调用 invoke_agent()。"""
+        # 注入当前 channel 供 Discord tool server 使用
+        from interfaces.discord.tool_server import set_current_channel
+        set_current_channel(message.channel)
+        _state._current_channel = message.channel
+
         history_limit = (_state._loader.json.get("channel_history_limit", 0) if _state._loader else 0)
         if history_limit and self._channel_id is not None:
             await _refresh_history_file(

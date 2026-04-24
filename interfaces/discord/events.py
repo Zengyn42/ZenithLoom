@@ -83,6 +83,10 @@ async def on_ready():
         await _state._loader.start_mcp_servers()
         logger.info(f"[Discord] mcp servers 已启动（agent={agent_name}）")
 
+        from interfaces.discord.tool_server import start_tool_server
+        port = await start_tool_server()
+        logger.info(f"[Discord] discord tool server 已启动（port={port}）")
+
 
 @bot.event
 async def on_guild_channel_delete(channel):
@@ -212,6 +216,8 @@ def run_discord(loader=None):
 
     if _state._loader:
         async def _cleanup():
+            from interfaces.discord.tool_server import stop_tool_server
+            await stop_tool_server()
             await _state._loader.stop_heartbeat()
             await _state._loader.stop_mcp_servers()
 

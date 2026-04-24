@@ -59,6 +59,15 @@
           "description": "执行 gws docs 命令操作 Google Docs",
           "timeout": 60
         }
+      },
+      {
+        "id": "discord_tools",
+        "type": "EXTERNAL_TOOL",
+        "node_config": {
+          "command": ["python3", "-m", "framework.discord_tool_client", "{routing_context}"],
+          "description": "Discord 频道工具集：history（读消息）/ search（搜消息）/ channels（列频道）/ user（查用户）",
+          "timeout": 15
+        }
       }
     ],
     "edges": [
@@ -120,6 +129,17 @@
       {
         "id": "e_gws_docs_2_gemini",
         "from": "gws_docs",
+        "to": "gemini_main"
+      },
+      {
+        "id": "e_validate_2_discord_tools",
+        "type": "routing_to",
+        "from": "validate",
+        "to": "discord_tools"
+      },
+      {
+        "id": "e_discord_tools_2_gemini",
+        "from": "discord_tools",
         "to": "gemini_main"
       }
     ]

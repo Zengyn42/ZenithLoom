@@ -44,6 +44,9 @@ _channel_tasks: dict[int, asyncio.Task] = {}
 # 最后活跃的频道 ID（用于 heartbeat 告警推送）
 _last_active_channel_id: int | None = None
 
+# 当前正在处理消息的 channel 对象（供 Discord tool server 使用）
+_current_channel = None
+
 # PENDING 后台任务 → 频道映射（task_id → channel_id）
 _pending_task_channels: dict[str, int] = {}
 
