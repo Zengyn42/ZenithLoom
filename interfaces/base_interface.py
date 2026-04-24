@@ -27,6 +27,8 @@ from datetime import datetime, timezone
 from langchain_core.messages import HumanMessage, AIMessage
 
 _SEND_FILE_RE = _re.compile(r"\[SEND_FILE:\s*([^\]]+)\]")
+# Matches fenced code blocks (``` ... ```) and inline code spans (` ... `)
+_CODE_SPAN_RE = _re.compile(r"```[\s\S]*?```|`[^`\n]+`")
 
 _logger = logging.getLogger(__name__)
 
@@ -668,7 +670,21 @@ class BaseInterface:
 
     @staticmethod
     def extract_attachments(text: str) -> tuple[str, list[str]]:
-        """从 agent 输出中提取所有 [SEND_FILE: /path/to/file] 标记。"""
-        paths      = [m.group(1).strip() for m in _SEND_FILE_RE.finditer(text)]
-        clean_text = _SEND_FILE_RE.sub("", text).strip()
-        return clean_text, paths
+        """从 agent 输出中提取所有 [SEND_FILE: /path/to/file] 标记，跳过代码块/inline code 内的标记。"""
+        # Mask code spans with null bytes so regex won't match inside them
+        masked = _CODE_SPAN_RE.sub(lambda m: "\x00" * len(m.group()), text)
+
+        paths: list[str] = []
+        spans: list[tuple[int, int]] = []
+        for m in _SEND_FILE_RE.finditer(masked):
+            paths.append(m.group(1).strip())
+            spans.append((m.start(), m.end()))
+
+        # Remove only the non-code SEND_FILE markers from the original text
+        parts: list[str] = []
+        prev = 0
+        for start, end in spans:
+            parts.append(text[prev:start])
+            prev = end
+        parts.append(text[prev:])
+        return "".join(parts).strip(), paths
