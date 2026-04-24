@@ -12,17 +12,38 @@ import urllib.request
 logger = logging.getLogger("discord_bot")
 
 
+def _mermaid_scale(mermaid_text: str) -> int:
+    """根据拓扑复杂度动态选择渲染 scale。
+    以节点行数（非空、非 flowchart/subgraph 关键字的行）作为粗略指标：
+      < 6  节点 → scale 2
+      6-12 节点 → scale 3
+      > 12 节点 → scale 4
+    """
+    node_lines = [
+        ln for ln in mermaid_text.splitlines()
+        if ln.strip() and not ln.strip().startswith(("flowchart", "subgraph", "end", "%%"))
+    ]
+    n = len(node_lines)
+    if n < 6:
+        return 2
+    if n <= 12:
+        return 3
+    return 4
+
+
 async def _fetch_mermaid_png(mermaid_text: str) -> bytes | None:
     """
     调用 mermaid.ink 将 Mermaid 文本渲染成 PNG bytes。
     URL 格式与 LangGraph 官方实现保持一致：
       base64.b64encode + ?type=png&bgColor=white
     mermaid.ink 会拒绝 Python 默认 User-Agent，需显式设置。
+    scale 根据拓扑复杂度动态选择（2~4）。
     """
     try:
         encoded  = base64.b64encode(mermaid_text.encode("utf-8")).decode("ascii")
         bg_color = urllib.parse.quote("white", safe="")
-        url      = f"https://mermaid.ink/img/{encoded}?type=png&bgColor={bg_color}&scale=3"
+        scale    = _mermaid_scale(mermaid_text)
+        url      = f"https://mermaid.ink/img/{encoded}?type=png&bgColor={bg_color}&scale={scale}"
         req = urllib.request.Request(
             url,
             headers={"User-Agent": "Mozilla/5.0 (compatible; ZenithLoom/1.0)"},
