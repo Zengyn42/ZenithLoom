@@ -434,8 +434,6 @@ class EntityLoader:
         specs = self._collect_mcp_entries()
         if not specs:
             return []
-
-        specs = self._resolve_mcp_specs(mcp_entries)
         started: list[str] = []
         acquired_specs: list[dict] = []
         for spec in specs:
