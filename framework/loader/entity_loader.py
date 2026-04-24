@@ -202,6 +202,7 @@ class EntityLoader:
 
         _identity_json_path = _instance_dir / "identity.json"
         _instance_persona_files: list[str] = []
+        _inst: dict = {}
         if _identity_json_path.exists():
             try:
                 _inst = json.loads(_identity_json_path.read_text(encoding="utf-8"))
@@ -230,6 +231,11 @@ class EntityLoader:
                     _instance_persona_parts.append(
                         f"<!-- [source: {_instance_dir.name}/{_p.name}] -->\n{_content}"
                     )
+
+        # Inject interface-specific context based on connector type
+        _interface_context = self._load_interface_context(_inst.get("connector", "") if _identity_json_path.exists() else "")
+        if _interface_context:
+            _instance_persona_parts.append(_interface_context)
 
         _all_extra = "\n\n---\n\n".join(p for p in [extra_persona_text] + _instance_persona_parts if p)
 
@@ -645,6 +651,27 @@ class EntityLoader:
         self._engine = None
         self._controller = None
         logger.info(f"[entity_loader] engine invalidated for {self.name!r}")
+
+    def _load_interface_context(self, connector: str) -> str:
+        """根据 connector 类型加载对应的 interface 契约文件，注入到 LLM 节点 system prompt。
+
+        文件位置：interfaces/{connector}/INTERFACE.md（相对于 ZenithLoom 项目根）
+        不存在则静默返回空字符串。
+        """
+        if not connector:
+            return ""
+        from framework.mcp_manager import _PROJECT_ROOT
+        interface_file = _PROJECT_ROOT / "interfaces" / connector / "INTERFACE.md"
+        if not interface_file.exists():
+            return ""
+        try:
+            content = interface_file.read_text(encoding="utf-8").strip()
+            if not content:
+                return ""
+            return f"<!-- [interface: {connector}] -->\n{content}"
+        except Exception as exc:
+            logger.warning(f"[entity_loader] failed to load interface context for {connector!r}: {exc}")
+            return ""
 
     def build_topology_mermaid(self) -> str:
         """从 entity.json 构建 Mermaid 拓扑图，展开 external subgraph 子图。"""
