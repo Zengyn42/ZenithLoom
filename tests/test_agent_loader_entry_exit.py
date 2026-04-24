@@ -16,12 +16,8 @@ from pathlib import Path
 
 import pytest
 
-from framework.agent_loader import (
-    _check_edge_refs,
-    _check_reachable,
-    _collect_all_ids,
-    EntityLoader,
-)
+from framework.loader import EntityLoader
+from framework.loader.graph_validator import _check_edge_refs, _check_reachable, _collect_all_ids
 
 
 # ---------------------------------------------------------------------------

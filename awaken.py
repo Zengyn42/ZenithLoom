@@ -122,7 +122,7 @@ def main():
         print(f"📝 debug output file: {debug_output_file}")
 
     # ── EntityLoader ────────────────────────────────────────────────────────
-    from framework.agent_loader import EntityLoader
+    from framework.loader import EntityLoader
     loader = EntityLoader(blueprint_dir, data_dir=entity_dir)
 
     # ── 启动 connector ───────────────────────────────────────────────────────

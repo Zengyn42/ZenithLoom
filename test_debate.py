@@ -71,11 +71,11 @@ def build_debate_graph(claude_node, gemini_node):
 
 async def run():
     from pathlib import Path
-    from framework.agent_loader import AgentLoader
+    from framework.loader import EntityLoader
     from framework.nodes.llm.claude import ClaudeNode
     from framework.nodes.llm.gemini import GeminiNode
 
-    loader = AgentLoader(Path("blueprints/role_agents/technical_architect"))
+    loader = EntityLoader(Path("blueprints/role_agents/technical_architect"))
     cfg = loader.load_config()
     claude = ClaudeNode(cfg, "")
     gemini = GeminiNode(cfg, claude)

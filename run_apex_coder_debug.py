@@ -24,7 +24,7 @@ logging.basicConfig(
     stream=sys.stderr,
 )
 
-from framework.agent_loader import EntityLoader
+from framework.loader import EntityLoader
 from framework.debug import set_debug
 from framework.debug_reporter import DebugConsoleReporter
 from langchain_core.messages import HumanMessage

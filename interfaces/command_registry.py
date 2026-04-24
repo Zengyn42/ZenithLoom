@@ -8,9 +8,9 @@
 
 添加新命令：
   1. 在此文件 _r() 调用处注册（只需一行）
-  2. 在 BaseInterface.handle_command() 添加处理逻辑
-  3. 若某 connector 需要特殊处理（如 Discord per-channel 逻辑），
-     在对应 interface 里以 @bot.command / 显式 if 优先拦截即可
+  2. 在 BaseInterface.handle_command() 添加默认实现
+  3. 若某 connector 需要特殊行为，在对应 Interface 子类覆写 handle_command()，
+     处理后 return；其余命令 fall-through 到 super().handle_command()
 """
 
 from __future__ import annotations

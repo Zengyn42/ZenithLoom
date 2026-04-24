@@ -17,7 +17,9 @@ from unittest.mock import patch
 
 import pytest
 
-from framework.agent_loader import _load_persona_text, _LLM_NODE_TYPES, EntityLoader
+from framework.loader import EntityLoader
+from framework.loader.graph_builder import _LLM_NODE_TYPES
+from framework.loader.persona import _load_persona_text
 
 
 # ---------------------------------------------------------------------------

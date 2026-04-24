@@ -133,11 +133,12 @@ class TestWorkflowManager(unittest.TestCase):
             if node_data.get("class_type") == "RandomNoise":
                 self.assertEqual(node_data["inputs"]["noise_seed"], 42)
 
-    def test_txt2vid_text_mode_true(self):
-        """txt2vid template has text_mode=True (node 302)."""
+    def test_img2vid_has_text_mode_node(self):
+        """img2vid template has text_mode node (302) defaulting to False (image mode)."""
         wm = self.WorkflowManager()
-        template = wm.load_template("txt2vid")
-        self.assertTrue(template["302"]["inputs"]["value"])
+        template = wm.load_template("img2vid")
+        self.assertIn("302", template)
+        self.assertFalse(template["302"]["inputs"]["value"])
 
 
 # ---------------------------------------------------------------------------

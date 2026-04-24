@@ -192,7 +192,7 @@ def test_print_summary(capsys):
 async def test_colony_coder_graph_with_subgraphs_true():
     """Verify colony_coder graph compiles with native subgraphs."""
     import blueprints.functional_graphs.colony_coder.state  # noqa: F401
-    from framework.agent_loader import EntityLoader
+    from framework.loader import EntityLoader
 
     loader = EntityLoader(Path("blueprints/functional_graphs/colony_coder"))
     graph = await loader.build_graph(checkpointer=None)

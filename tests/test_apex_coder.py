@@ -135,7 +135,7 @@ def test_hook_allows_unit_test_write():
 @pytest.mark.asyncio
 async def test_apex_coder_graph_compiles():
     import blueprints.functional_graphs.apex_coder.state  # noqa: F401
-    from framework.agent_loader import EntityLoader
+    from framework.loader import EntityLoader
     g = await EntityLoader(Path("blueprints/functional_graphs/apex_coder")).build_graph(checkpointer=None)
     node_ids = set(g.nodes) - {"__start__", "__end__"}
     required = {"setup", "claude_qa", "reset_for_coder", "claude_coder", "executor", "route", "inject_error_context"}

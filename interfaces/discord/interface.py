@@ -7,7 +7,7 @@ import logging
 import os
 
 import discord
-from framework.command_registry import Connector
+from interfaces.command_registry import Connector
 from framework.debug import is_debug
 from interfaces.base_interface import BaseInterface
 from interfaces.discord import state as _state
@@ -116,6 +116,93 @@ class _DiscordInterface(BaseInterface):
                 _state._channel_default_session(self._channel_id),
             )
         return super()._resolve_session_name()
+
+    # ── per-channel command overrides ────────────────────────────────
+
+    def _friendly_name(self, full_name: str) -> str:
+        """Return user-visible session name (strip channel prefix)."""
+        if self._channel_id is None:
+            return full_name
+        default_name = _state._channel_default_session(self._channel_id)
+        if full_name == default_name:
+            return "default"
+        prefix = f"{_state._channel_prefix(self._channel_id)}-"
+        if full_name.startswith(prefix):
+            return full_name[len(prefix):]
+        return full_name
+
+    async def handle_command(self, cmd: str, arg: str) -> str | None:
+        """
+        Discord per-channel overrides for session/stream commands.
+        Delegates everything else to BaseInterface.handle_command().
+        """
+        channel_id = self._channel_id
+
+        if cmd == "!new":
+            if not arg:
+                return "用法：!new <session名称>"
+            if channel_id is None:
+                return await super().handle_command(cmd, arg)
+            name = arg.split()[0]
+            full_name = f"{_state._channel_prefix(channel_id)}-{name}"
+            try:
+                env = _state._session_mgr.create_session(full_name)
+                _state._channel_active_session[channel_id] = full_name
+                return f"已创建并切换到 session `{name}`\nthread: `{env.thread_id}`"
+            except ValueError as e:
+                return f"❌ {e}"
+
+        if cmd == "!switch":
+            if not arg:
+                return "用法：!switch <session名称> 或 !switch default"
+            if channel_id is None:
+                return await super().handle_command(cmd, arg)
+            name = arg.strip()
+            if name == "default":
+                full_name = _state._channel_default_session(channel_id)
+            else:
+                full_name = f"{_state._channel_prefix(channel_id)}-{name}"
+            env = _state._session_mgr.get_envelope(full_name)
+            if not env:
+                return f"❌ Session `{name}` 不存在。用 `!sessions` 查看可用 sessions。"
+            _state._channel_active_session[channel_id] = full_name
+            return f"已切换到 session `{name}`\nthread: `{env.thread_id}`"
+
+        if cmd == "!session":
+            if channel_id is None:
+                return await super().handle_command(cmd, arg)
+            name = _state._channel_active_session.get(channel_id, _state._channel_default_session(channel_id))
+            env = _state._session_mgr.get_envelope(name) if _state._session_mgr else None
+            display = self._friendly_name(name)
+            tid = env.thread_id if env else "?"
+            ns = env.node_sessions if env else {}
+            ns_display = ", ".join(f"{k}={v[:8]}" for k, v in ns.items() if v) if ns else "（无）"
+            return (
+                f"session: `{display}`\n"
+                f"thread: `{tid}`\n"
+                f"node_sessions: `{ns_display}`"
+            )
+
+        if cmd == "!sessions":
+            if channel_id is None:
+                return await super().handle_command(cmd, arg)
+            prefix = _state._channel_prefix(channel_id)
+            sessions = _state._session_mgr.list_by_prefix(prefix)
+            if not sessions:
+                return "当前频道没有 session。"
+            active = _state._channel_active_session.get(channel_id, _state._channel_default_session(channel_id))
+            lines = []
+            for sname, env in sessions.items():
+                marker = " ◀" if sname == active else ""
+                display = self._friendly_name(sname)
+                lines.append(f"  {display:<40} thread={env.thread_id}{marker}")
+            return "**频道 Sessions**\n```\n" + "\n".join(lines) + "\n```"
+
+        if cmd == "!stream":
+            _state._discord_streaming = not _state._discord_streaming
+            return f"Streaming: {'ON' if _state._discord_streaming else 'OFF'}"
+
+        return await super().handle_command(cmd, arg)
 
     # ── 流式回调（invoke_agent 经由 BaseInterface 调用）─────────────
 

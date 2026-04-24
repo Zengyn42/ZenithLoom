@@ -12,7 +12,7 @@ from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
-from framework.agent_loader import EntityLoader
+from framework.loader import EntityLoader
 
 # ---------------------------------------------------------------------------
 # Blueprint path (needs a real entity.json to exist for EntityLoader.__init__)

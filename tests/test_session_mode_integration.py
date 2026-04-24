@@ -25,7 +25,7 @@ from pathlib import Path
 import pytest
 from langgraph.checkpoint.memory import MemorySaver
 
-from framework.agent_loader import _build_declarative
+from framework.loader.graph_builder import _build_declarative
 from framework.config import AgentConfig
 
 # ── Shared initial state for all tests ──────────────────────────────────────
@@ -251,7 +251,7 @@ async def test_isolated_clears_sessions_and_unique_keys_applied(tmp_path):
     #   _force_unique = session_mode == "isolated"
     #   inner_graph = await inner_loader.build_graph(..., force_unique_session_keys=_force_unique)
     import inspect
-    import framework.agent_loader as al
+    import framework.loader.graph_builder as al
     src = inspect.getsource(al._build_declarative)
     assert '_force_unique = session_mode == "isolated"' in src, (
         "agent_loader must set _force_unique = session_mode == 'isolated' before calling build_graph"

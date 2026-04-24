@@ -60,7 +60,7 @@ async def test_agent_ref_registered():
 
 async def test_debate_graphs_compile():
     """两个辩论子图能独立编译，节点数量正确。"""
-    from framework.agent_loader import AgentLoader
+    from framework.loader import EntityLoader
 
     expected = {
         "blueprints/functional_graphs/debate_gemini_first": {
@@ -74,7 +74,7 @@ async def test_debate_graphs_compile():
     }
 
     for agent_dir, required_nodes in expected.items():
-        g = await AgentLoader(Path(agent_dir)).build_graph()
+        g = await EntityLoader(Path(agent_dir)).build_graph()
         node_ids = set(g.nodes) - {"__start__"}
         missing = required_nodes - node_ids
         assert not missing, f"{agent_dir} 缺少节点: {missing}"
@@ -83,9 +83,9 @@ async def test_debate_graphs_compile():
 
 async def test_hani_graph_with_debate():
     """Hani 主图含 debate_brainstorm / debate_design external subgraph 节点。"""
-    from framework.agent_loader import AgentLoader
+    from framework.loader import EntityLoader
 
-    g = await AgentLoader(Path("blueprints/role_agents/technical_architect")).build_graph()
+    g = await EntityLoader(Path("blueprints/role_agents/technical_architect")).build_graph()
     node_ids = set(g.nodes)
 
     required = {
@@ -205,9 +205,9 @@ async def test_gemini_node_system_prompt():
 
 async def test_no_checkpointer_build():
     """build_graph(checkpointer=None) 编译后无 checkpointer。"""
-    from framework.agent_loader import AgentLoader
+    from framework.loader import EntityLoader
 
-    loader = AgentLoader(Path("blueprints/functional_graphs/debate_gemini_first"))
+    loader = EntityLoader(Path("blueprints/functional_graphs/debate_gemini_first"))
     graph = await loader.build_graph(checkpointer=None)
 
     cp = getattr(graph, "checkpointer", None)

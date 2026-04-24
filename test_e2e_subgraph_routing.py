@@ -246,9 +246,9 @@ async def test_llm_node_fallback_to_messages():
 @pytest.mark.asyncio
 async def test_main_graph_routing_edges_no_block():
     """主图的 routing_to 边正常工作，子图节点就位。"""
-    from framework.agent_loader import AgentLoader
+    from framework.loader import EntityLoader
 
-    loader = AgentLoader(Path("blueprints/role_agents/technical_architect"))
+    loader = EntityLoader(Path("blueprints/role_agents/technical_architect"))
     g = await loader.build_graph()
 
     node_ids = set(g.nodes)

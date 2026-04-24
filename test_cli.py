@@ -16,10 +16,10 @@ from pathlib import Path
 
 def test_agent_loader_hani():
     print("--- AgentLoader: Hani ---")
-    from framework.agent_loader import AgentLoader
+    from framework.loader import EntityLoader
     from pathlib import Path as _Path
     data_dir = _Path.home() / "Foundation" / "EdenGateway" / "agents" / "hani"
-    loader = AgentLoader(Path("blueprints/role_agents/technical_architect"), data_dir=data_dir)
+    loader = EntityLoader(Path("blueprints/role_agents/technical_architect"), data_dir=data_dir)
     assert loader.name == "hani", f"Expected 'hani', got '{loader.name}'"
     assert loader.json["llm"] == "claude"
 
@@ -36,10 +36,10 @@ def test_agent_loader_hani():
 
 def test_agent_loader_asa():
     print("--- AgentLoader: Asa ---")
-    from framework.agent_loader import AgentLoader
+    from framework.loader import EntityLoader
     from pathlib import Path as _Path
     data_dir = _Path.home() / "Foundation" / "EdenGateway" / "agents" / "asa"
-    loader = AgentLoader(Path("blueprints/role_agents/administrative_officer"), data_dir=data_dir)
+    loader = EntityLoader(Path("blueprints/role_agents/administrative_officer"), data_dir=data_dir)
     assert loader.name == "asa", f"Expected 'asa', got '{loader.name}'"
     assert loader.json["llm"] == "llama"
     cfg = loader.load_config()
@@ -77,10 +77,10 @@ def test_agent_node():
 
 def test_tool_rules():
     print("--- tool_rules 关键词匹配 ---")
-    from framework.agent_loader import AgentLoader
+    from framework.loader import EntityLoader
     from framework.nodes.llm.claude import ClaudeNode
 
-    loader = AgentLoader(Path("blueprints/role_agents/technical_architect"))
+    loader = EntityLoader(Path("blueprints/role_agents/technical_architect"))
     cfg = loader.load_config()
     node_cfg = next(
         n for n in loader.json.get("graph", {}).get("nodes", []) if n.get("id") == "claude_main"
@@ -101,12 +101,12 @@ def test_tool_rules():
 def test_hani_loader():
     print("--- AgentLoader for hani ---")
     from pathlib import Path
-    from framework.agent_loader import AgentLoader
-    loader = AgentLoader(Path("blueprints/role_agents/technical_architect"))
+    from framework.loader import EntityLoader
+    loader = EntityLoader(Path("blueprints/role_agents/technical_architect"))
     assert callable(loader.get_engine)
     assert callable(loader.invalidate_engine)
     assert callable(loader.get_controller)
-    print("✅ AgentLoader(hani) OK\n")
+    print("✅ EntityLoader(hani) OK\n")
 
 
 def test_awaken_arg_parsing():

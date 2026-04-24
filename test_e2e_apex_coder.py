@@ -75,9 +75,9 @@ async def test_agent_json_structure():
 
 async def test_graph_compiles():
     """apex_coder 图编译成功，节点集正确。"""
-    from framework.agent_loader import AgentLoader
+    from framework.loader import EntityLoader
 
-    loader = AgentLoader(AGENT_DIR)
+    loader = EntityLoader(AGENT_DIR)
     g = await loader.build_graph(checkpointer=None)
     node_ids = set(g.nodes.keys())
 
@@ -92,9 +92,9 @@ async def test_graph_compiles():
 
 async def test_no_checkpointer():
     """build_graph(checkpointer=None) 编译后无 checkpointer。"""
-    from framework.agent_loader import AgentLoader
+    from framework.loader import EntityLoader
 
-    loader = AgentLoader(AGENT_DIR)
+    loader = EntityLoader(AGENT_DIR)
     g = await loader.build_graph(checkpointer=None)
     cp = getattr(g, "checkpointer", None)
     assert cp is None, f"checkpointer=None 应编译无 checkpointer，实际: {cp!r}"
@@ -104,9 +104,9 @@ async def test_no_checkpointer():
 
 async def test_soul_md_loads():
     """SOUL.md 存在且通过 load_system_prompt 加载。"""
-    from framework.agent_loader import AgentLoader
+    from framework.loader import EntityLoader
 
-    loader = AgentLoader(AGENT_DIR)
+    loader = EntityLoader(AGENT_DIR)
     prompt = loader.load_system_prompt()
 
     assert len(prompt) > 100, f"system prompt 过短 ({len(prompt)} chars)，persona 可能未加载"
@@ -118,9 +118,9 @@ async def test_soul_md_loads():
 
 async def test_soul_md_contains_ecc():
     """SOUL.md 含 ECC 核心方法论关键段落。"""
-    from framework.agent_loader import AgentLoader
+    from framework.loader import EntityLoader
 
-    prompt = AgentLoader(AGENT_DIR).load_system_prompt()
+    prompt = EntityLoader(AGENT_DIR).load_system_prompt()
 
     ecc_markers = [
         "Eval-First",       # Eval-First Loop
@@ -142,9 +142,9 @@ async def test_soul_md_contains_ecc():
 
 async def test_soul_md_contains_pua():
     """SOUL.md 含 PUA 铁律精简版关键段落。"""
-    from framework.agent_loader import AgentLoader
+    from framework.loader import EntityLoader
 
-    prompt = AgentLoader(AGENT_DIR).load_system_prompt()
+    prompt = EntityLoader(AGENT_DIR).load_system_prompt()
 
     pua_markers = [
         "铁律一",
@@ -217,9 +217,9 @@ async def test_pua_skill_in_place():
 
 async def test_agent_config():
     """AgentConfig 正确解析 apex_coder 配置。"""
-    from framework.agent_loader import AgentLoader
+    from framework.loader import EntityLoader
 
-    loader = AgentLoader(AGENT_DIR)
+    loader = EntityLoader(AGENT_DIR)
     cfg = loader.load_config()
 
     assert cfg.db_path.endswith("apex_coder.db"), f"db_path 应含 apex_coder.db，实际: {cfg.db_path}"

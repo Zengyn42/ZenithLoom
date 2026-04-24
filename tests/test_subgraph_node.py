@@ -1,10 +1,10 @@
 """
-Tests for external subgraph (agent_dir) handling in agent_loader.
+Tests for external subgraph (agent_dir) handling in graph_builder.
 """
 import inspect
 
 
-def test_subgraph_node_type_handled_in_agent_loader():
+def test_subgraph_node_type_handled_in_graph_builder():
     """external subgraph branch must exist in _build_declarative in graph_builder."""
     import framework.loader.graph_builder as gb
     src = inspect.getsource(gb)
@@ -12,8 +12,8 @@ def test_subgraph_node_type_handled_in_agent_loader():
 
 
 def test_no_circular_import_with_reducers():
-    """Importing agent_loader and reducers together must not circular-import."""
-    import framework.agent_loader  # noqa
+    """Importing framework.loader and reducers together must not circular-import."""
+    import framework.loader  # noqa
     from framework.schema.reducers import _merge_dict  # noqa
     assert callable(_merge_dict)
 
@@ -33,7 +33,7 @@ def test_entity_loader_accepts_positional_agent_dir():
     """EntityLoader must accept positional agent_dir (regression for external subgraph blueprint_dir bug)."""
     import tempfile
     from pathlib import Path
-    from framework.agent_loader import EntityLoader
+    from framework.loader import EntityLoader
     with tempfile.TemporaryDirectory() as tmp:
         # Create minimal entity.json so EntityLoader doesn't fail on missing config
         agent_json = Path(tmp) / "entity.json"

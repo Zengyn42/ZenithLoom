@@ -172,11 +172,11 @@ def test_exit_removes_all_messages():
 
 
 def test_exit_empty_messages():
-    """Exit with no messages returns empty list."""
+    """Exit with no messages returns empty list plus cleared output fields."""
     from framework.nodes.subgraph_init_node import make_subgraph_exit
     fn = make_subgraph_exit()
     result = fn({"messages": []})
-    assert result == {"messages": []}
+    assert result == {"messages": [], "subgraph_topic": "", "previous_node_output": ""}
 
 
 def test_base_agent_state_uses_add_messages():
@@ -198,7 +198,7 @@ def test_base_agent_state_uses_add_messages():
 @pytest.mark.asyncio
 async def test_fresh_per_call_injects_init_and_exit():
     """fresh_per_call subgraph must have both _subgraph_init and _subgraph_exit."""
-    from framework.agent_loader import _build_declarative
+    from framework.loader.graph_builder import _build_declarative
     from framework.config import AgentConfig
     graph_spec = {
         "state_schema": "debate_schema",
@@ -219,7 +219,7 @@ async def test_fresh_per_call_injects_init_and_exit():
 @pytest.mark.asyncio
 async def test_persistent_injects_exit_only():
     """persistent subgraph must have _subgraph_exit but NOT _subgraph_init."""
-    from framework.agent_loader import _build_declarative
+    from framework.loader.graph_builder import _build_declarative
     from framework.config import AgentConfig
     graph_spec = {
         "entry": "fake_node",
@@ -239,7 +239,7 @@ async def test_persistent_injects_exit_only():
 @pytest.mark.asyncio
 async def test_inherit_injects_exit_only():
     """inherit subgraph must have _subgraph_exit but NOT _subgraph_init."""
-    from framework.agent_loader import _build_declarative
+    from framework.loader.graph_builder import _build_declarative
     from framework.config import AgentConfig
     graph_spec = {
         "entry": "fake_node",
@@ -259,7 +259,7 @@ async def test_inherit_injects_exit_only():
 @pytest.mark.asyncio
 async def test_non_subgraph_has_no_boundary_nodes():
     """Top-level graph (is_subgraph=False) must NOT inject init/exit."""
-    from framework.agent_loader import _build_declarative
+    from framework.loader.graph_builder import _build_declarative
     from framework.config import AgentConfig
     graph_spec = {
         "entry": "fake_node",

@@ -20,10 +20,10 @@ GeminiAPI:
 
 使用示例：
     from framework.api import ClaudeAPI, GeminiAPI
-    from framework.agent_loader import AgentLoader
+    from framework.loader import EntityLoader
     from pathlib import Path
 
-    cfg = AgentLoader(Path("blueprints/role_agents/technical_architect")).load_config()
+    cfg = EntityLoader(Path("blueprints/role_agents/technical_architect")).load_config()
     claude = ClaudeAPI(cfg)
     gemini = GeminiAPI(cfg, claude_api=claude)
 

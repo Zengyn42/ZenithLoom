@@ -38,7 +38,7 @@ class HeartbeatNode:
 
     async def _get_controller(self):
         if self._controller is None:
-            from framework.agent_loader import EntityLoader
+            from framework.loader import EntityLoader
             loader = EntityLoader(self._agent_dir)
             self._controller = await loader.get_controller()
         return self._controller

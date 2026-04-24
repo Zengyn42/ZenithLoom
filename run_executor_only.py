@@ -35,7 +35,7 @@ logging.basicConfig(
 
 import blueprints.functional_graphs.colony_coder.state  # noqa: F401
 
-from framework.agent_loader import EntityLoader
+from framework.loader import EntityLoader
 from framework.debug import set_debug, push_graph_scope, pop_graph_scope
 from langchain_core.messages import HumanMessage, AIMessage
 

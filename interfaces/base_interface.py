@@ -13,7 +13,7 @@ BaseInterface — 共享基类，CLI / Discord / GChat 均继承。
   GChat   — gws 子进程流、space 管理
 
 Connector 注册：
-  子类设置 _connector = Connector.CLI / Connector.DISCORD（来自 command_registry）。
+  子类设置 _connector = Connector.CLI / Connector.DISCORD（来自 interfaces/command_registry）。
   !help 据此过滤并生成对应 connector 的命令列表。
 """
 
@@ -341,7 +341,7 @@ class BaseInterface:
 
         # ── 帮助 ─────────────────────────────────────────────────────────
         if cmd == "!help":
-            from framework.command_registry import REGISTRY
+            from interfaces.command_registry import REGISTRY
             connector = self._connector
             if connector is not None:
                 cmds = [c for c in REGISTRY.values() if connector in c.connectors]

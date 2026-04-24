@@ -14,7 +14,7 @@
 import asyncio
 import sys
 
-from framework.command_registry import Connector
+from interfaces.command_registry import Connector
 from interfaces.base_interface import BaseInterface
 
 try:

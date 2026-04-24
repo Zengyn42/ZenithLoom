@@ -29,7 +29,7 @@ logging.basicConfig(level=logging.WARNING, stream=sys.stdout)
 # ── Must import before any graph building to register "colony_coder_schema" ──
 import blueprints.functional_graphs.colony_coder.state  # noqa: F401
 
-from framework.agent_loader import AgentLoader
+from framework.loader import EntityLoader
 from framework.nodes.llm.claude import ClaudeSDKNode
 from framework.nodes.llm.gemini import GeminiCLINode
 from framework.nodes.llm.ollama import OllamaNode
@@ -277,7 +277,7 @@ async def test_e2e_colony_coder_game(tmp_path):
         patch.object(GeminiCLINode, "__call__", _mock_gemini_call),
         patch.object(OllamaNode, "__call__", _mock_ollama_call),
     ):
-        loader = AgentLoader(Path("blueprints/functional_graphs/colony_coder"))
+        loader = EntityLoader(Path("blueprints/functional_graphs/colony_coder"))
         graph = await loader.build_graph(checkpointer=None)
 
         initial_state = {
@@ -418,6 +418,6 @@ async def test_game_file_is_syntactically_valid(tmp_path):
 @pytest.mark.asyncio
 async def test_master_graph_node_wiring():
     """Master graph has plan → execute → qa wiring."""
-    loader = AgentLoader(Path("blueprints/functional_graphs/colony_coder"))
+    loader = EntityLoader(Path("blueprints/functional_graphs/colony_coder"))
     graph = await loader.build_graph(checkpointer=None)
     assert set(graph.nodes) - {"__start__"} >= {"plan", "execute", "qa"}
