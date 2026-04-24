@@ -42,6 +42,63 @@ PrismRag 数据目录：`/home/kingy/Foundation/PrismRag/data/`
 - "所有 decision 类型的笔记" → `search_knowledge(ontology_type="decision")`
 - 所有写入（write/patch/update/manage_tags/move/delete）自动触发 graph 增量 ingest，改完立即可查
 
+## ComfyUI 视频生成工具（comfyui-video MCP，7 个）
+
+> ComfyUI 后端运行在 Windows 端（localhost:8188），MCP server 在 localhost:8103。
+> 工具调用是同步阻塞的，生成完成后直接返回结果（含本地文件路径）。
+
+**生成工具：**
+- `ltx_txt2vid(prompt, width=1280, height=720, frame_rate=24, num_frames=241, seed=None)` — 纯文字生成视频（LTX-Video 2.3）
+- `ltx_img2vid(image_path, prompt, ...)` — 单图生成视频
+- `ltx_keyframe_2(image_start_path, image_end_path, prompt, ...)` — 首尾两帧插值
+- `ltx_keyframe_3(image_start_path, image_mid_path, image_end_path, prompt, ...)` — 三帧插值
+- `ltx_digital_human(image_path, audio_path, prompt, ...)` — 数字人（头像 + 音频 → 说话视频）
+
+**查询工具：**
+- `comfyui_status()` — 查看 ComfyUI 状态、GPU 信息、可用 workflow
+- `comfyui_job_status(prompt_id)` — 查询某个生成任务的状态
+
+**工具返回格式：**
+```json
+{
+  "status": "completed",
+  "videos": [{"local_path": "/path/to/output.mp4", ...}],
+  "summary": "Generated 1 video(s)"
+}
+```
+
+**视频生成后的标准流程：**
+1. 调用生成工具（如 `ltx_txt2vid`），等待结果（约 1-3 分钟）
+2. 从返回 JSON 的 `videos[0]["local_path"]` 取本地文件路径
+3. 在回复中包含 `[SEND_FILE: /path/to/output.mp4]`，框架自动上传到当前 Discord 频道
+
+**参数提示：**
+- `num_frames=241` ≈ 10 秒视频（24fps）；`num_frames=97` ≈ 4 秒
+- `prompt` 要用电影描述风格，包含动作、镜头、光线等细节
+- 所有 `image_path` / `audio_path` 必须是 WSL 绝对路径
+
+---
+
+## 发送文件到 Discord
+
+在回复文本中任意位置加入以下标记，框架自动将文件发送到当前频道，**无需知道频道 ID**：
+
+```
+[SEND_FILE: /absolute/path/to/file]
+```
+
+- 路径必须是 WSL 绝对路径
+- 可以在同一条回复中包含多个 `[SEND_FILE: ...]`
+- 标记会从显示文本中自动剥离，用户只看到文件附件
+- 文件不存在时，框架会发送警告消息
+
+**示例：**
+```
+视频已生成完成！[SEND_FILE: /tmp/comfyui_output/abc123_video.mp4]
+```
+
+---
+
 ## 路由信号格式（非 Vault 操作）
 
 回复的**第一行**单独输出以下 JSON，其余什么都不写。系统自动接管。
