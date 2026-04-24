@@ -1,8 +1,0 @@
-{
-  "agent-mail":       "./agent_mail/profile.json",
-  "comfyui-video":    "./comfyui/profile.json",
-  "obsidian-vault":   "./obsidian/profile.json",
-  "heartbeat":        "./heartbeat/profile.json",
-  "document-render":  "./document_render/profile.json",
-  "prism-rag":        "/home/kingy/Foundation/PrismRag/profile.json"
-}

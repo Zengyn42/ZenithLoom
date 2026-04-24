@@ -1,7 +1,7 @@
 {
   "llm": "claude",
   "channel_history_limit": 0,
-  "mcp": ["obsidian-vault", "comfyui-video", "agent-mail"],
+  "mcp": [],
   "graph": {
     "nodes": [
       {

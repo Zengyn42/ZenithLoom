@@ -299,105 +299,140 @@ class EntityLoader:
         return self._heartbeat_proxy
 
     # ------------------------------------------------------------------
-    # MCP Registry helpers
+    # MCP profile helpers
     # ------------------------------------------------------------------
 
-    def _load_mcp_registry(self) -> dict[str, Path]:
-        """读取 mcp_servers/registry.json，返回 {name: profile_path} 映射。
+    def _resolve_profile_path(self, entry: str) -> Path | None:
+        """将单条 mcp entry 字符串解析为 profile.json 的绝对路径。
 
-        registry.json 存放于 ZenithLoom 项目根（framework 上两级）的
-        mcp_servers/ 子目录，路径相对于该目录解析。
+        支持三种格式：
+          - "python:pkg_name"          → import pkg_name，取 __file__.parent.parent / profile.json
+          - "relative/path/profile.json" → 相对于 ZenithLoom 项目根（_PROJECT_ROOT）
+          - "/absolute/path/profile.json" → 直接使用
         """
         from framework.mcp_manager import _PROJECT_ROOT
-        registry_path = _PROJECT_ROOT / "mcp_servers" / "registry.json"
-        if not registry_path.exists():
-            logger.warning(f"[entity_loader] mcp registry not found: {registry_path}")
-            return {}
-        try:
-            raw: dict = json.loads(registry_path.read_text(encoding="utf-8"))
-        except Exception as exc:
-            logger.error(f"[entity_loader] failed to read mcp registry: {exc}")
-            return {}
 
-        registry: dict[str, Path] = {}
-        registry_dir = registry_path.parent
-        for name, path_str in raw.items():
-            p = Path(path_str)
-            resolved = (registry_dir / p).resolve() if not p.is_absolute() else p.resolve()
-            registry[name] = resolved
-        return registry
+        if entry.startswith("python:"):
+            pkg_name = entry[7:]
+            try:
+                import importlib
+                mod = importlib.import_module(pkg_name)
+                pkg_root = Path(mod.__file__).parent.parent
+                profile_path = pkg_root / "profile.json"
+                if not profile_path.exists():
+                    logger.error(f"[entity_loader] python:{pkg_name} profile.json not found at {profile_path}")
+                    return None
+                return profile_path
+            except ImportError as exc:
+                logger.error(f"[entity_loader] python:{pkg_name} import failed: {exc}")
+                return None
+
+        p = Path(entry)
+        if p.is_absolute():
+            return p
+        return (_PROJECT_ROOT / p).resolve()
+
+    def _load_profile(self, path: Path, source: str) -> dict | None:
+        """读取 profile.json 并返回扁平化 spec dict（MCPManager 格式）。"""
+        if not path.exists():
+            logger.error(f"[entity_loader] mcp profile not found: {path} (from {source})")
+            return None
+        try:
+            profile: dict = json.loads(path.read_text(encoding="utf-8"))
+        except Exception as exc:
+            logger.error(f"[entity_loader] failed to read mcp profile {path}: {exc}")
+            return None
+
+        server = profile.get("server", {})
+        spec: dict = {
+            "name": profile.get("name", path.stem),
+            "module": server.get("module", ""),
+            "module_args": server.get("module_args", []),
+            "url": server.get("url", ""),
+            "shared": server.get("shared", True),
+        }
+        if profile.get("dependency"):
+            spec["dependency"] = profile["dependency"]
+        if profile.get("proxy"):
+            spec["proxy"] = profile["proxy"]
+        logger.debug(f"[entity_loader] loaded mcp profile {profile.get('name')!r} from {path}")
+        return spec
 
     def _resolve_mcp_specs(self, mcp_entries: list) -> list[dict]:
-        """将 entity.json "mcp" 字段解析为完整 spec dict 列表。
+        """将 mcp entry 列表解析为完整 spec dict 列表。
 
-        兼容两种格式：
-          - 新格式：字符串列表 ["comfyui-video", "agent-mail"]
-            → 通过 registry.json 查找对应 profile.json 并读取
-          - 旧格式：完整 spec dict 列表（向后兼容，逐步迁移）
-            → 直接使用（同时记录 deprecation 警告）
+        每个 entry 可以是：
+          - str "python:pkg"       → Python 包路径解析
+          - str "relative/path"    → 相对 ZenithLoom root
+          - str "/absolute/path"   → 绝对路径
+          - dict                   → 旧格式（向后兼容，打 warning）
         """
         if not mcp_entries:
             return []
 
-        registry = self._load_mcp_registry()
         specs: list[dict] = []
-
         for entry in mcp_entries:
-            # 新格式：字符串名称
             if isinstance(entry, str):
-                name = entry
-                profile_path = registry.get(name)
-                if not profile_path:
-                    logger.error(f"[entity_loader] mcp {name!r} not found in registry, skipped")
+                profile_path = self._resolve_profile_path(entry)
+                if profile_path is None:
                     continue
-                if not profile_path.exists():
-                    logger.error(f"[entity_loader] mcp {name!r} profile not found: {profile_path}, skipped")
-                    continue
-                try:
-                    profile: dict = json.loads(profile_path.read_text(encoding="utf-8"))
-                except Exception as exc:
-                    logger.error(f"[entity_loader] failed to read profile for {name!r}: {exc}")
-                    continue
-
-                # 将 profile.json 格式扁平化为 MCPManager 期望的 spec 格式
-                server = profile.get("server", {})
-                spec: dict = {
-                    "name": profile.get("name", name),
-                    "module": server.get("module", ""),
-                    "module_args": server.get("module_args", []),
-                    "url": server.get("url", ""),
-                    "shared": server.get("shared", True),
-                }
-                if profile.get("dependency"):
-                    spec["dependency"] = profile["dependency"]
-                if profile.get("proxy"):
-                    spec["proxy"] = profile["proxy"]
-                specs.append(spec)
-                logger.debug(f"[entity_loader] resolved mcp {name!r} from {profile_path}")
-
-            # 旧格式：完整 dict（向后兼容）
+                spec = self._load_profile(profile_path, source=entry)
+                if spec:
+                    specs.append(spec)
             elif isinstance(entry, dict):
                 name = entry.get("name", "")
                 logger.warning(
                     f"[entity_loader] {self.name!r}: mcp entry {name!r} uses deprecated inline spec; "
-                    f"migrate to registry + profile.json"
+                    f"migrate to profile.json"
                 )
                 specs.append(entry)
-
             else:
                 logger.warning(f"[entity_loader] {self.name!r}: unknown mcp entry type {type(entry)}, skipped")
-
         return specs
 
-    async def start_mcp_servers(self) -> list[str]:
-        """按 entity.json 顶层 "mcp" 数组启动所需的 MCP Server 进程。
+    def _collect_mcp_entries(self) -> list:
+        """合并 entity.json 和 identity.json 的 mcp 列表，按 name 去重（entity 优先）。"""
+        entity_entries = self._json.get("mcp", [])
 
-        支持新格式（字符串名称列表）和旧格式（完整 spec dict 列表）。
+        # 读取 identity.json 的 mcp 追加列表
+        identity_path = self._data_dir / "identity.json"
+        identity_entries: list = []
+        if identity_path.exists():
+            try:
+                identity = json.loads(identity_path.read_text(encoding="utf-8"))
+                identity_entries = identity.get("mcp", [])
+            except Exception as exc:
+                logger.warning(f"[entity_loader] failed to read identity mcp entries: {exc}")
+
+        if not entity_entries and not identity_entries:
+            return []
+
+        # 先解析 entity（blueprint 层，角色必需）
+        entity_specs = self._resolve_mcp_specs(entity_entries)
+        seen_names: set[str] = {s["name"] for s in entity_specs}
+
+        # 再追加 identity（实例层，部署追加），按 name 去重
+        identity_specs = self._resolve_mcp_specs(identity_entries)
+        for spec in identity_specs:
+            name = spec.get("name", "")
+            if name and name not in seen_names:
+                entity_specs.append(spec)
+                seen_names.add(name)
+            elif name in seen_names:
+                logger.debug(f"[entity_loader] identity mcp {name!r} already provided by blueprint, skipped")
+
+        return entity_specs
+
+    async def start_mcp_servers(self) -> list[str]:
+        """启动 entity.json（blueprint）+ identity.json（instance）声明的 MCP Server。
+
+        entity 层为角色必需 MCP（blueprint），identity 层为部署追加 MCP（instance），
+        按 name 去重，entity 优先。
         """
         from framework.mcp_manager import MCPManager
         mgr = MCPManager.get_instance()
-        mcp_entries = self._json.get("mcp", [])
-        if not mcp_entries:
+        specs = self._collect_mcp_entries()
+        if not specs:
             return []
 
         specs = self._resolve_mcp_specs(mcp_entries)
@@ -520,8 +555,7 @@ class EntityLoader:
 
         from framework.mcp_manager import MCPManager
         mgr = MCPManager.get_instance()
-        mcp_entries = self._json.get("mcp", [])
-        specs = self._resolve_mcp_specs(mcp_entries)
+        specs = self._collect_mcp_entries()
         for spec in specs:
             name = spec.get("name", "")
             if name:
