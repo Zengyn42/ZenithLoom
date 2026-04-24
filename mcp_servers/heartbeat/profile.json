@@ -1,0 +1,15 @@
+{
+  "name": "heartbeat",
+  "description": "任务生命周期管理工具，支持创建、更新、查询长时任务状态",
+  "server": {
+    "module": "mcp_servers.heartbeat",
+    "module_args": [
+      "--transport", "sse",
+      "--port", "8202"
+    ],
+    "url": "http://localhost:8202/sse",
+    "shared": true
+  },
+  "dependency": null,
+  "proxy": "heartbeat"
+}

@@ -1,0 +1,15 @@
+{
+  "name": "obsidian-vault",
+  "description": "Obsidian vault 读写工具，提供笔记的增删改查、标签管理、链接查询等功能",
+  "server": {
+    "module": "mcp_servers.obsidian.server",
+    "module_args": [
+      "--transport", "sse",
+      "--port", "8101",
+      "--vault", "/home/kingy/Foundation/Vault"
+    ],
+    "url": "http://localhost:8101/sse",
+    "shared": true
+  },
+  "dependency": null
+}

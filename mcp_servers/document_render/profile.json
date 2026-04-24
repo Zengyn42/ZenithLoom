@@ -1,0 +1,14 @@
+{
+  "name": "document-render",
+  "description": "文档渲染工具，支持将 Markdown 内容渲染为 DOCX、PDF 等格式",
+  "server": {
+    "module": "mcp_servers.document_render.server",
+    "module_args": [
+      "--transport", "sse",
+      "--port", "8104"
+    ],
+    "url": "http://localhost:8104/sse",
+    "shared": true
+  },
+  "dependency": null
+}

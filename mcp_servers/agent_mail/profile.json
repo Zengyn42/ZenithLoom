@@ -1,0 +1,16 @@
+{
+  "name": "agent-mail",
+  "description": "Agent 间异步消息通信工具，支持发送、接收、确认消息，以及 agent 注册发现",
+  "server": {
+    "module": "mcp_servers.agent_mail",
+    "module_args": [
+      "--transport", "sse",
+      "--host", "127.0.0.1",
+      "--port", "8200"
+    ],
+    "url": "http://localhost:8200/sse",
+    "shared": true
+  },
+  "dependency": null,
+  "proxy": "agent_mail"
+}
