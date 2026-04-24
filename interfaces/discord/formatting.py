@@ -22,7 +22,7 @@ async def _fetch_mermaid_png(mermaid_text: str) -> bytes | None:
     try:
         encoded  = base64.b64encode(mermaid_text.encode("utf-8")).decode("ascii")
         bg_color = urllib.parse.quote("white", safe="")
-        url      = f"https://mermaid.ink/img/{encoded}?type=png&bgColor={bg_color}"
+        url      = f"https://mermaid.ink/img/{encoded}?type=png&bgColor={bg_color}&scale=3"
         req = urllib.request.Request(
             url,
             headers={"User-Agent": "Mozilla/5.0 (compatible; ZenithLoom/1.0)"},
