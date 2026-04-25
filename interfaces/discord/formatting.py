@@ -12,38 +12,38 @@ import urllib.request
 logger = logging.getLogger("discord_bot")
 
 
-def _mermaid_scale(mermaid_text: str) -> int:
-    """根据拓扑复杂度动态选择渲染 scale。
-    以节点行数（非空、非 flowchart/subgraph 关键字的行）作为粗略指标：
-      < 6  节点 → scale 2
-      6-12 节点 → scale 3
-      > 12 节点 → scale 4
-    """
-    node_lines = [
+def _mermaid_node_count(mermaid_text: str) -> int:
+    """统计 Mermaid 文本中的有效节点行数（用于复杂度评估）。"""
+    return len([
         ln for ln in mermaid_text.splitlines()
         if ln.strip() and not ln.strip().startswith(("flowchart", "subgraph", "end", "%%"))
-    ]
-    n = len(node_lines)
-    if n < 6:
-        return 2
-    if n <= 12:
-        return 3
-    return 4
+    ])
+
+
+def _mermaid_with_style(mermaid_text: str) -> str:
+    """注入 init 指令，根据节点数动态设置字号，提升可读性。
+    节点越多字号越小（避免溢出），但最小 14px 保证清晰度。
+    """
+    if mermaid_text.strip().startswith("%%{init"):
+        return mermaid_text  # 已有 init 指令，不覆盖
+    n = _mermaid_node_count(mermaid_text)
+    font_size = max(14, 22 - n)  # n=0→22px, n=8→14px, n≥8→14px
+    init = f'%%{{init: {{"themeVariables": {{"fontSize": "{font_size}px"}}}}}}%%'
+    return f"{init}\n{mermaid_text}"
 
 
 async def _fetch_mermaid_png(mermaid_text: str) -> bytes | None:
     """
     调用 mermaid.ink 将 Mermaid 文本渲染成 PNG bytes。
-    URL 格式与 LangGraph 官方实现保持一致：
-      base64.b64encode + ?type=png&bgColor=white
+    - 注入 init 指令动态调整字号（根节点复杂度，min 14px）
+    - scale=2 固定，配合字号提升已足够清晰
     mermaid.ink 会拒绝 Python 默认 User-Agent，需显式设置。
-    scale 根据拓扑复杂度动态选择（2~4）。
     """
     try:
-        encoded  = base64.b64encode(mermaid_text.encode("utf-8")).decode("ascii")
+        styled   = _mermaid_with_style(mermaid_text)
+        encoded  = base64.b64encode(styled.encode("utf-8")).decode("ascii")
         bg_color = urllib.parse.quote("white", safe="")
-        scale    = _mermaid_scale(mermaid_text)
-        url      = f"https://mermaid.ink/img/{encoded}?type=png&bgColor={bg_color}&scale={scale}"
+        url      = f"https://mermaid.ink/img/{encoded}?type=png&bgColor={bg_color}&scale=2"
         req = urllib.request.Request(
             url,
             headers={"User-Agent": "Mozilla/5.0 (compatible; ZenithLoom/1.0)"},
