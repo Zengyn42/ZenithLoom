@@ -14,13 +14,17 @@ logger = logging.getLogger("discord_bot")
 
 async def _fetch_mermaid_png(mermaid_text: str) -> bytes | None:
     """
-    调用 mermaid.ink /svg 端点获取 SVG，再用 cairosvg 转为 PNG bytes。
+    调用 mermaid.ink /svg 端点获取 SVG，用 Chrome headless 渲染为 PNG。
 
-    - PNG 端点不稳定（复杂图返回 400/503）；SVG 端点稳定
-    - cairosvg 在本地高质量转换（scale=2 → 2x 分辨率，文字清晰）
-    - mermaid.ink 要求 URL-safe base64，不带 = 填充
+    流程：
+    1. mermaid.ink /svg 端点（稳定，支持复杂图）
+    2. 写入临时文件
+    3. google-chrome --headless 渲染（正确处理 foreignObject/HTML 文字）
+    4. PIL 裁掉空白边距，缩放到合理尺寸
     """
+    import re, subprocess, tempfile, os, io as _io
     try:
+        # 1. 获取 SVG
         encoded = base64.urlsafe_b64encode(mermaid_text.encode("utf-8")).decode("ascii").rstrip("=")
         url     = f"https://mermaid.ink/svg/{encoded}"
         req     = urllib.request.Request(
@@ -28,14 +32,61 @@ async def _fetch_mermaid_png(mermaid_text: str) -> bytes | None:
             headers={"User-Agent": "Mozilla/5.0 (compatible; ZenithLoom/1.0)"},
         )
 
-        def _blocking_fetch() -> bytes:
+        def _render() -> bytes:
             with urllib.request.urlopen(req, timeout=15) as resp:
                 svg_bytes = resp.read()
-            import cairosvg
-            return cairosvg.svg2png(bytestring=svg_bytes, scale=2)
+
+            # 2. 写入临时 SVG 文件
+            with tempfile.NamedTemporaryFile(suffix=".svg", delete=False) as f:
+                f.write(svg_bytes)
+                svg_path = f.name
+
+            png_path = svg_path.replace(".svg", ".png")
+            try:
+                # 从 SVG viewBox 估算渲染尺寸
+                svg_txt = svg_bytes.decode(errors="replace")
+                vb = re.search(r'viewBox=["\'][\d.]+\s+[\d.]+\s+([\d.]+)\s+([\d.]+)', svg_txt)
+                win_w = int(float(vb.group(1))) * 2 + 200 if vb else 2400
+                win_h = int(float(vb.group(2))) * 2 + 200 if vb else 1600
+
+                # 3. Chrome headless 渲染（支持 foreignObject HTML 文字）
+                subprocess.run([
+                    "google-chrome", "--headless=new", "--disable-gpu", "--no-sandbox",
+                    f"--screenshot={png_path}", f"--window-size={win_w},{win_h}",
+                    "--force-device-scale-factor=2",
+                    f"file://{svg_path}",
+                ], capture_output=True, timeout=30, check=True)
+
+                # 4. PIL 裁空白 + 缩小到合理尺寸
+                from PIL import Image
+                import numpy as np
+                img = Image.open(png_path).convert("RGB")
+                arr = np.array(img)
+                mask = (arr < 245).any(axis=2)
+                rows = np.where(mask.any(axis=1))[0]
+                cols = np.where(mask.any(axis=0))[0]
+                if len(rows) and len(cols):
+                    pad = 40
+                    r0 = max(0, rows[0] - pad)
+                    r1 = min(arr.shape[0], rows[-1] + pad)
+                    c0 = max(0, cols[0] - pad)
+                    c1 = min(arr.shape[1], cols[-1] + pad)
+                    img = img.crop((c0, r0, c1, r1))
+
+                # 超过 3000px 宽则缩小一半
+                if img.width > 3000:
+                    img = img.resize((img.width // 2, img.height // 2), Image.LANCZOS)
+
+                buf = _io.BytesIO()
+                img.save(buf, format="PNG", optimize=True)
+                return buf.getvalue()
+            finally:
+                os.unlink(svg_path)
+                if os.path.exists(png_path):
+                    os.unlink(png_path)
 
         loop = asyncio.get_event_loop()
-        return await loop.run_in_executor(None, _blocking_fetch)
+        return await loop.run_in_executor(None, _render)
     except Exception as e:
         logger.warning(f"[discord] mermaid PNG 生成失败: {e}")
         return None
