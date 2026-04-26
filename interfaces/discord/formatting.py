@@ -12,14 +12,13 @@ import urllib.request
 logger = logging.getLogger("discord_bot")
 
 
-async def _fetch_mermaid_svg(mermaid_text: str) -> bytes | None:
+async def _fetch_mermaid_png(mermaid_text: str) -> bytes | None:
     """
-    调用 mermaid.ink /svg 端点获取 SVG bytes。
+    调用 mermaid.ink /svg 端点获取 SVG，再用 cairosvg 转为 PNG bytes。
 
-    注意：
     - PNG 端点不稳定（复杂图返回 400/503）；SVG 端点稳定
+    - cairosvg 在本地高质量转换（scale=2 → 2x 分辨率，文字清晰）
     - mermaid.ink 要求 URL-safe base64，不带 = 填充
-    - SVG 是矢量格式，任意缩放不失真，无清晰度问题
     """
     try:
         encoded = base64.urlsafe_b64encode(mermaid_text.encode("utf-8")).decode("ascii").rstrip("=")
@@ -31,18 +30,15 @@ async def _fetch_mermaid_svg(mermaid_text: str) -> bytes | None:
 
         def _blocking_fetch() -> bytes:
             with urllib.request.urlopen(req, timeout=15) as resp:
-                return resp.read()
+                svg_bytes = resp.read()
+            import cairosvg
+            return cairosvg.svg2png(bytestring=svg_bytes, scale=2)
 
         loop = asyncio.get_event_loop()
         return await loop.run_in_executor(None, _blocking_fetch)
     except Exception as e:
-        logger.warning(f"[discord] mermaid.ink SVG 获取失败: {e}")
+        logger.warning(f"[discord] mermaid PNG 生成失败: {e}")
         return None
-
-
-# Keep old name as alias for backward compat
-async def _fetch_mermaid_png(mermaid_text: str) -> bytes | None:
-    return await _fetch_mermaid_svg(mermaid_text)
 
 
 def fix_list_formatting(text: str) -> str:

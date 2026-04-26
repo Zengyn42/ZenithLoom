@@ -12,7 +12,7 @@ import discord
 from framework.debug import is_debug
 from interfaces.discord import state as _state
 from interfaces.discord.alerts import _register_discord_alert_callback
-from interfaces.discord.formatting import _fetch_mermaid_svg
+from interfaces.discord.formatting import _fetch_mermaid_png
 from interfaces.discord.interface import _DiscordInterface, _channel_consumer
 from interfaces.discord.messaging import send_to_channel
 from interfaces.discord.state import bot
@@ -138,13 +138,13 @@ async def on_message(message: discord.Message):
                 if reply is not None:
                     if cmd == "!topology":
                         await send_to_channel(message.channel, f"```mermaid\n{reply}\n```")
-                        svg = await _fetch_mermaid_svg(reply)
-                        if svg:
+                        png = await _fetch_mermaid_png(reply)
+                        if png:
                             await message.channel.send(
-                                file=discord.File(io.BytesIO(svg), filename="topology.svg")
+                                file=discord.File(io.BytesIO(png), filename="topology.png")
                             )
                         else:
-                            await message.channel.send("⚠️ SVG 生成失败，请粘贴上方 Mermaid 文本到 https://mermaid.live 查看")
+                            await message.channel.send("⚠️ PNG 生成失败，请粘贴上方 Mermaid 文本到 https://mermaid.live 查看")
                     elif "\n" in reply:
                         await send_to_channel(message.channel, f"```\n{reply}\n```")
                     else:
