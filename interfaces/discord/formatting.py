@@ -12,39 +12,19 @@ import urllib.request
 logger = logging.getLogger("discord_bot")
 
 
-def _mermaid_node_count(mermaid_text: str) -> int:
-    """统计 Mermaid 文本中的有效节点行数（用于复杂度评估）。"""
-    return len([
-        ln for ln in mermaid_text.splitlines()
-        if ln.strip() and not ln.strip().startswith(("flowchart", "subgraph", "end", "%%"))
-    ])
-
-
-def _mermaid_with_style(mermaid_text: str) -> str:
-    """注入 init 指令，根据节点数动态设置字号，提升可读性。
-    节点越多字号越小（避免溢出），但最小 14px 保证清晰度。
+async def _fetch_mermaid_svg(mermaid_text: str) -> bytes | None:
     """
-    if mermaid_text.strip().startswith("%%{init"):
-        return mermaid_text  # 已有 init 指令，不覆盖
-    n = _mermaid_node_count(mermaid_text)
-    font_size = max(14, 22 - n)  # n=0→22px, n=8→14px, n≥8→14px
-    init = f'%%{{init: {{"themeVariables": {{"fontSize": "{font_size}px"}}}}}}%%'
-    return f"{init}\n{mermaid_text}"
+    调用 mermaid.ink /svg 端点获取 SVG bytes。
 
-
-async def _fetch_mermaid_png(mermaid_text: str) -> bytes | None:
-    """
-    调用 mermaid.ink 将 Mermaid 文本渲染成 PNG bytes。
-    - 注入 init 指令动态调整字号（根节点复杂度，min 14px）
-    - scale=2 固定，配合字号提升已足够清晰
-    mermaid.ink 会拒绝 Python 默认 User-Agent，需显式设置。
+    注意：
+    - PNG 端点不稳定（复杂图返回 400/503）；SVG 端点稳定
+    - mermaid.ink 要求 URL-safe base64，不带 = 填充
+    - SVG 是矢量格式，任意缩放不失真，无清晰度问题
     """
     try:
-        styled   = _mermaid_with_style(mermaid_text)
-        encoded  = base64.b64encode(styled.encode("utf-8")).decode("ascii")
-        bg_color = urllib.parse.quote("white", safe="")
-        url      = f"https://mermaid.ink/img/{encoded}?type=png&bgColor={bg_color}&scale=2"
-        req = urllib.request.Request(
+        encoded = base64.urlsafe_b64encode(mermaid_text.encode("utf-8")).decode("ascii").rstrip("=")
+        url     = f"https://mermaid.ink/svg/{encoded}"
+        req     = urllib.request.Request(
             url,
             headers={"User-Agent": "Mozilla/5.0 (compatible; ZenithLoom/1.0)"},
         )
@@ -56,8 +36,13 @@ async def _fetch_mermaid_png(mermaid_text: str) -> bytes | None:
         loop = asyncio.get_event_loop()
         return await loop.run_in_executor(None, _blocking_fetch)
     except Exception as e:
-        logger.warning(f"[discord] mermaid.ink PNG 获取失败: {e}")
+        logger.warning(f"[discord] mermaid.ink SVG 获取失败: {e}")
         return None
+
+
+# Keep old name as alias for backward compat
+async def _fetch_mermaid_png(mermaid_text: str) -> bytes | None:
+    return await _fetch_mermaid_svg(mermaid_text)
 
 
 def fix_list_formatting(text: str) -> str:
