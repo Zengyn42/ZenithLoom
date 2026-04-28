@@ -22,7 +22,12 @@ async def _channel_consumer(channel_id: int) -> None:
     """
     每个频道一个消费者协程：从队列中顺序取出消息并处理。
     队列空闲 60s 后自动退出，下次有消息时重新创建。
-    !stop 取消当前 agent task → CancelledError 传到此处 → 清空剩余队列并退出。
+
+    !stop 流程：
+      1. stop_task 先把 STOP_SENTINEL 塞进队列，再 cancel 内层 task
+      2. 内层 task 抛 CancelledError → await task 传到此处
+      3. CancelledError handler drain 到 sentinel 为止（旧消息）
+      4. sentinel 之后的消息（新任务）保留 → 立即启动新 consumer
     """
     queue = _state._channel_queues[channel_id]
     agent_name = _state._loader.name if _state._loader else "Agent"
@@ -33,12 +38,21 @@ async def _channel_consumer(channel_id: int) -> None:
             _state._channel_consumers.pop(channel_id, None)
             return
 
+        # 防御：主循环里吃到 sentinel（理论上不该发生，但跳过它）
+        if user_input is _state.STOP_SENTINEL:
+            queue.task_done()
+            continue
+
         # ── 积压合并：如果队列里还有消息，全部取出合并为一条 ──────────
         merged_inputs = [user_input]
         extra_drained = 0
         while not queue.empty():
             try:
                 extra_input, extra_msg = queue.get_nowait()
+                # 遇到 sentinel 就停止合并（后续消息属于另一轮任务）
+                if extra_input is _state.STOP_SENTINEL:
+                    queue.task_done()
+                    break
                 merged_inputs.append(extra_input)
                 message = extra_msg  # 用最新的 message 对象做回复锚点
                 extra_drained += 1
@@ -56,13 +70,32 @@ async def _channel_consumer(channel_id: int) -> None:
         try:
             await task
         except asyncio.CancelledError:
+            # drain 旧消息直到碰到 sentinel（或队列空）
+            # sentinel 之后的消息是"新任务"，不能清掉
             drained = 0
             while not queue.empty():
-                queue.get_nowait()
+                try:
+                    item_input, _ = queue.get_nowait()
+                    queue.task_done()
+                except asyncio.QueueEmpty:
+                    break
+                if item_input is _state.STOP_SENTINEL:
+                    break  # sentinel 本身也消费掉，停在这里
                 drained += 1
+
             if drained:
-                await message.channel.send(f"已停止，清除了 {drained} 条待处理消息。")
-            _state._channel_consumers.pop(channel_id, None)
+                try:
+                    await message.channel.send(f"已停止，清除了 {drained} 条待处理消息。")
+                except Exception:
+                    pass
+
+            # 如果 sentinel 之后还有消息（新任务），立即启动新 consumer
+            if not queue.empty():
+                _state._channel_consumers[channel_id] = asyncio.create_task(
+                    _channel_consumer(channel_id)
+                )
+            else:
+                _state._channel_consumers.pop(channel_id, None)
             return
         except Exception as e:
             logger.error(f"[agent] 出错: {e}", exc_info=is_debug())

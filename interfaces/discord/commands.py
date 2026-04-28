@@ -64,13 +64,23 @@ async def stop_task(ctx):
     if not await _check_auth(ctx):
         return
     channel_id = ctx.channel.id
+    queue = _state._channel_queues.get(channel_id)
+
     task = _state._channel_tasks.get(channel_id)
     if task and not task.done():
+        # 先把 sentinel 塞进队列，标记"此处之前的消息属于旧任务"。
+        # consumer 的 CancelledError handler 会 drain 到 sentinel 为止，
+        # sentinel 之后的消息（新任务）留给新 consumer 处理。
+        if queue:
+            queue.put_nowait((_state.STOP_SENTINEL, None))
         task.cancel()
         await ctx.send("已停止。")
         return
+
     consumer = _state._channel_consumers.get(channel_id)
-    queue = _state._channel_queues.get(channel_id)
+    # Consumer 存在但没有活跃 task（正在 queue.get() 等待）：
+    # 直接取消 consumer，同步清空队列中积压的旧消息。
+    # 此路径不需要 sentinel：cancel 同步发生，后续消息尚未入队。
     pending = queue.qsize() if queue else 0
     if consumer and not consumer.done():
         consumer.cancel()
@@ -81,6 +91,7 @@ async def stop_task(ctx):
         msg = "已停止。" + (f" 清除了 {pending} 条待处理消息。" if pending else "")
         await ctx.send(msg)
         return
+
     await ctx.send("没有正在运行的任务。")
 
 

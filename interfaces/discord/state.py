@@ -29,6 +29,14 @@ _session_mgr = None
 # 流式输出开关（!stream 切换）
 _discord_streaming: bool = True
 
+# Stop sentinel：放入队列中标记"截止点"——sentinel 之前的消息属于旧任务需要 drain，
+# sentinel 之后的消息属于新任务，保留给新 consumer 处理。
+class _StopSentinel:
+    """队列 sentinel，用于 !stop 的精准 drain 边界。"""
+    __slots__ = ()
+
+STOP_SENTINEL = _StopSentinel()
+
 # Per-channel：消息队列（入队即返回，消费者顺序处理，不丢弃消息）
 _channel_queues: dict[int, asyncio.Queue] = {}
 
