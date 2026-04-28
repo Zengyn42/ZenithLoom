@@ -494,10 +494,15 @@ class BaseInterface:
                 claude_msg = await controller.compact_claude_session(thread_id)
             except Exception as e:
                 claude_msg = f"❌ 调用失败: {e}"
+            try:
+                gemini_msg = await controller.compact_gemini_session(thread_id)
+            except Exception as e:
+                gemini_msg = f"❌ 调用失败: {e}"
             return (
                 "Compact 完成：\n"
                 f"  checkpoint DB : 删除 {deleted} 条旧记录，保留最近 {keep} 条\n"
                 f"  Claude session: {claude_msg}\n"
+                f"  Gemini session: {gemini_msg}\n"
                 "  （注意：/compact 是有损摘要，旧细节可能不再可回忆）"
             )
 

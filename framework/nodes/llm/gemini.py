@@ -38,7 +38,7 @@ from langchain_core.messages import AIMessage
 
 from framework.config import AgentConfig
 from framework.debug import is_debug, log_node_thinking, get_debug_output_file, log_node_output_to_file
-from framework.nodes.llm.llm_node import LlmNode as AgentNode, get_channel_send_callback
+from framework.nodes.llm.llm_node import LlmNode as AgentNode, get_channel_send_callback, _stream_cb
 from framework.resource_lock import acquire_resource
 from framework.token_guard import TokenLimitExceeded, check_before_llm
 import framework.nodes.llm.gemini_session as gem_sess
@@ -620,10 +620,13 @@ class GeminiCLINode(AgentNode):
         # 原因：-p 的值经 yargs 解析时，若 prompt 以 "--" 开头（如 Claude 的 markdown ---
         # 分隔线），yargs 会把它误当 end-of-flags marker → "Not enough arguments following: p"。
         # stdin 完全绕过参数解析，是 Gemini CLI 官方支持的输入方式。
+        cb = _stream_cb.get()
+        use_stream = cb is not None
+
         cmd = [
             "gemini",
             "-m", model,
-            "-o", "json",
+            "-o", "stream-json" if use_stream else "json",
         ]
         # permission_mode 控制 --yolo：
         #   plan 模式 → 不传 --yolo，文件操作因无交互输入而被拒绝（read-only）
@@ -641,6 +644,7 @@ class GeminiCLINode(AgentNode):
             self._MAX_TIMEOUT,
             max(self._timeout, len(full_prompt) // self._TIMEOUT_CHARS_PER_SEC),
         )
+
         try:
             proc = await asyncio.create_subprocess_exec(
                 *cmd,
@@ -649,47 +653,129 @@ class GeminiCLINode(AgentNode):
                 stderr=asyncio.subprocess.PIPE,
                 cwd=cwd or None,
             )
-            stdout_bytes, stderr_bytes = await asyncio.wait_for(
-                proc.communicate(input=full_prompt.encode()), timeout=effective_timeout
-            )
-        except asyncio.TimeoutError:
-            proc.kill()
-            await proc.wait()
-            raise _GeminiCapacityError(
-                f"model={model} 超时 ({effective_timeout}s, prompt_len={len(full_prompt)})"
-            )
         except FileNotFoundError:
             raise  # 保持原类型，让调用者区分"CLI 未安装"与"模型错误"
 
-        if proc.returncode != 0:
-            stderr_text = stderr_bytes.decode(errors="replace")[:500]
-            # 同时检查 stdout，CLI 可能把错误写进 JSON output
-            stdout_err = stdout_bytes.decode(errors="replace")[:300]
-            combined_lower = (stderr_text + stdout_err).lower()
-            if any(kw in combined_lower for kw in _CAPACITY_KEYWORDS):
-                raise _GeminiCapacityError(
-                    f"model={model} 容量不足: {stderr_text}"
+        if not use_stream:
+            # ── 非 stream 模式：proc.communicate() 一次性获取 ──
+            try:
+                stdout_bytes, stderr_bytes = await asyncio.wait_for(
+                    proc.communicate(input=full_prompt.encode()), timeout=effective_timeout
                 )
-            raise RuntimeError(
-                f"Gemini CLI 退出码 {proc.returncode}: {stderr_text}"
-            )
+            except asyncio.TimeoutError:
+                proc.kill()
+                await proc.wait()
+                raise _GeminiCapacityError(
+                    f"model={model} 超时 ({effective_timeout}s, prompt_len={len(full_prompt)})"
+                )
 
-        stdout_text = stdout_bytes.decode(errors="replace")
-        # Gemini CLI may print warnings (e.g. "MCP issues detected...") before
-        # the JSON payload.  Strip everything before the first '{'.
-        json_start = stdout_text.find("{")
-        if json_start > 0:
-            stdout_text = stdout_text[json_start:]
-        try:
-            data = json.loads(stdout_text)
-        except json.JSONDecodeError as e:
-            raise RuntimeError(
-                f"Gemini CLI JSON 解析失败: {e}\nstdout={stdout_text[:300]}"
-            )
+            if proc.returncode != 0:
+                stderr_text = stderr_bytes.decode(errors="replace")[:500]
+                # 同时检查 stdout，CLI 可能把错误写进 JSON output
+                stdout_err = stdout_bytes.decode(errors="replace")[:300]
+                combined_lower = (stderr_text + stdout_err).lower()
+                if any(kw in combined_lower for kw in _CAPACITY_KEYWORDS):
+                    raise _GeminiCapacityError(
+                        f"model={model} 容量不足: {stderr_text}"
+                    )
+                raise RuntimeError(
+                    f"Gemini CLI 退出码 {proc.returncode}: {stderr_text}"
+                )
 
-        reply = data.get("response", "")
-        new_sid = data.get("session_id", session_id)
-        return reply.strip(), new_sid
+            stdout_text = stdout_bytes.decode(errors="replace")
+            # Gemini CLI may print warnings (e.g. "MCP issues detected...") before
+            # the JSON payload.  Strip everything before the first '{'.
+            json_start = stdout_text.find("{")
+            if json_start > 0:
+                stdout_text = stdout_text[json_start:]
+            try:
+                data = json.loads(stdout_text)
+            except json.JSONDecodeError as e:
+                raise RuntimeError(
+                    f"Gemini CLI JSON 解析失败: {e}\nstdout={stdout_text[:300]}"
+                )
+
+            reply = data.get("response", "")
+            new_sid = data.get("session_id", session_id)
+            return reply.strip(), new_sid
+
+        else:
+            # ── stream-json 模式：逐行读取 NDJSON 事件，实时回调 ──
+            proc.stdin.write(full_prompt.encode())
+            await proc.stdin.drain()
+            proc.stdin.close()
+            await proc.stdin.wait_closed()
+
+            reply_chunks: list[str] = []
+            new_sid = session_id
+            stderr_lines: list[str] = []
+
+            async def _read_stderr():
+                async for raw in proc.stderr:
+                    line = raw.decode(errors="replace").rstrip()
+                    stderr_lines.append(line)
+                    logger.debug(f"[gemini-cli/stderr] {line}")
+
+            async def _read_stdout():
+                nonlocal new_sid
+                async for raw in proc.stdout:
+                    line = raw.decode(errors="replace").rstrip()
+                    if not line:
+                        continue
+                    try:
+                        data = json.loads(line)
+                    except json.JSONDecodeError:
+                        logger.debug(f"[gemini-cli] skip non-JSON: {line[:100]}")
+                        continue
+
+                    evt_type = data.get("type")
+                    if evt_type == "init":
+                        sid = data.get("session_id", "")
+                        if sid:
+                            new_sid = sid
+                    elif evt_type == "message":
+                        if data.get("role") == "assistant" and data.get("delta"):
+                            text = data.get("content", "")
+                            if text:
+                                reply_chunks.append(text)
+                                cb(text, False)
+                    elif evt_type == "result":
+                        if data.get("status") != "success":
+                            error_msg = data.get("error", "unknown error")
+                            combined_lower = (error_msg + " ".join(stderr_lines)).lower()
+                            if any(kw in combined_lower for kw in _CAPACITY_KEYWORDS):
+                                raise _GeminiCapacityError(
+                                    f"model={model} 容量不足: {error_msg}"
+                                )
+                            raise RuntimeError(f"Gemini CLI stream 失败: {error_msg}")
+
+            stderr_task = asyncio.create_task(_read_stderr())
+            stdout_task = asyncio.create_task(_read_stdout())
+
+            try:
+                await asyncio.wait_for(proc.wait(), timeout=effective_timeout)
+                await stdout_task
+                await stderr_task
+            except asyncio.TimeoutError:
+                proc.kill()
+                await proc.wait()
+                raise _GeminiCapacityError(
+                    f"model={model} 超时 ({effective_timeout}s, prompt_len={len(full_prompt)})"
+                )
+
+            if proc.returncode != 0 and not reply_chunks:
+                stderr_text = "\n".join(stderr_lines[-20:]) if stderr_lines else ""
+                combined_lower = stderr_text.lower()
+                if any(kw in combined_lower for kw in _CAPACITY_KEYWORDS):
+                    raise _GeminiCapacityError(
+                        f"model={model} 容量不足: {stderr_text[:500]}"
+                    )
+                raise RuntimeError(
+                    f"Gemini CLI 退出码 {proc.returncode}: {stderr_text[:500]}"
+                )
+
+            reply = "".join(reply_chunks).strip()
+            return reply, new_sid
 
     async def call_llm(
         self,
@@ -860,6 +946,59 @@ class GeminiCLINode(AgentNode):
         raise RuntimeError(
             f"Gemini CLI 所有模型均不可用 (tried {len(chain)}): {last_error}"
         )
+
+    async def compress_session(self, session_id: str, cwd: str = "") -> tuple[str, str]:
+        """
+        对已有 Gemini CLI session 发送 /compress，压缩对话历史。
+
+        返回 (status_msg, new_session_id)。
+        new_session_id 与 session_id 相同（原地压缩）或不同（CLI 新建 session）。
+        """
+        if not session_id:
+            return "无活跃 session，跳过", ""
+
+        sid_short = session_id[:8]
+        cmd = ["gemini", "-m", self._model, "-o", "json", "--yolo", "--resume", session_id]
+
+        logger.info(f"[gemini-cli] compress_session sid={sid_short} model={self._model}")
+        try:
+            proc = await asyncio.create_subprocess_exec(
+                *cmd,
+                stdin=asyncio.subprocess.PIPE,
+                stdout=asyncio.subprocess.PIPE,
+                stderr=asyncio.subprocess.PIPE,
+                cwd=cwd or None,
+            )
+            stdout_bytes, _ = await asyncio.wait_for(
+                proc.communicate(input=b"/compress"),
+                timeout=120,
+            )
+        except asyncio.TimeoutError:
+            return f"❌ /compress 超时 (120s)", session_id
+        except Exception as e:
+            return f"❌ /compress 启动失败: {e}", session_id
+
+        if proc.returncode != 0:
+            err = (stdout_bytes or b"").decode(errors="replace")[:200]
+            return f"❌ CLI 退出码 {proc.returncode}: {err}", session_id
+
+        stdout_text = stdout_bytes.decode(errors="replace")
+        json_start = stdout_text.find("{")
+        if json_start > 0:
+            stdout_text = stdout_text[json_start:]
+        try:
+            data = json.loads(stdout_text)
+        except json.JSONDecodeError:
+            return f"❌ JSON 解析失败: {stdout_text[:200]}", session_id
+
+        new_sid = data.get("session_id", session_id)
+        preview = data.get("response", "")[:60].replace("\n", " ")
+        if new_sid != session_id:
+            msg = f"✅ 压缩完成 ({sid_short} → {new_sid[:8]}): {preview}"
+        else:
+            msg = f"✅ 压缩完成 (sid={sid_short}): {preview}"
+        logger.info(f"[gemini-cli] compress_session done: {msg}")
+        return msg, new_sid
 
     async def __call__(self, state: dict) -> dict:
         """
