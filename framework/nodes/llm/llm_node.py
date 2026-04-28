@@ -496,7 +496,11 @@ class LlmNode:
 
         # ── 模型标签追加 ─────────────────────────────────────────────────────
         if raw_output:
-            raw_output = raw_output + self._model_footer(_model or "default")
+            _footer = self._model_footer(_model or "default")
+            raw_output = raw_output + _footer
+            _cb = _stream_cb.get()
+            if _cb:
+                _cb(_footer, False)
 
         # ── 路由信号检测（用注册的 SignalParser）────────────────────────────
         # 信号格式：{"route": "<node_id>", "context": "<question|background>"}

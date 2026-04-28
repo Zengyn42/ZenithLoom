@@ -476,7 +476,11 @@ class GeminiCodeAssistNode(_GeminiSessionMixin, AgentNode):
 
         # 模型标签追加
         if reply:
-            reply = reply + self._model_footer(_model_name or "default")
+            _footer = self._model_footer(_model_name or "default")
+            reply = reply + _footer
+            _cb = _stream_cb.get()
+            if _cb:
+                _cb(_footer, False)
 
         # ── 路由信号检测（enable_routing=true 时）──
         if self._enable_routing:
@@ -1133,7 +1137,11 @@ class GeminiCLINode(AgentNode):
         # 模型标签追加（显示实际使用的模型，fallback 后为降级模型）
         if reply:
             _effective = _session_effective_model.get(new_session_id or session_id, self._model)
-            reply = reply + self._model_footer(_effective)
+            _footer = self._model_footer(_effective)
+            reply = reply + _footer
+            _cb = _stream_cb.get()
+            if _cb:
+                _cb(_footer, False)
 
         logger.info(f"[{self._node_id}] done")
 
