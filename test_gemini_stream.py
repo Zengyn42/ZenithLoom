@@ -173,6 +173,44 @@ async def test_stream_session_id_from_init():
 
 
 @pytest.mark.asyncio
+async def test_stream_ttft_timeout_triggers_fallback():
+    """stream 模式：TTFT 超时（无 token 到来）→ 抛 _GeminiCapacityError，触发 fallback。"""
+    # 模拟一个永远不输出 delta 的进程（只有 init，卡住）
+    stream_lines = [
+        json.dumps({"type": "init", "session_id": "sid-slow", "model": "gemini-2.5-pro"}),
+        # 没有任何 delta message
+    ]
+    fake_proc = _FakeProcess(stream_lines)
+
+    # 让 proc.wait() 挂住，直到 kill() 被调用
+    kill_event = asyncio.Event()
+
+    def mock_kill():
+        kill_event.set()
+
+    async def slow_wait():
+        await kill_event.wait()  # 等 kill 信号
+        return -9
+
+    fake_proc.kill = mock_kill
+    fake_proc.wait = slow_wait
+
+    node = _make_node()
+    node._timeout = 0.1   # 缩短 TTFT 超时为 0.1s，加速测试
+    node._MAX_TIMEOUT = 5  # 总超时也缩短，避免测试挂住
+
+    from framework.nodes.llm.gemini import _GeminiCapacityError
+
+    with patch("asyncio.create_subprocess_exec", return_value=fake_proc):
+        set_stream_callback(lambda t, b: None)
+        try:
+            with pytest.raises(_GeminiCapacityError, match="TTFT 超时"):
+                await node._run_cli("hi", model="gemini-2.5-pro")
+        finally:
+            set_stream_callback(None)
+
+
+@pytest.mark.asyncio
 async def test_stream_result_failure_raises():
     """stream 模式：result status != success → 抛 RuntimeError。"""
     stream_lines = [

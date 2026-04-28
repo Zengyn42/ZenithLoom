@@ -701,6 +701,10 @@ class GeminiCLINode(AgentNode):
 
         else:
             # ── stream-json 模式：逐行读取 NDJSON 事件，实时回调 ──
+            # 超时分两阶段：
+            #   ttft_timeout（= self._timeout, 默认 120s）— 等第一个 token 到来；
+            #   _MAX_TIMEOUT（300s）                       — 整个进程的硬上限。
+            # 一旦有 token stream in，就不再受 ttft_timeout 约束。
             proc.stdin.write(full_prompt.encode())
             await proc.stdin.drain()
             proc.stdin.close()
@@ -709,6 +713,21 @@ class GeminiCLINode(AgentNode):
             reply_chunks: list[str] = []
             new_sid = session_id
             stderr_lines: list[str] = []
+            ttft_timed_out = False
+            first_token_event = asyncio.Event()
+
+            async def _watch_ttft():
+                nonlocal ttft_timed_out
+                try:
+                    await asyncio.wait_for(
+                        first_token_event.wait(), timeout=self._timeout
+                    )
+                except asyncio.TimeoutError:
+                    ttft_timed_out = True
+                    proc.kill()
+                    logger.warning(
+                        f"[gemini-cli] TTFT 超时 ({self._timeout}s) model={model}，触发降级"
+                    )
 
             async def _read_stderr():
                 async for raw in proc.stderr:
@@ -737,6 +756,7 @@ class GeminiCLINode(AgentNode):
                         if data.get("role") == "assistant" and data.get("delta"):
                             text = data.get("content", "")
                             if text:
+                                first_token_event.set()  # TTFT 计时结束
                                 reply_chunks.append(text)
                                 cb(text, False)
                     elif evt_type == "result":
@@ -749,18 +769,31 @@ class GeminiCLINode(AgentNode):
                                 )
                             raise RuntimeError(f"Gemini CLI stream 失败: {error_msg}")
 
+            ttft_task = asyncio.create_task(_watch_ttft())
             stderr_task = asyncio.create_task(_read_stderr())
             stdout_task = asyncio.create_task(_read_stdout())
 
             try:
-                await asyncio.wait_for(proc.wait(), timeout=effective_timeout)
+                await asyncio.wait_for(proc.wait(), timeout=self._MAX_TIMEOUT)
                 await stdout_task
                 await stderr_task
             except asyncio.TimeoutError:
                 proc.kill()
                 await proc.wait()
                 raise _GeminiCapacityError(
-                    f"model={model} 超时 ({effective_timeout}s, prompt_len={len(full_prompt)})"
+                    f"model={model} 总超时 ({self._MAX_TIMEOUT}s, prompt_len={len(full_prompt)})"
+                )
+            finally:
+                ttft_task.cancel()
+                try:
+                    await ttft_task
+                except (asyncio.CancelledError, Exception):
+                    pass
+
+            # TTFT 超时由 _watch_ttft 已 kill 进程，在此统一抛出
+            if ttft_timed_out:
+                raise _GeminiCapacityError(
+                    f"model={model} TTFT 超时 ({self._timeout}s)，无响应"
                 )
 
             if proc.returncode != 0 and not reply_chunks:
