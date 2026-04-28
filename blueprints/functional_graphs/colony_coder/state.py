@@ -81,6 +81,10 @@ class ColonyCoderState(BaseAgentState):
     # QA one-shot: E2E tests generated once, reused for all validation passes
     e2e_tests_generated: bool           # True after generate_e2e runs successfully (legacy, used when qa_tasks absent)
 
+    # QA infra failure tracking: generate_e2e failed to create required files
+    e2e_infra_failure: bool             # True when run script / test file not created by generate_e2e
+    e2e_infra_retry_count: int          # how many times we've retried generate_e2e for infra failures
+
     # Final output
     final_files: list
     abort_reason: Optional[str]

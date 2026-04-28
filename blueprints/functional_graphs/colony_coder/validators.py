@@ -27,9 +27,31 @@ def e2e_gate(state: dict) -> dict:
           - fail at cap → __end__ (abort)
     """
     e2e_tests_generated = state.get("e2e_tests_generated", False)
+    working_dir = state.get("working_directory", "")
 
     if not e2e_tests_generated:
         logger.info("[e2e_gate] first pass → routing to qa subgraph")
+        # Save source code snapshot as git commit before QA can corrupt it
+        if working_dir and os.path.isdir(working_dir):
+            try:
+                r_add = subprocess.run(
+                    ["git", "add", "-A"], cwd=working_dir, capture_output=True, timeout=10
+                )
+                r_commit = subprocess.run(
+                    ["git", "commit", "-m", "[colony] pre-qa source snapshot"],
+                    cwd=working_dir, capture_output=True, text=True, timeout=10,
+                )
+                if r_commit.returncode == 0:
+                    r_hash = subprocess.run(
+                        ["git", "rev-parse", "HEAD"],
+                        cwd=working_dir, capture_output=True, text=True, timeout=5,
+                    )
+                    snap = r_hash.stdout.strip()[:8]
+                    logger.info(f"[e2e_gate] source snapshot committed: {snap}")
+                else:
+                    logger.info(f"[e2e_gate] source snapshot: nothing to commit (already committed)")
+            except Exception as e:
+                logger.warning(f"[e2e_gate] source snapshot failed: {e}")
         return {"routing_target": "qa"}
 
     # ── Run E2E tests directly (no QA subgraph needed) ──

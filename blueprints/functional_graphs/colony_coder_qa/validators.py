@@ -1,15 +1,11 @@
 """Deterministic validator nodes for colony_coder_qa.
 
 Nodes (each function = one DETERMINISTIC node):
-  inject_e2e_context     — build prompt with e2e_plan + working_dir file listing
-  run_e2e                — mechanically run test_tool/run_e2e.sh
-  e2e_route              — route: pass→__end__, fail→execute (via parent), rescue escalation
-  inject_rescue_context  — build full context prompt for qa_rescue
-  run_e2e_rescue         — mechanically run test_tool/run_e2e.sh (same as run_e2e)
-  rescue_route           — route: pass→__end__, fail→qa_rescue retry, abort
+  inject_e2e_context  — build prompt with e2e_plan + working_dir file listing
+  run_e2e             — mechanically run test_tool/run_e2e_{qa_id}.sh
+  e2e_route           — route: pass→__end__ or next qa_task, fail→execute (via parent)
 """
 
-import json
 import logging
 import os
 import re
@@ -18,7 +14,6 @@ import subprocess
 logger = logging.getLogger(__name__)
 
 QA_FAIL_CAP = 5
-RESCUE_FAIL_CAP = 5
 
 
 # ---------------------------------------------------------------------------
@@ -92,8 +87,20 @@ def inject_e2e_context(state: dict) -> dict:
                             os.path.relpath(os.path.join(root, f), working_dir)
                         )
 
+        # Absolute paths for crystal-clear instructions
+        abs_test_file = os.path.join(working_dir, "test_tool", "e2e_tests", test_file)
+        abs_run_script = os.path.join(working_dir, "test_tool", run_script)
+        run_script_content = (
+            f"#!/bin/bash\nset -e\n"
+            f"cd \"$(dirname \"$0\")/..\"\n"
+            f"python3 -m pytest test_tool/e2e_tests/{test_file} -v 2>&1\n"
+        )
+
         lines = [f"## QA Subtask {qa_task_index + 1}/{len(qa_tasks)}: `{qa_id}`\n"]
         lines.append(f"**Working directory**: `{working_dir}`\n")
+        lines.append("### ⛔ DO NOT MODIFY SOURCE FILES")
+        lines.append(f"**You are FORBIDDEN from writing to `{working_dir}/snake_battle.py` or any source file.**")
+        lines.append("You are a TEST WRITER. You ONLY write test files and run scripts.\n")
         lines.append("### Test Scope")
         lines.append(f"{scope}\n")
 
@@ -103,23 +110,38 @@ def inject_e2e_context(state: dict) -> dict:
             lines.append(f"### Headless Testing Notes\n{headless}\n")
 
         if source_files:
-            lines.append("### Source Files (use `read_file` to examine before writing tests)")
+            lines.append("### Source Files (read these to understand the code, DO NOT write to them)")
             for f in sorted(source_files):
-                lines.append(f"- `{f}`")
+                lines.append(f"- `{os.path.join(working_dir, f)}`")
             lines.append("")
 
-        lines.append("### Your Task")
-        lines.append(f"1. Use `read_file` to examine the relevant source files.")
-        lines.append(f"2. Write E2E tests for the scope above to `test_tool/e2e_tests/{test_file}`.")
-        lines.append(f"3. Write `test_tool/{run_script}` that runs ONLY `{test_file}`:")
-        lines.append(f"   ```bash\n   #!/bin/bash\n   set -e\n   cd \"$(dirname \"$0\")/..\"\n   python3 -m pytest test_tool/e2e_tests/{test_file} -v 2>&1\n   ```")
-        lines.append(f"4. Run: `bash test_tool/{run_script}` via bash_exec.")
-        lines.append("5. Fix until all tests pass.")
-        lines.append("6. Report E2E_VERDICT: PASS or E2E_VERDICT: FAIL.")
-        lines.append(
-            "\n**IMPORTANT**: Test ONLY what's in the scope above. "
-            "Do NOT write tests for other modules. Keep it focused and fast (<60s total)."
-        )
+        lines.append("### EXACT Steps To Follow (in order)")
+        lines.append(f"**Step 1**: Use `read_file` to read the source files listed above.")
+        lines.append("")
+        lines.append(f"**Step 2**: Use `write_file` to create the test file at EXACTLY this path:")
+        lines.append(f"```")
+        lines.append(f"{abs_test_file}")
+        lines.append(f"```")
+        lines.append("Write pytest tests covering the scope above. Import from the source module directly (no curses needed).")
+        lines.append("")
+        lines.append(f"**Step 3**: Use `write_file` to create the run script at EXACTLY this path:")
+        lines.append(f"```")
+        lines.append(f"{abs_run_script}")
+        lines.append(f"```")
+        lines.append(f"The run script content MUST be EXACTLY:")
+        lines.append(f"```bash\n{run_script_content}```")
+        lines.append("")
+        lines.append(f"**Step 4**: Use `bash_exec` to run: `bash {abs_run_script}`")
+        lines.append("")
+        lines.append(f"**Step 5**: If tests fail, fix the TEST FILE (not the source). Re-run until passing.")
+        lines.append("")
+        lines.append(f"**Step 6**: Report E2E_VERDICT: PASS or E2E_VERDICT: FAIL.")
+        lines.append("")
+        lines.append("### ⚠️ ABSOLUTE RULES")
+        lines.append(f"- ONLY write to `{abs_test_file}` and `{abs_run_script}` — NO OTHER PATHS")
+        lines.append(f"- DO NOT write to snake_battle.py or any .py file in `{working_dir}/` root")
+        lines.append(f"- DO NOT run `test_tool/run_tests.sh` — that runs UNIT tests, not E2E tests")
+        lines.append("- Keep each test under 10 seconds; total suite under 90 seconds")
 
         prompt_len = sum(len(l) for l in lines)
         logger.info(
@@ -229,9 +251,13 @@ def _run_e2e_tests(state: dict, caller: str = "run_e2e") -> dict:
     qa_task_index = state.get("current_qa_task_index", 0)
 
     # qa_tasks mode: use per-task run script
+    test_file_path = ""
     if qa_tasks and qa_task_index < len(qa_tasks):
-        qa_id = qa_tasks[qa_task_index].get("id", f"q{qa_task_index + 1}")
+        qa_task = qa_tasks[qa_task_index]
+        qa_id = qa_task.get("id", f"q{qa_task_index + 1}")
+        test_file = qa_task.get("test_file", f"test_{qa_id}.py")
         runner = os.path.join(working_dir, "test_tool", f"run_e2e_{qa_id}.sh")
+        test_file_path = os.path.join(working_dir, "test_tool", "e2e_tests", test_file)
         # Fallback to generic run_e2e.sh if per-task script missing
         if not os.path.isfile(runner):
             fallback = os.path.join(working_dir, "test_tool", "run_e2e.sh")
@@ -244,12 +270,87 @@ def _run_e2e_tests(state: dict, caller: str = "run_e2e") -> dict:
     logger.info(f"[{caller}] runner={runner} exists={os.path.isfile(runner)}")
 
     if not os.path.isfile(runner):
-        logger.warning(f"[{caller}] runner not found: {runner}")
-        return {
-            "execution_stdout": "",
-            "execution_stderr": f"test_tool/run_e2e.sh not found in {working_dir}",
-            "execution_returncode": 1,
-        }
+        # ── Fallback: if test file exists, run pytest directly ──────────
+        if test_file_path and os.path.isfile(test_file_path):
+            logger.info(f"[{caller}] run script missing but test file found → pytest fallback: {test_file_path}")
+            # Auto-create the run script for future iterations
+            script_path = os.path.join(working_dir, "test_tool", f"run_e2e_{qa_id}.sh")
+            rel_test = os.path.relpath(test_file_path, working_dir)
+            try:
+                os.makedirs(os.path.dirname(script_path), exist_ok=True)
+                with open(script_path, "w") as f:
+                    f.write(f"#!/bin/bash\nset -e\ncd \"$(dirname \"$0\")/..\"\npython3 -m pytest {rel_test} -v 2>&1\n")
+                os.chmod(script_path, 0o755)
+                logger.info(f"[{caller}] auto-created run script: {script_path}")
+                runner = script_path
+            except OSError as e:
+                logger.warning(f"[{caller}] could not auto-create run script: {e} → pytest direct")
+                try:
+                    r = subprocess.run(
+                        ["python3", "-m", "pytest", rel_test, "-v"],
+                        cwd=working_dir, capture_output=True, text=True, timeout=120,
+                    )
+                    return {
+                        "execution_stdout": r.stdout[-3000:] if r.stdout else "",
+                        "execution_stderr": r.stderr[-3000:] if r.stderr else "",
+                        "execution_returncode": r.returncode,
+                    }
+                except (subprocess.TimeoutExpired, OSError) as e2:
+                    return {"execution_stdout": "", "execution_stderr": str(e2), "execution_returncode": -1}
+        else:
+            # Neither run script nor test file exists at expected paths.
+            # Scan test_tool/ for any test file that may have been written to wrong path.
+            found_test = None
+            found_run_script = None
+            test_tool_dir = os.path.join(working_dir, "test_tool")
+            if working_dir and os.path.isdir(test_tool_dir):
+                for root, dirs, files in os.walk(test_tool_dir):
+                    dirs[:] = [d for d in dirs if d not in ("__pycache__", ".git", "unit_tests")]
+                    for fname in files:
+                        fpath = os.path.join(root, fname)
+                        if fname.endswith(".py") and fname.startswith("test_") and fpath != test_file_path:
+                            found_test = fpath
+                            logger.info(f"[{caller}] found misplaced test file: {fpath}")
+                        elif fname.startswith("run_e2e") and fname.endswith(".sh") and fpath != runner:
+                            found_run_script = fpath
+                            logger.info(f"[{caller}] found misplaced run script: {fpath}")
+
+            if found_test:
+                # Move to expected location and auto-create run script
+                expected_dir = os.path.dirname(test_file_path)
+                try:
+                    os.makedirs(expected_dir, exist_ok=True)
+                    import shutil
+                    shutil.move(found_test, test_file_path)
+                    logger.info(f"[{caller}] moved test file to: {test_file_path}")
+                    # Create run script
+                    script_path = os.path.join(working_dir, "test_tool", f"run_e2e_{qa_id}.sh")
+                    rel_test = os.path.relpath(test_file_path, working_dir)
+                    with open(script_path, "w") as f:
+                        f.write(f"#!/bin/bash\nset -e\ncd \"$(dirname \"$0\")/..\"\npython3 -m pytest {rel_test} -v 2>&1\n")
+                    os.chmod(script_path, 0o755)
+                    logger.info(f"[{caller}] auto-created run script: {script_path}")
+                    runner = script_path
+                except (OSError, Exception) as e:
+                    logger.warning(f"[{caller}] could not relocate test file: {e}")
+                    # Fall through to infra failure
+            else:
+                # Truly nothing found — infra failure
+                logger.warning(f"[{caller}] run script AND test file both missing → infra failure")
+                return {
+                    "execution_stdout": "",
+                    "execution_stderr": (
+                        f"INFRA_FAILURE: generate_e2e did not create the required files.\n"
+                        f"Missing run script: {runner}\n"
+                        f"Missing test file: {test_file_path or '(unknown)'}\n"
+                        f"Scanned test_tool/ — no test files found.\n"
+                        f"⛔ REMINDER: You must write files to EXACT paths:\n"
+                        f"  Test file: {test_file_path}\n"
+                        f"  Run script: {os.path.join(working_dir, 'test_tool', f'run_e2e_{qa_id}.sh')}"
+                    ),
+                    "execution_returncode": 1,
+                    "e2e_infra_failure": True,
+                }
 
     try:
         r = subprocess.run(
@@ -292,10 +393,6 @@ def run_e2e(state: dict) -> dict:
     return _run_e2e_tests(state, caller="run_e2e")
 
 
-def run_e2e_rescue(state: dict) -> dict:
-    """Run E2E tests after qa_rescue."""
-    logger.info("[run_e2e_rescue] → running E2E tests (post qa_rescue)")
-    return _run_e2e_tests(state, caller="run_e2e_rescue")
 
 
 # ---------------------------------------------------------------------------
@@ -318,11 +415,39 @@ def e2e_route(state: dict) -> dict:
     qa_fail_count = state.get("qa_fail_count", 0)
     qa_tasks = state.get("qa_tasks") or []
     qa_task_index = state.get("current_qa_task_index", 0)
+    infra_failure = state.get("e2e_infra_failure", False)
+    infra_retry_count = state.get("e2e_infra_retry_count", 0)
+    INFRA_RETRY_CAP = 2
 
     logger.info(
         f"[e2e_route] rc={rc} qa_fail_count={qa_fail_count}/{QA_FAIL_CAP} "
-        f"qa_tasks_mode={bool(qa_tasks)} qa_task_index={qa_task_index}/{len(qa_tasks)}"
+        f"qa_tasks_mode={bool(qa_tasks)} qa_task_index={qa_task_index}/{len(qa_tasks)} "
+        f"infra_failure={infra_failure} infra_retry={infra_retry_count}/{INFRA_RETRY_CAP}"
     )
+
+    # ── Infra failure: generate_e2e didn't create required files ──────────
+    if infra_failure and rc != 0:
+        if infra_retry_count < INFRA_RETRY_CAP:
+            logger.warning(
+                f"[e2e_route] INFRA_FAILURE: test files not created → retry generate_e2e "
+                f"({infra_retry_count + 1}/{INFRA_RETRY_CAP})"
+            )
+            return {
+                "routing_target": "inject_e2e_context",
+                "e2e_infra_failure": False,
+                "e2e_infra_retry_count": infra_retry_count + 1,
+            }
+        else:
+            logger.error(
+                f"[e2e_route] INFRA_FAILURE: generate_e2e failed to create files "
+                f"after {INFRA_RETRY_CAP} retries → abort"
+            )
+            return {
+                "routing_target": "__end__",
+                "success": False,
+                "qa_fail_count": qa_fail_count + 1,
+                "e2e_infra_failure": False,
+            }
 
     if rc == 0:
         # ── qa_tasks mode: advance index ──
@@ -447,11 +572,10 @@ def e2e_route(state: dict) -> dict:
     }
 
 
-# ---------------------------------------------------------------------------
-# inject_rescue_context
-# ---------------------------------------------------------------------------
-
+# (qa_rescue removed — gemma4 was unreliable as a rescue agent)
 def inject_rescue_context(state: dict) -> dict:
+    """Stub: qa_rescue removed. Should not be called."""
+    return {"routing_target": "__end__", "success": False}
     """Build full context for qa_rescue: e2e_plan + failure details + source code."""
     from langchain_core.messages import HumanMessage
 
@@ -526,51 +650,6 @@ def inject_rescue_context(state: dict) -> dict:
     return {"messages": [HumanMessage(content="\n".join(lines))]}
 
 
-# ---------------------------------------------------------------------------
-# rescue_route
-# ---------------------------------------------------------------------------
-
 def rescue_route(state: dict) -> dict:
-    """Route rescue results.
-
-    Pass (rc==0)                             → __end__ (success)
-    Fail, rescue_fail_count < RESCUE_FAIL_CAP → qa_rescue (retry)
-    Fail, rescue_fail_count >= RESCUE_FAIL_CAP → __end__ (abort)
-    """
-    rc = state.get("execution_returncode")
-    rescue_fail_count = state.get("rescue_fail_count", 0)
-
-    logger.info(
-        f"[rescue_route] rc={rc} rescue_fail_count={rescue_fail_count}/{RESCUE_FAIL_CAP}"
-    )
-
-    if rc == 0:
-        logger.info("[rescue_route] ✅ rescue PASSED → __end__ (success)")
-        return {
-            "routing_target": "__end__",
-            "success": True,
-        }
-
-    logger.info(
-        f"[rescue_route] ❌ rescue FAILED "
-        f"(attempt {rescue_fail_count + 1}/{RESCUE_FAIL_CAP})"
-    )
-
-    if rescue_fail_count + 1 >= RESCUE_FAIL_CAP:
-        logger.warning(
-            f"[rescue_route] rescue cap ({RESCUE_FAIL_CAP}) exhausted → __end__ (abort)"
-        )
-        return {
-            "routing_target": "__end__",
-            "success": False,
-            "abort_reason": "qa_rescue_exhausted",
-        }
-
-    logger.info(
-        f"[rescue_route] → qa_rescue (retry {rescue_fail_count + 1})"
-    )
-    # Retry rescue
-    return {
-        "routing_target": "qa_rescue",
-        "rescue_fail_count": rescue_fail_count + 1,
-    }
+    """Stub: qa_rescue removed. Should not be called."""
+    return {"routing_target": "__end__", "success": False}

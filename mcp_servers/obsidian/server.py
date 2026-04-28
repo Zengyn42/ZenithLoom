@@ -48,7 +48,7 @@ logger = logging.getLogger("obsidian_mcp")
 # 默认 vault 路径
 _DEFAULT_VAULT = os.environ.get(
     "VAULT_BASE_DIR",
-    "/home/kingy/Foundation/Vault",
+    "/home/kingy/Foundation/NimbusVault",
 )
 
 # 全局 vault 实例

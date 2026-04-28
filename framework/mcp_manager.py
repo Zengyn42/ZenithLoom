@@ -13,7 +13,7 @@ entity.json "mcp" 字段格式（顶层，与 "graph" 平级）：
       "name": "obsidian-vault",
       "module": "mcp_servers.obsidian.server",
       "module_args": ["--transport", "sse", "--port", "8101",
-                      "--vault", "/home/kingy/Foundation/Vault"],
+                      "--vault", "/home/kingy/Foundation/NimbusVault"],
       "url": "http://localhost:8101/sse",
       "shared": true
     }

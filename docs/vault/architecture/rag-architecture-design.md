@@ -48,7 +48,7 @@ Agents access the vault in one of two ways:
 The vault is a conventional Obsidian repository on the WSL filesystem:
 
 ```
-/home/kingy/Foundation/Vault/
+/home/kingy/Foundation/NimbusVault/
 ├── .git/                # Version control (not via MCP)
 ├── .obsidian/           # Obsidian GUI config, plugins, workspace state
 ├── .trash/              # Soft-delete staging area (created on first delete)
@@ -178,7 +178,7 @@ The Obsidian MCP server is the sole mediated access point to the vault. It lives
   "module_args": [
     "--transport", "sse",
     "--port", "8101",
-    "--vault", "/home/kingy/Foundation/Vault"
+    "--vault", "/home/kingy/Foundation/NimbusVault"
   ],
   "url": "http://localhost:8101/sse",
   "shared": true
@@ -343,7 +343,7 @@ Wraps the MCP-mediated vault access as a reusable LangGraph subgraph. Any parent
         "node_config": {
           "command": [
             "rsync", "-a", "--delete",
-            "/home/kingy/Foundation/Vault/",
+            "/home/kingy/Foundation/NimbusVault/",
             "/mnt/c/Users/kingy/Documents/Obsidian Vault/"
           ],
           "timeout": 30
@@ -471,7 +471,7 @@ Fixed in `knowledge_shelf/entity.json`:
 
 ```bash
 rsync -a --delete \
-  /home/kingy/Foundation/Vault/ \
+  /home/kingy/Foundation/NimbusVault/ \
   /mnt/c/Users/kingy/Documents/Obsidian\ Vault/
 ```
 
@@ -484,7 +484,7 @@ rsync -a --delete \
 **Currently manual**. If the user edits a note in the Windows Obsidian app:
 
 1. Obsidian's git plugin auto-commits the change to the vault's git repo (on the Windows side)
-2. The user runs `git pull` in `/home/kingy/Foundation/Vault/` on WSL — or a scheduled job does it
+2. The user runs `git pull` in `/home/kingy/Foundation/NimbusVault/` on WSL — or a scheduled job does it
 3. WSL now has the user's edits
 
 There is **no automatic bidirectional sync**. The design deliberately trades convenience for simplicity: one rsync direction, one git direction, never conflicting.
@@ -526,7 +526,7 @@ class BaseAgentState(TypedDict):
 
 Three fields relevant to RAG:
 
-- **`knowledge_vault`**: typically `/home/kingy/Foundation/Vault` — agents can use it to pass as the `directory` argument to `obsidian_*` tools, or to `Glob`/`Grep` for direct-access agents.
+- **`knowledge_vault`**: typically `/home/kingy/Foundation/NimbusVault` — agents can use it to pass as the `directory` argument to `obsidian_*` tools, or to `Glob`/`Grep` for direct-access agents.
 - **`project_docs`**: per-project docs path (e.g., `docs/` inside a repo being worked on). Independent of the vault; used by agents that need to reference the current repo's internal documentation.
 - **`knowledge_result`**: the **output channel** from `knowledge_shelf`. Written by `gemini_obsidian` via `output_field`, consumed by parent agents via prompt injection.
 
@@ -569,12 +569,12 @@ This ensures each `knowledge_shelf` call starts clean — Gemini won't see its o
    - Reads messages[-1].content as latest_input
    - system_prompt includes Hani's persona (ROLE.md + PROTOCOL.md)
    - Decides: this is a vault lookup
-   - Option A (current): Claude uses Glob + Grep directly on /home/kingy/Foundation/Vault
+   - Option A (current): Claude uses Glob + Grep directly on /home/kingy/Foundation/NimbusVault
    - Option B (if wired): Claude emits {"route": "knowledge_shelf", "context": "..."}
                           → parent graph routes to Jei or knowledge_shelf subgraph
 
 3a. Option A — direct access
-   - Claude calls Glob("/home/kingy/Foundation/Vault/**/*.md")
+   - Claude calls Glob("/home/kingy/Foundation/NimbusVault/**/*.md")
    - Claude calls Grep("session_mode", ...)
    - Claude calls Read(...) on top matches
    - Claude synthesizes an answer, responds to user
@@ -601,7 +601,7 @@ After user input:
   state = {
     messages: [HumanMessage("查一下我们上周讨论的 session_mode")],
     workspace: "/home/kingy/Foundation",
-    knowledge_vault: "/home/kingy/Foundation/Vault",
+    knowledge_vault: "/home/kingy/Foundation/NimbusVault",
     ...
   }
 
