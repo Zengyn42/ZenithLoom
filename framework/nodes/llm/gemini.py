@@ -474,6 +474,10 @@ class GeminiCodeAssistNode(_GeminiSessionMixin, AgentNode):
             log_node_output_to_file(node_id=self._node_id, output_text=reply,
                                     model=_model_name, prompt_preview=_prompt_preview)
 
+        # 模型标签追加
+        if reply:
+            reply = reply + self._model_footer(_model_name or "default")
+
         # ── 路由信号检测（enable_routing=true 时）──
         if self._enable_routing:
             signal = self._signal_parser.parse(reply)
@@ -1125,6 +1129,11 @@ class GeminiCLINode(AgentNode):
         self._fallback_notice = ""
         if fallback_notice and reply:
             reply = f"{reply}\n\n---\n{fallback_notice}"
+
+        # 模型标签追加（显示实际使用的模型，fallback 后为降级模型）
+        if reply:
+            _effective = _session_effective_model.get(new_session_id or session_id, self._model)
+            reply = reply + self._model_footer(_effective)
 
         logger.info(f"[{self._node_id}] done")
 

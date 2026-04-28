@@ -274,6 +274,12 @@ class LlmNode:
 
         return "\n\n---\n\n".join(parts)
 
+    @staticmethod
+    def _model_footer(model_name: str) -> str:
+        """返回追加到回复末尾的模型标签，格式：两个换行 + backtick model-name backtick"""
+        name = (model_name or "default").strip()
+        return f"\n\n`{name}`"
+
     @abstractmethod
     async def call_llm(
         self,
@@ -487,6 +493,10 @@ class LlmNode:
                     model=_model,
                     prompt_preview=_prompt_preview,
                 )
+
+        # ── 模型标签追加 ─────────────────────────────────────────────────────
+        if raw_output:
+            raw_output = raw_output + self._model_footer(_model or "default")
 
         # ── 路由信号检测（用注册的 SignalParser）────────────────────────────
         # 信号格式：{"route": "<node_id>", "context": "<question|background>"}
