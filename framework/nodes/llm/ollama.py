@@ -322,7 +322,7 @@ class OllamaNode(AgentNode):
             text = last_msg.get("content", "")
             if text:
                 from langchain_core.messages import AIMessage
-                updates["messages"] = [AIMessage(content=text)]
+                updates["messages"] = [AIMessage(content=text + self._model_footer(self._model))]
 
         return updates
 
