@@ -74,6 +74,7 @@ def _setup_bot(sm, name: str = "hani"):
     bot._controller.checkpoint_stats = AsyncMock(return_value=0)
     bot._controller.compact_checkpoint = AsyncMock(return_value=5)
     bot._controller.compact_claude_session = AsyncMock(return_value="无 Claude session 可压缩")
+    bot._controller.compact_gemini_session = AsyncMock(return_value="无 Gemini CLI session 可压缩")
     bot._controller.reset_checkpoint = AsyncMock(return_value=10)
     return bot, loader
 
@@ -530,11 +531,12 @@ async def test_discord_compact_reset():
 
         iface = _DiscordInterface(loader, channel_id=100)
 
-        # !compact (default keep=20) — now reports both checkpoint DB and Claude session
+        # !compact (default keep=20) — reports checkpoint DB, Claude session, Gemini session
         reply = await iface.handle_command("!compact", "")
         assert "Compact" in reply
         assert "checkpoint DB" in reply
         assert "Claude session" in reply
+        assert "Gemini session" in reply
         print(f"   !compact:\n{reply}")
 
         # !reset without confirm → shows warning
