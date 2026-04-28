@@ -531,13 +531,22 @@ async def test_discord_compact_reset():
 
         iface = _DiscordInterface(loader, channel_id=100)
 
-        # !compact (default keep=20) — reports checkpoint DB, Claude session, Gemini session
+        # !compact (default keep=20) — always shows checkpoint DB;
+        # Claude/Gemini session lines only shown when nodes are present
         reply = await iface.handle_command("!compact", "")
         assert "Compact" in reply
         assert "checkpoint DB" in reply
-        assert "Claude session" in reply
-        assert "Gemini session" in reply
-        print(f"   !compact:\n{reply}")
+        # mocks return "无…未注册" → both session lines are filtered out
+        assert "Claude session" not in reply
+        assert "Gemini session" not in reply
+        print(f"   !compact (no nodes):\n{reply}")
+
+        # simulate a Gemini node present → Gemini session line should appear
+        bot._controller.compact_gemini_session = AsyncMock(return_value="✅ 压缩完成 (sid=421a68ea): ok")
+        reply2 = await iface.handle_command("!compact", "")
+        assert "Gemini session" in reply2
+        assert "Claude session" not in reply2  # still no Claude node
+        print(f"   !compact (gemini node):\n{reply2}")
 
         # !reset without confirm → shows warning
         reply2 = await iface.handle_command("!reset", "")

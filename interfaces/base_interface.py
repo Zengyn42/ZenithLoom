@@ -498,13 +498,17 @@ class BaseInterface:
                 gemini_msg = await controller.compact_gemini_session(thread_id)
             except Exception as e:
                 gemini_msg = f"❌ 调用失败: {e}"
-            return (
-                "Compact 完成：\n"
-                f"  checkpoint DB : 删除 {deleted} 条旧记录，保留最近 {keep} 条\n"
-                f"  Claude session: {claude_msg}\n"
-                f"  Gemini session: {gemini_msg}\n"
-                "  （注意：/compact 是有损摘要，旧细节可能不再可回忆）"
-            )
+            lines = [
+                "Compact 完成：",
+                f"  checkpoint DB : 删除 {deleted} 条旧记录，保留最近 {keep} 条",
+            ]
+            _no_node = ("未注册", "无 Claude", "无 Gemini")
+            if not any(k in claude_msg for k in _no_node):
+                lines.append(f"  Claude session: {claude_msg}")
+            if not any(k in gemini_msg for k in _no_node):
+                lines.append(f"  Gemini session: {gemini_msg}")
+            lines.append("  （注意：/compact 是有损摘要，旧细节可能不再可回忆）")
+            return "\n".join(lines)
 
         if cmd == "!reset":
             if arg != "confirm":
