@@ -356,6 +356,7 @@ class GeminiCodeAssistNode(_GeminiSessionMixin, AgentNode):
     def __init__(self, config: AgentConfig, node_config: dict):
         AgentNode.__init__(self, config, node_config)
         self._enable_routing: bool = bool(node_config.get("enable_routing", False))
+        self._inject_topic: bool = bool(node_config.get("inject_topic", False))
         self._init_session_state(node_config)
         # node_config 中的 system_prompt 优先；否则使用框架默认
         base_prompt: str = node_config.get("system_prompt") or _GEMINI_SYSTEM
@@ -417,7 +418,9 @@ class GeminiCodeAssistNode(_GeminiSessionMixin, AgentNode):
                 parts.append(f"[{role}]:\n{m.content}")
             prompt = "\n\n---\n\n".join(parts)
             topic = msgs[0].content if msgs and getattr(msgs[0], "type", "") == "human" else ""
-            if topic:
+            if topic and self._inject_topic:
+                # Only inject "原始要求" for debate nodes (inject_topic=True).
+                # Interactive chat nodes must not anchor to the first message.
                 prompt += f"\n\n---\n\n[原始要求（请严格遵守）]:\n{topic}\n请基于以上讨论继续发言。"
             prompt_src = f"full_history ({len(msgs)} msgs)"
         else:
@@ -581,13 +584,17 @@ class GeminiCLINode(AgentNode):
             or "gemini-2.5-pro"
         )
         self._enable_routing: bool = bool(node_config.get("enable_routing", False))
+        # inject_topic: only True for debate nodes. When False (default), the
+        # full-history "原始要求" anchor is suppressed so interactive chat
+        # sessions are not locked to the first message as a "topic".
+        self._inject_topic: bool = bool(node_config.get("inject_topic", False))
         base_prompt: str = node_config.get("system_prompt") or _GEMINI_SYSTEM
         skill_content = self._load_skill_content()
         self._system_prompt = f"{base_prompt}\n\n{skill_content}" if skill_content else base_prompt
         self._timeout: int = node_config.get("timeout") or self._DEFAULT_TIMEOUT
         # 降级通知：call_llm 设置，__call__ 消费后清空
         self._fallback_notice: str = ""
-        logger.info(f"[gemini-cli] node={self._node_id} model={self._model} timeout={self._timeout}s enable_routing={self._enable_routing}")
+        logger.info(f"[gemini-cli] node={self._node_id} model={self._model} timeout={self._timeout}s enable_routing={self._enable_routing} inject_topic={self._inject_topic}")
 
     def _build_fallback_chain(self) -> list[str]:
         """从配置的主模型开始，返回降级链（跳过已知不可用的模型）。"""
@@ -1071,7 +1078,9 @@ class GeminiCLINode(AgentNode):
                 parts.append(f"[{role}]:\n{m.content}")
             prompt = "\n\n---\n\n".join(parts)
             topic = msgs[0].content if msgs and getattr(msgs[0], "type", "") == "human" else ""
-            if topic:
+            if topic and self._inject_topic:
+                # Only inject "原始要求" for debate nodes (inject_topic=True).
+                # Interactive chat nodes must not anchor to the first message.
                 prompt += f"\n\n---\n\n[原始要求（请严格遵守）]:\n{topic}\n请基于以上讨论继续发言。"
             prompt_src = f"full_history ({len(msgs)} msgs)"
         else:

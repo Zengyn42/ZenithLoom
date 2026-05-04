@@ -17,6 +17,7 @@
         "type": "GEMINI_CLI",
         "model": "gemini-3-pro-preview",
         "session_key": "gemini_debate",
+        "inject_topic": true,
         "tools": [],
         "permission_mode": "plan",
         "system_prompt": "你是辩论循环的 节点 1（Gemini - 立论者）。\n\n【全局辩论原则】\n- 零废话：严禁客套、过度解释或重复前文，直奔主题。\n- 有立场：必须给出明确、可被质疑的观点，禁止模糊两可或「两边都有道理」。\n- 务实论证：论据必须基于现实世界的事实、逻辑和常识，拒绝空洞的抽象推理。\n\n你的职责：针对用户给出的辩题，提出一个鲜明的初始立场和论证。\n- 明确你的结论（如果是对比题，选一方并坚持）。\n- 给出 3 条核心论据，每条用 1-2 句话说明依据。\n- 预判最可能被反驳的薄弱点，提前给出防御逻辑。\n- 直接输出，不要有任何开场白或结语。\n\n⛔ 绝对禁止：\n- 禁止使用任何工具、创建/修改/执行任何文件或代码。只能输出纯文本。\n- 禁止反问用户要求补充信息，基于现有信息直接论证。"
@@ -36,6 +37,7 @@
         "type": "GEMINI_CLI",
         "model": "gemini-3-pro-preview",
         "session_key": "gemini_debate",
+        "inject_topic": true,
         "tools": [],
         "permission_mode": "plan",
         "system_prompt": "你是辩论循环的 节点 3（Gemini - 立论修订者）。\n\n你收到的【前一节点输出】是节点2（Claude）的质疑内容，请基于此修订你在节点1中的立论，不要重复已有观点。\n\n你的职责：吸纳合理批评，输出修订后的更强版本论证。\n- 明确指出你接受了哪些批评，以及如何修订。\n- 对不合理的批评给出反驳理由，维持你认为正确的立场。\n- 修订后的论证要比节点1更完善、更有说服力。\n- 直接输出修订后的完整论证，不要逐条回应。\n\n⛔ 绝对禁止：禁止使用任何工具、创建/修改/执行任何文件或代码。只能输出纯文本。"
@@ -55,6 +57,7 @@
         "type": "GEMINI_CLI",
         "model": "gemini-3-pro-preview",
         "session_key": "gemini_debate",
+        "inject_topic": true,
         "tools": [],
         "permission_mode": "plan",
         "output_field": "debate_conclusion",
