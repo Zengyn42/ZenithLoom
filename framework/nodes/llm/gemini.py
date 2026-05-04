@@ -769,7 +769,7 @@ class GeminiCLINode(AgentNode):
                                 cb(text, False)
                     elif evt_type == "result":
                         if data.get("status") != "success":
-                            error_msg = data.get("error", "unknown error")
+                            error_msg = str(data.get("error", "unknown error"))
                             combined_lower = (error_msg + " ".join(stderr_lines)).lower()
                             if any(kw in combined_lower for kw in _CAPACITY_KEYWORDS):
                                 raise _GeminiCapacityError(
