@@ -148,6 +148,13 @@ async def run_tests():
     await loader.start_mcp_servers()
     controller = await loader.get_controller()
 
+    # Force a fresh session so Gemini has no prior context memory.
+    # Without this, _init_session() picks the oldest Discord session
+    # and Gemini may answer from conversation history, not real tool calls.
+    session_name = f"smoke_v54_{int(__import__('time').time())}"
+    await controller.new_session(session_name)
+    print(f"[smoke] fresh session: {session_name}", flush=True)
+
     try:
         graph = controller._graph
         if hasattr(graph, "nodes"):

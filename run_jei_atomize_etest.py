@@ -98,6 +98,11 @@ async def main():
     await loader.start_mcp_servers()
     controller = await loader.get_controller()
 
+    # Force fresh session — no prior context from old Discord sessions
+    session_name = f"smoke_atomize_{int(__import__('time').time())}"
+    await controller.new_session(session_name)
+    print(f"[smoke] fresh session: {session_name}", flush=True)
+
     q_a1 = (
         f"请用 atomize_scan 工具扫描文档「{TARGET_DOC}」，"
         f"告诉我它有几个 section，每个 section 的标题和 section_id 是什么，"
