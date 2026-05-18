@@ -261,6 +261,9 @@ class ClaudeSDKNode(AgentNode):
             """
             return isinstance(e, ProcessError) or "exit code" in str(e).lower()
 
+        def _is_initialize_timeout(e: Exception) -> bool:
+            return "control request timeout" in str(e).lower()
+
         result_text = ""
         new_session_id = ""
         is_error = False
@@ -274,10 +277,10 @@ class ClaudeSDKNode(AgentNode):
                     f"[claude] CLI stderr ({len(stderr_lines)} lines):\n"
                     + "\n".join(stderr_lines[-20:])
                 )
-            # resume 失败 -> 以新 session 重试
-            if _is_cli_exit_error(e) and session_id:
+            # 子进程未能启动（initialize 超时）或 resume 失败 -> 以新 session 重试
+            if _is_initialize_timeout(e) or (_is_cli_exit_error(e) and session_id):
                 logger.warning(
-                    f"[claude] resume sid={session_id[:8]} 失败，以新 session 重试..."
+                    f"[claude] {type(e).__name__}: {e!r}, 以新 session 重试..."
                 )
                 try:
                     result_text, new_session_id, is_error, last_msg_usage = await _run_once("", prompt)
