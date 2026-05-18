@@ -21,7 +21,8 @@
 identity.json 格式：
   {
     "name": "hani",
-    "blueprint": "/path/to/ZenithLoom/blueprints/role_agents/technical_architect",
+    "blueprint": "/path/to/VoidDraft/role_agents/technical_architect",
+    "framework": "/path/to/ZenithLoom",
     "connector": "discord",
     "discord": {
       "token": "...",
@@ -91,6 +92,7 @@ def main():
     entity = json.loads(entity_file.read_text(encoding="utf-8"))
 
     blueprint_path = entity.get("blueprint")
+    framework_path = entity.get("framework")
     connector = connector_override or entity.get("connector", "cli")
 
     if not blueprint_path:
@@ -103,8 +105,15 @@ def main():
         print(f"❌ Blueprint not found: {blueprint_dir}")
         sys.exit(1)
 
-    # framework root = blueprints/<sub>/<role> の 3 levels up
-    framework_dir = blueprint_dir.parent.parent.parent
+    # framework root: explicit 'framework' field in identity.json takes priority;
+    # falls back to awaken.py's own directory for backward compatibility
+    if framework_path:
+        framework_dir = Path(framework_path).expanduser().resolve()
+        if not framework_dir.is_dir():
+            print(f"❌ Framework not found: {framework_dir}")
+            sys.exit(1)
+    else:
+        framework_dir = Path(__file__).parent.resolve()
     framework_str = str(framework_dir)
     if framework_str not in sys.path:
         sys.path.insert(0, framework_str)
