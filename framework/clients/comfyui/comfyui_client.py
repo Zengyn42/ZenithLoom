@@ -104,7 +104,10 @@ class ComfyUIClient:
         progress_callback: Any | None = None,
     ) -> None:
         """Monitor via WebSocket until prompt completes or errors."""
-        timeout = aiohttp.ClientTimeout(total=self.timeout)
+        # connect: time to establish WS handshake
+        # sock_read: max silence between consecutive messages (handles model loading pauses)
+        # total=None: no cap on overall generation time
+        timeout = aiohttp.ClientTimeout(connect=15, sock_read=self.timeout)
         async with aiohttp.ClientSession(timeout=timeout) as ws_session:
             async with ws_session.ws_connect(self.ws_url) as ws:
                 async for msg in ws:

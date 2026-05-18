@@ -13,10 +13,11 @@ from typing import Set, Tuple, List, Optional, Deque, Dict, NamedTuple, Union
 from dataclasses import dataclass
 from enum import Enum
 import heapq
-class Pt(NamedTuple):
+class Point(NamedTuple):
     y: int
     x: int
 
+Pt = Point
 # Global constants
 MIN_FOOD = 5
 INITIAL_LENGTH = 3
@@ -24,8 +25,15 @@ SURVIVAL_GATE = 500
 GRID_W = 30
 GRID_H = 15
 NUM_FOOD = 5
+FOOD_COUNT = 5
 FRAME_MS = 50
-
+FPS_DEFAULT = 20
+FPS_MIN = 10
+FPS_MAX = 60
+COLOR_ALPHA = 1
+COLOR_BETA = 2
+COLOR_FOOD = 3
+COLOR_BORDER = 4
 def manhattan(p1: Tuple[int, int], p2: Tuple[int, int]) -> int:
     """Manhattan distance between two points."""
     return abs(p1[0] - p2[0]) + abs(p1[1] - p2[1])
@@ -37,6 +45,10 @@ class Direction(Enum):
     LEFT = (0, -1)
     RIGHT = (0, 1)
     
+    @property
+    def delta(self) -> Tuple[int, int]:
+        return self.value
+
     def opposite(self) -> 'Direction':
         """Return the opposite direction."""
         opposites = {
@@ -47,8 +59,122 @@ class Direction(Enum):
         }
         return opposites[self]
 
+    @staticmethod
+    def opposite_static(dir: 'Direction') -> 'Direction':
+        return dir.opposite()
+
+UP = Direction.UP
+DOWN = Direction.DOWN
+LEFT = Direction.LEFT
+RIGHT = Direction.RIGHT
+
+def opposite(dir: Direction) -> Direction:
+    return dir.opposite()
+
 ALL_DIRS = [Direction.UP, Direction.DOWN, Direction.LEFT, Direction.RIGHT]
 
+OPPOSITES = {
+    Direction.UP: Direction.DOWN,
+    Direction.DOWN: Direction.UP,
+    Direction.LEFT: Direction.RIGHT,
+    Direction.RIGHT: Direction.LEFT
+}
+
+def opposite(dir: Direction) -> Direction:
+    return dir.opposite()
+
+# Alias for tests
+main = None # Will be set later or defined as a function
+
+class Board:
+    def __init__(self, width: int, height: int):
+        self.width = width
+        self.height = height
+        self.walls = set()
+        for x in range(width):
+            self.walls.add((0, x))
+            self.walls.add((height - 1, x))
+        for y in range(height):
+            self.walls.add((y, 0))
+            self.walls.add((y, width - 1))
+
+GameBoard = Board
+
+def get_obstacles(state: 'GameState') -> Set[Tuple[int, int]]:
+    """Return all occupied cells (walls and snakes)."""
+    obs = state.walls.copy()
+    obs.update(state.my_snake.body_set())
+    obs.update(state.opponent.body_set())
+    return obs
+
+def flood_count(head: Tuple[int, int], obstacles: Set[Tuple[int, int]], board_w: int, board_h: int) -> int:
+    """Count reachable cells from head."""
+    return temporal_flood_fill(head, obstacles, board_w, board_h)
+
+def bfs_distances(start: Tuple[int, int], obstacles: Set[Tuple[int, int]], board_w: int, board_h: int) -> Dict[Tuple[int, int], int]:
+    """Return distances from start to all reachable cells."""
+    distances = {start: 0}
+    queue = deque([start])
+    while queue:
+        curr = queue.popleft()
+        dist = distances[curr]
+        y, x = curr
+        for dy, dx in [(0, 1), (0, -1), (1, 0), (-1, 0)]:
+            nxt = (y + dy, x + dx)
+            if 1 <= nxt[0] < board_h - 1 and 1 <= nxt[1] < board_w - 1:
+                if nxt not in obstacles and nxt not in distances:
+                    distances[nxt] = dist + 1
+                    queue.append(nxt)
+    return distances
+
+def bfs_path_exists(start: Tuple[int, int], target: Tuple[int, int], obstacles: Set[Tuple[int, int]], board_w: int, board_h: int) -> bool:
+    """Check if target is reachable from start."""
+    if start == target: return True
+    visited = {start}
+    queue = deque([start])
+    while queue:
+        curr = queue.popleft()
+        y, x = curr
+        for dy, dx in [(0, 1), (0, -1), (1, 0), (-1, 0)]:
+            nxt = (y + dy, x + dx)
+            if nxt == target: return True
+            if 1 <= nxt[0] < board_h - 1 and 1 <= nxt[1] < board_w - 1:
+                if nxt not in obstacles and nxt not in visited:
+                    visited.add(nxt)
+                    queue.append(nxt)
+    return False
+
+def voronoi_space(points: List[Tuple[int, int]], obstacles: Set[Tuple[int, int]], board_w: int, board_h: int) -> Dict[Tuple[int, int], Tuple[int, int]]:
+    """Partition board based on nearest point."""
+    return voronoi_partition(points, obstacles, board_w, board_h)
+
+def nearest_foods(head: Tuple[int, int], foods: Set[Tuple[int, int]], obstacles: Set[Tuple[int, int]], board_w: int, board_h: int) -> List[Tuple[int, int]]:
+    """Find closest food positions."""
+    if not foods: return []
+    dists = bfs_distances(head, obstacles, board_w, board_h)
+    min_dist = min([dists.get(f, float('inf')) for f in foods])
+    if min_dist == float('inf'): return []
+    return [f for f in foods if dists.get(f) == min_dist]
+
+def danger_zone(head: Tuple[int, int], obstacles: Set[Tuple[int, int]], board_w: int, board_h: int) -> Set[Tuple[int, int]]:
+    """Return cells that are dangerous to enter (e.g. dead ends)."""
+    danger = set()
+    # Heuristic: cells with few exits
+    y, x = head
+    for dy, dx in [(0, 1), (0, -1), (1, 0), (-1, 0)]:
+        nxt = (y + dy, x + dx)
+        if 1 <= nxt[0] < board_h - 1 and 1 <= nxt[1] < board_w - 1:
+            if nxt not in obstacles:
+                # Check exits from nxt
+                exits = 0
+                for dy2, dx2 in [(0, 1), (0, -1), (1, 0), (-1, 0)]:
+                    nxt2 = (nxt[0] + dy2, nxt[1] + dx2)
+                    if 1 <= nxt2[0] < board_h - 1 and 1 <= nxt2[1] < board_w - 1:
+                        if nxt2 not in obstacles:
+                            exits += 1
+                if exits <= 1:
+                    danger.add(nxt)
+    return danger
 @dataclass
 @dataclass
 class GameState:
@@ -64,24 +190,18 @@ class GameState:
     def get_snake(self, index: int) -> 'Snake':
         return self.my_snake if index == 0 else self.opponent
 class Snake:
-    def __init__(self, head: Tuple[int, int], direction: Direction, name: str, color_pair: int):
+    def __init__(self, name: str, body: List[Tuple[int, int]], direction: Direction, color_pair: int):
         """
-        Initialize snake with head position and direction.
+        Initialize snake with name, body segments, direction and color.
         """
         self.name = name
+        self.body = deque(body)
         self.direction = direction
         self.color_pair = color_pair
         self.color = color_pair  # For compatibility with curses
         self.alive = True
-        self._growing = False
-        self.body: Deque[Tuple[int, int]] = deque()
+        self.grow_pending = 0
         
-        # Initialize body with INITIAL_LENGTH segments
-        # Head is at head position, body extends opposite to direction
-        dy, dx = direction.value
-        for i in range(INITIAL_LENGTH):
-            self.body.append((head[0] - dy * i, head[1] - dx * i))
-            
     @property
     def head(self) -> Tuple[int, int]:
         return self.body[0]
@@ -90,7 +210,6 @@ class Snake:
     def tail(self) -> Tuple[int, int]:
         return self.body[-1]
 
-    @property
     def body_set(self) -> Set[Tuple[int, int]]:
         """Return all body positions as a set."""
         return set(self.body)
@@ -111,15 +230,22 @@ class Snake:
         new_head = (self.head[0] + dy, self.head[1] + dx)
         self.body.appendleft(new_head)
         
-        if not self._growing:
-            self.body.pop()
+        if self.grow_pending > 0:
+            self.grow_pending -= 1
         else:
-            self._growing = False
+            self.body.pop()
     
     def grow(self) -> None:
         """Mark snake to grow on next move."""
-        self._growing = True
+        self.grow_pending += 1
 
+    def push_head(self, pos: Tuple[int, int]) -> None:
+        """Add a new head position."""
+        self.body.appendleft(pos)
+
+    def pop_tail(self) -> Tuple[int, int]:
+        """Remove and return the tail position."""
+        return self.body.pop()
 def safe_directions(head: Tuple[int, int], obstacles: Set[Tuple[int, int]], 
                     board_w: int, board_h: int, current_dir: Direction) -> List[Direction]:
     """Return directions that don't lead to immediate death."""
@@ -203,6 +329,19 @@ def voronoi_partition(points: List[Tuple[int, int]], obstacles: Set[Tuple[int, i
                 if nxt not in obstacles and nxt not in visited:
                     heapq.heappush(pq, (dist + 1, nxt, owner))
     return partition
+def pt_add(p1: Tuple[int, int], p2: Tuple[int, int]) -> Tuple[int, int]:
+    return (p1[0] + p2[0], p1[1] + p2[1])
+
+def bfs_dist(start: Tuple[int, int], target: Tuple[int, int], obstacles: Set[Tuple[int, int]], board_w: int, board_h: int) -> int:
+    dists = bfs_distances(start, obstacles, board_w, board_h)
+    return dists.get(target, float('inf'))
+
+def bfs_first_step(start: Tuple[int, int], target: Tuple[int, int], obstacles: Set[Tuple[int, int]], board_w: int, board_h: int) -> Optional[Direction]:
+    path = a_star(start, target, obstacles, board_w, board_h)
+    return path[0] if path else None
+
+def path_to_tail_direction(snake: 'Snake', obstacles: Set[Tuple[int, int]], board_w: int, board_h: int) -> Optional[Direction]:
+    return bfs_first_step(snake.head, snake.tail, obstacles, board_w, board_h)
 
 class AIAlpha:
     """Hunter AI: aggressive, prioritizes killing opponent and eating food."""
@@ -492,7 +631,7 @@ class Game:
         self.board_height = board_height
         self.frame = 0
         self.shrinking = False
-        self.game_over = False
+        self._game_over = False
         self.winner = None
         
         # Create walls (border)
@@ -691,99 +830,85 @@ class Game:
     
     def _end_game(self, winner: str):
         """End the game with a winner."""
+        self.game_over = True
+        self.winner = winner
 class GameEngine:
     """Stateless engine for game logic."""
     @staticmethod
     def tick(state: GameState, dir_a: Direction, dir_b: Direction) -> GameState:
         """
         Advance the game state by one frame based on directions.
-        Returns a new GameState.
+        Returns the updated GameState.
         """
-        # This is a simplified implementation to support the task requirement.
-        # In a real scenario, it would replicate the logic in Game.tick.
-        # Since we need to return a new GameState, we'll convert GameState to a Game object,
-        # tick it, and then get the state back.
-        # However, to keep it cleaner and avoid modifying Game class too much,
-        # let's assume we just need this for the run_game loop.
-        
-        # Temporary hack to use existing Game logic:
-        # We need to simulate one tick.
-        # Since the state doesn't have the AIs, we just need to perform the movement and collision logic.
-        
-        # Create a temporary Game object to reuse its logic
-        game = Game(state.board_width, state.board_height)
-        # Manually sync the game object with the current state
-        game.frame = state.frame
-        game.shrinking = state.shrinking
-        game.alpha_snake = state.my_snake
-        game.beta_snake = state.opponent
-        game.foods = state.foods
-        game.walls = state.walls
-        
-        # We override the default AI decide in game.tick’s simplified version
-        # But since game.tick() calls AI.decide(), we can't easily just call it.
-        # Let's implement a minimal tick in GameEngine.
-        
-        new_frame = state.frame + 1
-        new_shrinking = state.shrinking
-        if new_frame >= SURVIVAL_GATE:
-            new_shrinking = True
+        # 1. Update frame and shrinking state
+        state.frame += 1
+        if state.frame >= SURVIVAL_GATE:
+            state.shrinking = True
             
-        # Current positions
         s0 = state.my_snake
         s1 = state.opponent
         
-        # New heads
+        # 2. Calculate new head positions
         h0_new = (s0.head[0] + dir_a.value[0], s0.head[1] + dir_a.value[1])
         h1_new = (s1.head[0] + dir_b.value[0], s1.head[1] + dir_b.value[1])
         
+        # 3. Collision Detection
         # Head-to-head collision
         if h0_new == h1_new:
             s0.alive = False
             s1.alive = False
-        
         # Crossover collision
-        if h0_new == s1.head and h1_new == s0.head:
+        elif h0_new == s1.head and h1_new == s0.head:
             s0.alive = False
             s1.alive = False
-            
+        
         # Body collisions
+        # Alpha head into Beta body (excluding Beta tail)
         obs0 = set(s1.body)
         obs0.discard(s1.tail)
-        if len(s1.body) > INITIAL_LENGTH:
-            obs0.discard(s1.tail) # Redundant but safe
-            
-        obs1 = set(s0.body)
-        obs1.discard(s0.tail)
-        
         if h0_new in obs0:
             s0.alive = False
+            
+        # Beta head into Alpha body (excluding Alpha tail)
+        obs1 = set(s0.body)
+        obs1.discard(s0.tail)
         if h1_new in obs1:
             s1.alive = False
             
-        # Move snakes
-        # We must handle growth first to avoid popping before adding
-        s0_grows = h0_new in state.foods
-        s1_grows = h1_new in state.foods
+        # 4. Growth and Movement
+        # Check if food is eaten before moving
+        s0_ate = h0_new in state.foods and s0.alive
+        s1_ate = h1_new in state.foods and s1.alive
         
+        if s0_ate:
+            s0.grow()
+        if s1_ate:
+            s1.grow()
+            
         s0.move(dir_a)
         s1.move(dir_b)
         
-        if s0_grows:
-            s0.grow() # Marks for next move, but the task implies immediate growth if food eaten
-            # The original Snake.move() pops the tail if not growing. 
-            # To match the original game logic where growth happens when eating, 
-            # we should probably let the original logic run.
-            # Actually, let's just use Snake.move and then manually handle growth.
-            # Wait, Snake.move handles growth internally if _growing is True.
-            # Let's just fix it:
-            pass
+        # 5. Update Food
+        if s0_ate:
+            state.foods.discard(h0_new)
+        if s1_ate:
+            state.foods.discard(h1_new)
             
-        # Let's rethink: we need to implement the logic described in Game.tick() here.
-        # But the task just asks for GameEngine.tick(state, dir_a, dir_b) -> GameState.
-        
-        # Let's implement a simplified version that matches the requested GameEngine.tick signature.
-        return state # Placeholder for now, will refine.
+        # 6. Wall collisions
+        if s0.head in state.walls:
+            s0.alive = False
+        if s1.head in state.walls:
+            s1.alive = False
+            
+        # 7. Shrinking (Survival mechanism)
+        # Use 30 as the shrink interval (matches Game.SHRINK_INTERVAL)
+        if state.shrinking and state.frame % 30 == 0:
+            if len(s0.body) > 3:
+                s0.body.pop()
+            if len(s1.body) > 3:
+                s1.body.pop()
+                
+        return state
 
 class Renderer:
     def __init__(self, stdscr):
@@ -936,5 +1061,3 @@ if __name__ == '__main__':
     curses.wrapper(run_game)
 
 
-if __name__ == '__main__':
-    curses.wrapper(main)

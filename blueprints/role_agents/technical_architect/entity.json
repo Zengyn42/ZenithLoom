@@ -1,7 +1,15 @@
 {
   "llm": "claude",
   "channel_history_limit": 0,
-  "mcp": [],
+  "mcp": [
+    {
+      "name": "gitnexus",
+      "cmd": ["gitnexus", "serve", "--port", "4747"],
+      "url": "http://localhost:4747/api/mcp",
+      "type": "http",
+      "shared": true
+    }
+  ],
   "graph": {
     "nodes": [
       {

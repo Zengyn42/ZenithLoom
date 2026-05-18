@@ -713,6 +713,21 @@ def test_route(state: dict) -> dict:
     # Parse test results
     curr_results = _parse_pytest_results(stdout, stderr)
 
+    if rc == 5:
+        # ── No tests collected (exit=5): executor didn't write unit tests, treat as pass ──
+        # Testing responsibility belongs to the QA subgraph, not the executor.
+        next_idx = task_idx + 1
+        current_tid = execution_order[task_idx] if task_idx < len(execution_order) else f"t{task_idx + 1}"
+        if working_dir:
+            _git_commit_task(working_dir, current_tid)
+        if next_idx >= total_tasks:
+            logger.info(f"[test_route] task {current_tid} no-tests (rc=5) — ALL {total_tasks} tasks done → __end__")
+            return {"routing_target": "__end__", "prev_test_results": curr_results, "current_task_index": next_idx}
+        else:
+            next_tid = execution_order[next_idx] if next_idx < len(execution_order) else f"t{next_idx + 1}"
+            logger.info(f"[test_route] task {current_tid} no-tests (rc=5) → next task {next_tid} ({next_idx + 1}/{total_tasks})")
+            return {"routing_target": "inject_task_context", "prev_test_results": curr_results, "current_task_index": next_idx}
+
     if rc == 0:
         # ── Task passed → git commit as transaction boundary → advance ──
         next_idx = task_idx + 1

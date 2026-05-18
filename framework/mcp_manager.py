@@ -15,15 +15,27 @@ entity.json "mcp" 字段格式（顶层，与 "graph" 平级）：
       "module_args": ["--transport", "sse", "--port", "8101",
                       "--vault", "/home/kingy/Foundation/NimbusVault"],
       "url": "http://localhost:8101/sse",
+      "type": "sse",
+      "shared": true
+    },
+    {
+      "name": "gitnexus",
+      "cmd": ["gitnexus", "serve", "--port", "4747"],
+      "url": "http://localhost:4747/api/mcp",
+      "type": "http",
       "shared": true
     }
   ]
 
 字段说明：
   name         — 服务唯一标识（ClaudeAgentOptions.mcp_servers 的 key）
-  module       — 用 python -m <module> 启动
-  module_args  — 额外命令行参数（默认含 --transport sse）
-  url          — SSE 端点 URL，供 ClaudeAgentOptions 使用，也用于存活探测
+  module       — 用 python -m <module> 启动（Python 服务用此字段）
+  module_args  — 额外命令行参数
+  cmd          — 任意可执行命令列表（非 Python 服务用此字段，如 ["gitnexus", "serve"]）
+                 module 和 cmd 二选一；cmd 优先
+  url          — MCP 端点 URL，供 ClaudeAgentOptions 使用，也用于存活探测
+  type         — 传输类型："sse"（默认）| "http"（StreamableHTTP）
+                 对应 Claude SDK 的 McpSSEServerConfig / McpHttpServerConfig
   shared       — true（默认）表示跨 agent 共享；false 表示每 agent 独占
 
 用法示例：
@@ -70,6 +82,7 @@ class _ServerEntry:
     agents: set = field(default_factory=set)
     proc: Optional[subprocess.Popen] = None  # None = 外部已启动，不由我们管理
     dependency_name: Optional[str] = None  # 关联的 dependency 名称
+    type: str = "sse"  # 传输类型："sse" | "http"（决定 get_all_configs 输出格式）
 
 
 # ---------------------------------------------------------------------------
@@ -252,12 +265,17 @@ class MCPManager:
 
     def _start_process(self, spec: dict) -> subprocess.Popen:
         """
-        以 python -m <module> [module_args] 启动 MCP Server。
+        启动 MCP Server 进程。支持两种模式：
+          - cmd（优先）：直接执行命令列表，如 ["gitnexus", "serve", "--port", "4747"]
+          - module：python -m <module> [module_args]（Python 服务）
         start_new_session=True → 与父进程解耦，不随父进程 SIGINT 退出。
         """
-        module = spec["module"]
-        args = spec.get("module_args", [])
-        cmd = [sys.executable, "-m", module, *args]
+        if "cmd" in spec:
+            cmd = spec["cmd"]
+        else:
+            module = spec["module"]
+            args = spec.get("module_args", [])
+            cmd = [sys.executable, "-m", module, *args]
         proc = subprocess.Popen(
             cmd,
             cwd=str(_PROJECT_ROOT),
@@ -265,7 +283,7 @@ class MCPManager:
             stderr=subprocess.DEVNULL,
             start_new_session=True,
         )
-        logger.info(f"[mcp_manager] spawned {spec['name']} pid={proc.pid} cmd={' '.join(cmd[:4])}")
+        logger.info(f"[mcp_manager] spawned {spec['name']} pid={proc.pid} cmd={' '.join(str(c) for c in cmd[:4])}")
         return proc
 
     # ------------------------------------------------------------------
@@ -304,9 +322,12 @@ class MCPManager:
                     logger.error(f"[mcp_manager] {name}: dependency {dep_name!r} failed, skipping MCP server")
                     return False
 
+            server_type = spec.get("type", "sse")
+
             # 检测是否已在运行（外部启动或跨重启复用）
             if self._is_reachable(url):
-                entry = _ServerEntry(name=name, url=url, proc=None, dependency_name=dep_name)
+                entry = _ServerEntry(name=name, url=url, proc=None,
+                                     dependency_name=dep_name, type=server_type)
                 entry.agents.add(agent_name)
                 self._servers[name] = entry
                 logger.info(f"[mcp_manager] {name}: already running at {url} (external)")
@@ -321,9 +342,10 @@ class MCPManager:
                     self._release_dependency(dep_name)
                 return False
 
-            ready = self._wait_ready(url)
+            server_timeout = spec.get("ready_timeout", 60)
+            ready = self._wait_ready(url, timeout=server_timeout)
             if not ready:
-                logger.error(f"[mcp_manager] {name}: did not become ready (timeout)")
+                logger.error(f"[mcp_manager] {name}: did not become ready (timeout={server_timeout}s)")
                 try:
                     proc.kill()
                 except Exception:
@@ -332,10 +354,11 @@ class MCPManager:
                     self._release_dependency(dep_name)
                 return False
 
-            entry = _ServerEntry(name=name, url=url, proc=proc, dependency_name=dep_name)
+            entry = _ServerEntry(name=name, url=url, proc=proc,
+                                 dependency_name=dep_name, type=server_type)
             entry.agents.add(agent_name)
             self._servers[name] = entry
-            logger.info(f"[mcp_manager] {name}: ready at {url}")
+            logger.info(f"[mcp_manager] {name}: ready at {url} (type={server_type})")
             return True
 
     async def release(self, server_name: str, agent_name: str) -> None:
@@ -386,24 +409,25 @@ class MCPManager:
 
     def get_sse_configs(self, server_names: list[str]) -> dict:
         """
-        返回指定 server 名称的 SSE 配置字典（仅包含当前已运行的 server）。
-        格式兼容 ClaudeAgentOptions.mcp_servers：
-          {name: {"type": "sse", "url": "..."}}
+        返回指定 server 名称的配置字典（仅包含当前已运行的 server）。
+        格式兼容 ClaudeAgentOptions.mcp_servers（McpSSEServerConfig / McpHttpServerConfig）：
+          {name: {"type": "sse"|"http", "url": "..."}}
         """
         result = {}
         for name in server_names:
             entry = self._servers.get(name)
             if entry:
-                result[name] = {"type": "sse", "url": entry.url}
+                result[name] = {"type": entry.type, "url": entry.url}
         return result
 
     def get_all_configs(self) -> dict:
         """
-        返回所有当前运行 server 的 SSE 配置字典。
+        返回所有当前运行 server 的配置字典。
         格式兼容 ClaudeAgentOptions.mcp_servers。
+        支持 type: "sse"（McpSSEServerConfig）和 type: "http"（McpHttpServerConfig）。
         """
         return {
-            name: {"type": "sse", "url": entry.url}
+            name: {"type": entry.type, "url": entry.url}
             for name, entry in self._servers.items()
         }
 

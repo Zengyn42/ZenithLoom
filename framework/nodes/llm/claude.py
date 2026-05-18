@@ -553,10 +553,14 @@ class ClaudeCLINode(AgentNode):
                 if tools:
                     cmd.extend(["--allowedTools"] + list(tools))
 
-        effective_timeout = min(
-            self._MAX_TIMEOUT,
-            max(self._DEFAULT_TIMEOUT, len(prompt) // self._TIMEOUT_CHARS_PER_SEC),
-        )
+        node_timeout = self.node_config.get("timeout")
+        if node_timeout:
+            effective_timeout = int(node_timeout)
+        else:
+            effective_timeout = min(
+                self._MAX_TIMEOUT,
+                max(self._DEFAULT_TIMEOUT, len(prompt) // self._TIMEOUT_CHARS_PER_SEC),
+            )
 
         env = dict(os.environ)
         env["CLAUDE_AGENT_SDK"] = "1"

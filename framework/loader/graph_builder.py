@@ -458,11 +458,6 @@ async def _build_declarative(
 from framework.registry import register_schema as _register_schema, get_all_schemas
 
 
-def register_state_schema(name: str, cls):
-    """向后兼容别名 — 请改用 framework.registry.register_schema()。"""
-    _register_schema(name, cls)
-
-
 def _get_state_schemas() -> dict:
     """向后兼容别名 — 请改用 framework.registry.get_all_schemas()。"""
     import framework.schema  # noqa: F401

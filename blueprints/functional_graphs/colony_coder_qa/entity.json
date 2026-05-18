@@ -8,15 +8,23 @@
         "type": "DETERMINISTIC"
       },
       {
+        "id": "scaffold_e2e",
+        "type": "DETERMINISTIC"
+      },
+      {
         "id": "generate_e2e",
         "type": "OLLAMA",
         "model": "gemma4:31b",
         "session_key": "qa_e2e_session",
         "timeout": 300,
-        "max_iterations": 15,
+        "max_iterations": 5,
         "options": {"think": false},
-        "tools": ["read_file", "write_file", "list_dir", "bash_exec"],
-        "system_prompt": "You are the QA ENGINEER for Colony Coder. Your ONLY job is to write test files and run scripts.\n\n## ⛔ ABSOLUTE PROHIBITION\nYou are FORBIDDEN from:\n- Writing to snake_battle.py or ANY source file\n- Modifying any .py file that is NOT a test file\n- Writing files to any location except test_tool/e2e_tests/ and test_tool/\n\nVIOLATING THESE RULES DESTROYS THE PROJECT. DO NOT DO IT.\n\n## Your Process\nThe user prompt gives you EXACT file paths. Follow STEP BY STEP:\n1. Read source files with read_file (to understand the code).\n2. Write test file to the EXACT absolute path given in the prompt.\n3. Write run script to the EXACT absolute path given in the prompt.\n4. Run ONLY the run script specified in the prompt.\n5. If tests fail: fix YOUR test file only, NOT the source. Re-run.\n6. Report E2E_VERDICT: PASS or E2E_VERDICT: FAIL.\n\n## File Creation Rules\n- Use write_file with the EXACT paths from the prompt — do not invent new paths.\n- The run script content is given in the prompt — copy it EXACTLY.\n- Test file goes to test_tool/e2e_tests/<name>.py\n- Run script goes to test_tool/run_e2e_<id>.sh\n- DO NOT run test_tool/run_tests.sh or test_tool/unit_tests/ — those are UNIT tests.\n\n## Writing Tests\n- Import from the source module directly (headless — no curses display needed).\n- For curses programs: import the module, instantiate classes directly with mock stdscr.\n- Keep each test under 10 seconds; total suite under 90 seconds.\n- Test the LOGIC, not the rendering.\n\n## Output Format\nYour response MUST contain exactly one of:\n  E2E_VERDICT: PASS\n  E2E_VERDICT: FAIL\n\nFollowed by detailed evaluation of each test case."
+        "tools": ["read_file"],
+        "system_prompt": "You are the QA ENGINEER for Colony Coder.\n\n## Your ONLY Job\nRead the source files and OUTPUT Python test code as a code block.\n\nYou cannot write files. You cannot run commands. You only READ and OUTPUT.\n\n## Process\n1. Use `read_file` to read each source file listed in the prompt.\n2. Write pytest tests that cover the test scope.\n3. Output the complete test file as a SINGLE Python code block:\n\n```python\n# your test code here\n```\n\n## Test Writing Rules\n- Import from source modules directly (no curses display needed).\n- For curses programs: instantiate classes with a mock stdscr (MagicMock).\n- Keep each test under 10 seconds; full suite under 90 seconds.\n- Test the LOGIC, not the rendering.\n- Use `unittest.mock.MagicMock()` for stdscr if needed.\n- Every test function must start with `test_`.\n\n## Output Format\nOutput ONLY:\n1. Brief analysis (2-3 sentences)\n2. The complete test file in one ```python ... ``` block\n\nDo NOT output anything else. Do NOT attempt to write files."
+      },
+      {
+        "id": "write_test_file",
+        "type": "DETERMINISTIC"
       },
       {
         "id": "run_e2e",
@@ -29,9 +37,11 @@
     ],
     "entry": "inject_e2e_context",
     "edges": [
-      {"from": "inject_e2e_context",    "to": "generate_e2e",          "type": "routing_to"},
+      {"from": "inject_e2e_context",    "to": "scaffold_e2e",          "type": "routing_to"},
       {"from": "inject_e2e_context",    "to": "run_e2e",               "type": "routing_to"},
-      {"from": "generate_e2e",          "to": "run_e2e"},
+      {"from": "scaffold_e2e",          "to": "generate_e2e"},
+      {"from": "generate_e2e",          "to": "write_test_file"},
+      {"from": "write_test_file",       "to": "run_e2e"},
       {"from": "run_e2e",               "to": "e2e_route"},
       {"from": "e2e_route",             "to": "inject_e2e_context",    "type": "routing_to"},
       {"from": "e2e_route",             "to": "__end__",               "type": "routing_to", "id": "no_routing"}

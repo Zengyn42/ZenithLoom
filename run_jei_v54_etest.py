@@ -102,6 +102,23 @@ TESTS = [
         "note": "Verifies body_preview enables content-based analysis (P3) and "
                 "labels are readable not just slugs (P4).",
     },
+
+    # ── S4: Embedding path — hybrid semantic search via Ollama ────────────────
+    {
+        "tag": "S4",
+        "label": "Embedding path — semantic search triggers Ollama GPU embedding",
+        # Deliberately avoids exact keywords ("Text-first", "nomic-embed-vision")
+        # so BM25/exact alone cannot find the right node.
+        # Only vector similarity can surface KNOW-000008 from this paraphrase.
+        "question": "向量空间里把图片和文字统一表示的方案，PrismRag 是怎么设计的？",
+        # KNOW-000008 content: nomic-embed-vision, 768-dim, 跨模态
+        "pass_keywords": ["nomic-embed-vision", "768", "跨模态", "KNOW-000008"],
+        "fail_keywords": ["没有找到", "搜索结果为空", "无法回答", "不相关"],
+        "layer": "agent",
+        "note": "Verifies embedding-based hybrid search works (Ollama must be reachable). "
+                "Query is a paraphrase — BM25/exact alone cannot surface the correct node. "
+                "WARN = Ollama may be down or embedding path degraded to BM25-only.",
+    },
 ]
 
 
@@ -255,7 +272,7 @@ def main():
 
     print(sep)
     if all_pass:
-        print("RESULT: ALL PASS ✅  v5.4 P1/P2/P3/P4 verified via Jei")
+        print("RESULT: ALL PASS ✅  v5.4 P1/P2/P3/P4 + Embedding path verified via Jei")
     else:
         fails = [r for r in results if r["status"] == "FAIL"]
         warns = [r for r in results if r["status"] == "WARN"]

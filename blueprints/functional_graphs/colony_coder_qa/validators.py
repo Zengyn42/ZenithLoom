@@ -90,11 +90,6 @@ def inject_e2e_context(state: dict) -> dict:
         # Absolute paths for crystal-clear instructions
         abs_test_file = os.path.join(working_dir, "test_tool", "e2e_tests", test_file)
         abs_run_script = os.path.join(working_dir, "test_tool", run_script)
-        run_script_content = (
-            f"#!/bin/bash\nset -e\n"
-            f"cd \"$(dirname \"$0\")/..\"\n"
-            f"python3 -m pytest test_tool/e2e_tests/{test_file} -v 2>&1\n"
-        )
 
         lines = [f"## QA Subtask {qa_task_index + 1}/{len(qa_tasks)}: `{qa_id}`\n"]
         lines.append(f"**Working directory**: `{working_dir}`\n")
@@ -115,41 +110,35 @@ def inject_e2e_context(state: dict) -> dict:
                 lines.append(f"- `{os.path.join(working_dir, f)}`")
             lines.append("")
 
-        lines.append("### EXACT Steps To Follow (in order)")
-        lines.append(f"**Step 1**: Use `read_file` to read the source files listed above.")
+        lines.append("### Your Task")
+        lines.append(f"**Step 1**: Use `read_file` to read each source file listed above.")
         lines.append("")
-        lines.append(f"**Step 2**: Use `write_file` to create the test file at EXACTLY this path:")
-        lines.append(f"```")
-        lines.append(f"{abs_test_file}")
-        lines.append(f"```")
-        lines.append("Write pytest tests covering the scope above. Import from the source module directly (no curses needed).")
+        lines.append(f"**Step 2**: Output the complete pytest test file covering the scope above as a single Python code block:")
+        lines.append("````")
+        lines.append("```python")
+        lines.append("# your test code here")
+        lines.append("```")
+        lines.append("````")
         lines.append("")
-        lines.append(f"**Step 3**: Use `write_file` to create the run script at EXACTLY this path:")
-        lines.append(f"```")
-        lines.append(f"{abs_run_script}")
-        lines.append(f"```")
-        lines.append(f"The run script content MUST be EXACTLY:")
-        lines.append(f"```bash\n{run_script_content}```")
+        lines.append("The test file will be saved to:")
+        lines.append(f"  `{abs_test_file}`")
         lines.append("")
-        lines.append(f"**Step 4**: Use `bash_exec` to run: `bash {abs_run_script}`")
+        lines.append("The run script already exists at:")
+        lines.append(f"  `{abs_run_script}`")
         lines.append("")
-        lines.append(f"**Step 5**: If tests fail, fix the TEST FILE (not the source). Re-run until passing.")
-        lines.append("")
-        lines.append(f"**Step 6**: Report E2E_VERDICT: PASS or E2E_VERDICT: FAIL.")
-        lines.append("")
-        lines.append("### ⚠️ ABSOLUTE RULES")
-        lines.append(f"- ONLY write to `{abs_test_file}` and `{abs_run_script}` — NO OTHER PATHS")
-        lines.append(f"- DO NOT write to snake_battle.py or any .py file in `{working_dir}/` root")
-        lines.append(f"- DO NOT run `test_tool/run_tests.sh` — that runs UNIT tests, not E2E tests")
-        lines.append("- Keep each test under 10 seconds; total suite under 90 seconds")
+        lines.append("### Rules")
+        lines.append("- You can ONLY use `read_file`. Do NOT write files.")
+        lines.append("- Import source modules directly (no curses display needed).")
+        lines.append("- For curses programs: use `unittest.mock.MagicMock()` for stdscr.")
+        lines.append("- Keep each test under 10 seconds; total suite under 90 seconds.")
 
         prompt_len = sum(len(l) for l in lines)
         logger.info(
-            f"[inject_e2e_context] qa_tasks prompt ({prompt_len} chars) → generate_e2e"
+            f"[inject_e2e_context] qa_tasks prompt ({prompt_len} chars) → scaffold_e2e"
         )
         updates = {
             "messages": [HumanMessage(content="\n".join(lines))],
-            "routing_target": "generate_e2e",
+            "routing_target": "scaffold_e2e",
         }
         if working_dir:
             updates["working_directory"] = working_dir
@@ -225,10 +214,10 @@ def inject_e2e_context(state: dict) -> dict:
     lines.append("6. Report E2E_VERDICT: PASS or E2E_VERDICT: FAIL.")
 
     prompt_len = sum(len(l) for l in lines)
-    logger.info(f"[inject_e2e_context] legacy prompt ({prompt_len} chars) → generate_e2e")
+    logger.info(f"[inject_e2e_context] legacy prompt ({prompt_len} chars) → scaffold_e2e")
     updates = {
         "messages": [HumanMessage(content="\n".join(lines))],
-        "routing_target": "generate_e2e",
+        "routing_target": "scaffold_e2e",
         "e2e_tests_generated": True,
     }
     if working_dir:
@@ -237,7 +226,129 @@ def inject_e2e_context(state: dict) -> dict:
 
 
 # ---------------------------------------------------------------------------
-# run_e2e / run_e2e_rescue
+# scaffold_e2e  — create dirs + run script BEFORE generate_e2e runs
+# ---------------------------------------------------------------------------
+
+def scaffold_e2e(state: dict) -> dict:
+    """Create test_tool/e2e_tests/ dir and run_e2e_{qa_id}.sh before generate_e2e.
+
+    This ensures:
+    - The test output directory always exists
+    - The run script is always correct (deterministic, not LLM-generated)
+    - generate_e2e only needs to write the test file content
+    """
+    working_dir = state.get("working_directory", "")
+    qa_tasks = state.get("qa_tasks") or []
+    qa_task_index = state.get("current_qa_task_index", 0)
+
+    if not working_dir or not qa_tasks or qa_task_index >= len(qa_tasks):
+        logger.info("[scaffold_e2e] no qa_tasks or working_dir — skip")
+        return {}
+
+    qa_task = qa_tasks[qa_task_index]
+    qa_id = qa_task.get("id", f"q{qa_task_index + 1}")
+    test_file = qa_task.get("test_file", f"test_{qa_id}.py")
+
+    e2e_dir = os.path.join(working_dir, "test_tool", "e2e_tests")
+    run_script = os.path.join(working_dir, "test_tool", f"run_e2e_{qa_id}.sh")
+    rel_test = f"test_tool/e2e_tests/{test_file}"
+
+    try:
+        os.makedirs(e2e_dir, exist_ok=True)
+        with open(run_script, "w") as f:
+            f.write(
+                f"#!/bin/bash\nset -e\n"
+                f"cd \"$(dirname \"$0\")/..\"\n"
+                f"python3 -m pytest {rel_test} -v 2>&1\n"
+            )
+        os.chmod(run_script, 0o755)
+        logger.info(
+            f"[scaffold_e2e] created dir={e2e_dir} run_script={run_script}"
+        )
+    except OSError as e:
+        logger.error(f"[scaffold_e2e] failed: {e}")
+
+    return {}
+
+
+# ---------------------------------------------------------------------------
+# write_test_file  — extract code block from generate_e2e output, write to disk
+# ---------------------------------------------------------------------------
+
+def write_test_file(state: dict) -> dict:
+    """Extract Python code block from generate_e2e's last message and write to disk.
+
+    generate_e2e outputs the test code inside a ```python ... ``` block.
+    This node:
+    1. Extracts that code block
+    2. Writes it to the exact path: test_tool/e2e_tests/{test_file}
+    3. Verifies the file was written
+    """
+    from langchain_core.messages import AIMessage
+
+    working_dir = state.get("working_directory", "")
+    qa_tasks = state.get("qa_tasks") or []
+    qa_task_index = state.get("current_qa_task_index", 0)
+
+    if not working_dir or not qa_tasks or qa_task_index >= len(qa_tasks):
+        logger.warning("[write_test_file] missing working_dir or qa_tasks — skip")
+        return {}
+
+    qa_task = qa_tasks[qa_task_index]
+    qa_id = qa_task.get("id", f"q{qa_task_index + 1}")
+    test_file = qa_task.get("test_file", f"test_{qa_id}.py")
+    test_path = os.path.join(working_dir, "test_tool", "e2e_tests", test_file)
+
+    # Find last AI message
+    messages = state.get("messages") or []
+    last_ai = None
+    for msg in reversed(messages):
+        if isinstance(msg, AIMessage) or getattr(msg, "type", None) == "ai":
+            last_ai = msg.content if hasattr(msg, "content") else str(msg)
+            break
+
+    if not last_ai:
+        logger.error("[write_test_file] no AI message found in state")
+        return {}
+
+    # Extract ```python ... ``` block (greedy, take the largest block)
+    code_blocks = re.findall(r"```(?:python)?\n(.*?)```", last_ai, re.DOTALL)
+    if not code_blocks:
+        # Fallback: try to extract anything that looks like Python
+        logger.warning("[write_test_file] no code block found — trying raw extraction")
+        # Look for import / def patterns
+        lines = last_ai.splitlines()
+        code_lines = []
+        in_code = False
+        for line in lines:
+            if line.startswith(("import ", "from ", "class ", "def ", "@")):
+                in_code = True
+            if in_code:
+                code_lines.append(line)
+        code = "\n".join(code_lines) if code_lines else ""
+    else:
+        # Take the largest Python code block (most likely to be the full test file)
+        code = max(code_blocks, key=len)
+
+    if not code.strip():
+        logger.error("[write_test_file] could not extract test code from AI output")
+        return {}
+
+    try:
+        os.makedirs(os.path.dirname(test_path), exist_ok=True)
+        with open(test_path, "w", encoding="utf-8") as f:
+            f.write(code)
+        logger.info(
+            f"[write_test_file] wrote {len(code)} chars to {test_path}"
+        )
+    except OSError as e:
+        logger.error(f"[write_test_file] write failed: {e}")
+
+    return {}
+
+
+# ---------------------------------------------------------------------------
+# run_e2e
 # ---------------------------------------------------------------------------
 
 def _run_e2e_tests(state: dict, caller: str = "run_e2e") -> dict:
