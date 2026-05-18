@@ -87,21 +87,21 @@ async def main():
     # 1. debate_design (claude_first) — plan 模式
     results["debate_design"] = await run_subgraph(
         name="debate_design (claude_first)",
-        agent_dir="blueprints/functional_graphs/debate_claude_first",
+        agent_dir="/home/kingy/Foundation/VoidDraft/functional_graphs/debate_claude_first",
         prompt="设计一个 Python CLI 计算器，支持加减乘除和括号表达式。用什么架构最合适？",
     )
 
     # 2. debate_brainstorm (gemini_first) — plan 模式
     results["debate_brainstorm"] = await run_subgraph(
         name="debate_brainstorm (gemini_first)",
-        agent_dir="blueprints/functional_graphs/debate_gemini_first",
+        agent_dir="/home/kingy/Foundation/VoidDraft/functional_graphs/debate_gemini_first",
         prompt="如何设计一个本地优先的 AI Agent 记忆系统？要支持跨 session 持久化和语义检索。",
     )
 
     # 3. apex_coder — bypassPermissions 模式
     results["apex_coder"] = await run_subgraph(
         name="apex_coder",
-        agent_dir="blueprints/functional_graphs/apex_coder",
+        agent_dir="/home/kingy/Foundation/VoidDraft/functional_graphs/apex_coder",
         prompt="在 /tmp/e2e_test/ 下创建一个 hello.py，内容是 print('hello from apex_coder')。然后用 python3 运行它，确认输出正确。",
     )
 

@@ -83,7 +83,7 @@ async def main():
     Path(WORKING_DIR).mkdir(parents=True, exist_ok=True)
 
     # 只构建 executor 子图
-    loader = EntityLoader(Path("blueprints/functional_graphs/colony_coder_executor"))
+    loader = EntityLoader(Path("/home/kingy/Foundation/VoidDraft/functional_graphs/colony_coder_executor"))
     graph = await loader.build_graph(checkpointer=None)
 
     reporter = DebugConsoleReporter("executor_test")

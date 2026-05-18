@@ -80,7 +80,7 @@ async def main():
     set_debug_output_file(debug_file)
     print(f"  Debug output file: {debug_file}\n", flush=True)
 
-    loader = EntityLoader(Path("blueprints/functional_graphs/colony_coder"))
+    loader = EntityLoader(Path("/home/kingy/Foundation/VoidDraft/functional_graphs/colony_coder"))
     graph = await loader.build_graph(checkpointer=None)
 
     reporter = DebugConsoleReporter("colony_coder")

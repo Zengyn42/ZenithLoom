@@ -194,7 +194,7 @@ async def test_colony_coder_graph_with_subgraphs_true():
     import blueprints.functional_graphs.colony_coder.state  # noqa: F401
     from framework.loader import EntityLoader
 
-    loader = EntityLoader(Path("blueprints/functional_graphs/colony_coder"))
+    loader = EntityLoader(Path("/home/kingy/Foundation/VoidDraft/functional_graphs/colony_coder"))
     graph = await loader.build_graph(checkpointer=None)
 
     # Verify the graph has subgraph nodes

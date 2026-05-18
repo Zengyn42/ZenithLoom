@@ -147,7 +147,7 @@ async def run_colony_coder():
             shutil.copy2(src, WORKING_DIR / src_file)
             print(f"  Copied {src_file} to working dir", flush=True)
 
-    loader = EntityLoader(Path("blueprints/functional_graphs/colony_coder"))
+    loader = EntityLoader(Path("/home/kingy/Foundation/VoidDraft/functional_graphs/colony_coder"))
     graph = await loader.build_graph(checkpointer=None)
 
     reporter = DebugConsoleReporter("colony_coder", log_dir=LOG_DIR)

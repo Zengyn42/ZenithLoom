@@ -40,7 +40,7 @@ async def main():
 
     import blueprints.functional_graphs.apex_coder.state  # noqa: F401
 
-    loader = EntityLoader(Path("blueprints/functional_graphs/apex_coder"))
+    loader = EntityLoader(Path("/home/kingy/Foundation/VoidDraft/functional_graphs/apex_coder"))
     graph = await loader.build_graph(checkpointer=None)
     reporter = DebugConsoleReporter(f"apex_{task_name}")
 

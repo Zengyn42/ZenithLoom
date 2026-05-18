@@ -34,7 +34,7 @@ async def main():
     set_debug(True)
     print("🔧 Colony Coder 完整 E2E 测试 — Debug ON\n", flush=True)
 
-    loader = EntityLoader(Path("blueprints/functional_graphs/colony_coder"))
+    loader = EntityLoader(Path("/home/kingy/Foundation/VoidDraft/functional_graphs/colony_coder"))
     graph = await loader.build_graph(checkpointer=None)
 
     task = (

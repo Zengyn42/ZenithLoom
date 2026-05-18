@@ -110,7 +110,7 @@ async def main():
     # 确保 working_directory 存在
     Path(init_state["working_directory"]).mkdir(parents=True, exist_ok=True)
 
-    loader = EntityLoader(Path("blueprints/functional_graphs/colony_coder_executor"))
+    loader = EntityLoader(Path("/home/kingy/Foundation/VoidDraft/functional_graphs/colony_coder_executor"))
     graph = await loader.build_graph(checkpointer=None)
 
     push_graph_scope("executor_standalone")

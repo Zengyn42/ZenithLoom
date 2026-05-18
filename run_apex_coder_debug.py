@@ -65,7 +65,7 @@ SNAKE_TASK = (
 async def main():
     set_debug(True)
 
-    loader = EntityLoader(Path("blueprints/functional_graphs/apex_coder"))
+    loader = EntityLoader(Path("/home/kingy/Foundation/VoidDraft/functional_graphs/apex_coder"))
     graph = await loader.build_graph(checkpointer=None)
 
     reporter = DebugConsoleReporter("apex_coder")

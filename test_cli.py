@@ -19,7 +19,7 @@ def test_agent_loader_hani():
     from framework.loader import EntityLoader
     from pathlib import Path as _Path
     data_dir = _Path.home() / "Foundation" / "EdenGateway" / "agents" / "hani"
-    loader = EntityLoader(Path("blueprints/role_agents/technical_architect"), data_dir=data_dir)
+    loader = EntityLoader(Path("/home/kingy/Foundation/VoidDraft/role_agents/technical_architect"), data_dir=data_dir)
     assert loader.name == "hani", f"Expected 'hani', got '{loader.name}'"
     assert loader.json["llm"] == "claude"
 
@@ -39,7 +39,7 @@ def test_agent_loader_asa():
     from framework.loader import EntityLoader
     from pathlib import Path as _Path
     data_dir = _Path.home() / "Foundation" / "EdenGateway" / "agents" / "asa"
-    loader = EntityLoader(Path("blueprints/role_agents/administrative_officer"), data_dir=data_dir)
+    loader = EntityLoader(Path("/home/kingy/Foundation/VoidDraft/role_agents/administrative_officer"), data_dir=data_dir)
     assert loader.name == "asa", f"Expected 'asa', got '{loader.name}'"
     assert loader.json["llm"] == "llama"
     cfg = loader.load_config()
@@ -80,7 +80,7 @@ def test_tool_rules():
     from framework.loader import EntityLoader
     from framework.nodes.llm.claude import ClaudeNode
 
-    loader = EntityLoader(Path("blueprints/role_agents/technical_architect"))
+    loader = EntityLoader(Path("/home/kingy/Foundation/VoidDraft/role_agents/technical_architect"))
     cfg = loader.load_config()
     node_cfg = next(
         n for n in loader.json.get("graph", {}).get("nodes", []) if n.get("id") == "claude_main"
@@ -102,7 +102,7 @@ def test_hani_loader():
     print("--- AgentLoader for hani ---")
     from pathlib import Path
     from framework.loader import EntityLoader
-    loader = EntityLoader(Path("blueprints/role_agents/technical_architect"))
+    loader = EntityLoader(Path("/home/kingy/Foundation/VoidDraft/role_agents/technical_architect"))
     assert callable(loader.get_engine)
     assert callable(loader.invalidate_engine)
     assert callable(loader.get_controller)

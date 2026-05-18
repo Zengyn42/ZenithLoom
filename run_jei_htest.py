@@ -24,7 +24,7 @@ logging.getLogger("httpcore").setLevel(logging.ERROR)
 from framework.loader import EntityLoader
 
 
-BLUEPRINT_DIR = Path("/home/kingy/Foundation/ZenithLoom/blueprints/role_agents/knowledge_curator")
+BLUEPRINT_DIR = Path("/home/kingy/Foundation/VoidDraft/role_agents/knowledge_curator")
 DATA_DIR = Path("/home/kingy/Foundation/EdenGateway/agents/jei")
 
 QUESTIONS = [

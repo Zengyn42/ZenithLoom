@@ -36,7 +36,7 @@ async def main():
     set_debug(True)
     Path(working_dir).mkdir(parents=True, exist_ok=True)
 
-    loader = EntityLoader(Path("blueprints/functional_graphs/colony_coder"))
+    loader = EntityLoader(Path("/home/kingy/Foundation/VoidDraft/functional_graphs/colony_coder"))
     graph = await loader.build_graph(checkpointer=None)
     reporter = DebugConsoleReporter(f"colony_{task_name}")
 

@@ -28,7 +28,7 @@ class EntityLoader:
     从 blueprint + entity 目录加载配置，构建 LangGraph 状态机，管理控制器单例。
 
     用法：
-        loader = EntityLoader(Path("blueprints/role_agents/technical_architect"),
+        loader = EntityLoader(Path("/home/kingy/Foundation/VoidDraft/role_agents/technical_architect"),
                               data_dir=Path("~/Foundation/EdenGateway/agents/hani"))
         controller = await loader.get_controller()
         response = await controller.run("用户输入")
