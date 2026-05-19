@@ -64,6 +64,10 @@ class ClaudeSDKNode(AgentNode):
 
     """
 
+    # Claude 通过 session_id 管理自身历史，LangGraph msgs 不发给模型，
+    # token 安全阀只需检查当前 prompt，不计 LangGraph 累计历史。
+    _guard_prompt_only = True
+
     def __init__(
         self,
         config: AgentConfig,
@@ -425,6 +429,7 @@ class ClaudeCLINode(AgentNode):
       - Session resume（--resume session_id）
       - Resume 失败自动重试（新 session）
       - Permission mode（--permission-mode 直传）
+
       - Token usage 统计（从 result event 提取）
 
     与 ClaudeSDKNode 的区别：
@@ -432,6 +437,10 @@ class ClaudeCLINode(AgentNode):
       - 直接管理子进程 stdout/stderr
       - 无 get_recent_history / list_sessions 方法
     """
+
+    # Claude 通过 session_id 管理自身历史，LangGraph msgs 不发给模型，
+    # token 安全阀只需检查当前 prompt，不计 LangGraph 累计历史。
+    _guard_prompt_only = True
 
     _DEFAULT_TIMEOUT = 120
     _MAX_TIMEOUT = 600

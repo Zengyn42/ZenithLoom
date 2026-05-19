@@ -139,6 +139,11 @@ class LlmNode:
       OllamaNode     → system_prompt 注入禁写指令 + 不传 tool 定义
     """
 
+    # 当节点通过 session_id 管理自己的 LLM 历史（如 CLAUDE_SDK/CLI），
+    # LangGraph msgs 不会直接发给模型，不应计入 token 安全阀估算。
+    # 子类设为 True 时，guard 只检查当前 prompt，不加 history。
+    _guard_prompt_only: bool = False
+
     # 写入/执行类工具 — plan 模式下自动禁止
     # 子类通过 _get_disallowed_tools() 获取，按需传给各自 provider
     _WRITE_TOOLS = frozenset([
@@ -412,10 +417,12 @@ class LlmNode:
             _stream_cb.set(_debug_intercept)
 
         # ── Token 安全阀 ─────────────────────────────────────────────────
-        # prompt 已包含 msgs[-1]（latest_input），history 只取前缀避免双重计数
+        # prompt 已包含 msgs[-1]（latest_input），history 只取前缀避免双重计数。
+        # 对 session 型节点（CLAUDE_SDK/CLI），LangGraph msgs 不发给模型，只查 prompt。
+        _guard_history = None if self._guard_prompt_only else list(msgs[:-1])
         try:
             check_before_llm(
-                prompt=prompt, history=list(msgs[:-1]),
+                prompt=prompt, history=_guard_history,
                 node_id=self._node_id, limit=self._token_limit,
             )
         except TokenLimitExceeded as exc:
