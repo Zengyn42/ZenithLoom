@@ -131,14 +131,12 @@ async def main():
                         if current_text.strip() == args.prompt.strip() and last_text == "":
                             print("DEBUG: Skipping user message bubble...", file=sys.stderr, flush=True)
                             continue
-                        if current_text.startswith(last_text):
-                            diff = current_text[len(last_text):]
-                            if diff:
-                                print(diff, end="", flush=True)
-                        else:
-                            # Re-print if structure changed
-                            print("\n" + current_text, end="", flush=True)
-                        
+                        # 只更新内部状态，不立即输出到 stdout。
+                        # 理由：当 Grok 完成 Markdown 渲染时，current_text 的结构会变化
+                        # （如 "Hello" → "**Hello**"），导致 startswith 失效，走 else 分支
+                        # 重打全量文本。ChromeExecutor 用 readline() 读取，遇 \n 才截行，
+                        # 就会把"旧部分文本 + 新全量文本"都累计到 result_text，造成消息翻倍。
+                        # 解决方案：所有中间状态只在内存里追踪，最后仅输出一次最终稳定文本。
                         last_text = current_text
                         stable_count = 0
                     elif current_text.strip() == last_text.strip() and last_text != "":
@@ -148,7 +146,10 @@ async def main():
                         # 如果没有发送按钮，说明还在生成中，即使文本没变也要多等一会儿
                         submit_visible = await page.locator('button[aria-label="Submit"]:visible, button[aria-label*="Send"]:visible').count() > 0
                         
-                        if (stable_count >= 15) or (stable_count >= 5 and submit_visible): 
+                        if (stable_count >= 15) or (stable_count >= 5 and submit_visible):
+                            # 回复已稳定，一次性输出最终文本（避免中间态重复累积）
+                            if last_text:
+                                print(last_text, flush=True)
                             media_data = await page.evaluate("""() => {
                             const bubbles = document.querySelectorAll('div.message-bubble, [data-testid="message-bubble"], .message-bubble, [class*="message-bubble"]');
                             if (!bubbles.length) return { imgs: [], videos: [] };

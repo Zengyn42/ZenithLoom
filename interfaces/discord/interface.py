@@ -428,8 +428,14 @@ class _DiscordInterface(BaseInterface):
             result = await self.invoke_agent(user_input)
         except asyncio.CancelledError:
             self._event_queue.put_nowait((None, None))
-            await editor_task
-            await typing_ctx.__aexit__(None, None, None)
+            try:
+                await editor_task
+            except BaseException:
+                pass
+            try:
+                await typing_ctx.__aexit__(None, None, None)
+            except BaseException:
+                pass
             if text_draft[0]:
                 try:
                     await text_draft[0].delete()
@@ -439,8 +445,14 @@ class _DiscordInterface(BaseInterface):
         finally:
             set_channel_send_callback(None)
             self._event_queue.put_nowait((None, None))
-            await editor_task
-            await typing_ctx.__aexit__(None, None, None)
+            try:
+                await editor_task
+            except BaseException:
+                pass
+            try:
+                await typing_ctx.__aexit__(None, None, None)
+            except BaseException:
+                pass
 
         streamed_full = "".join(text_buf) if text_buf else ""
         if _subgraph_draft_cleared[0]:
