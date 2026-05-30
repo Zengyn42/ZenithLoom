@@ -1,7 +1,10 @@
 <!-- gitnexus:start -->
 # GitNexus — Code Intelligence
 
-This project is indexed by GitNexus as **ZenithLoom** (7013 symbols, 11904 relationships, 279 execution flows). Use the GitNexus MCP tools to understand code, assess impact, and navigate safely.
+**Note:** The core engine of the project resides in this `ZenithLoom` repository. However, all the `blueprints` have been moved to a separate repository called `VoidDraft`.
+
+This project is indexed by GitNexus as **ZenithLoom**
+ (7013 symbols, 11904 relationships, 279 execution flows). Use the GitNexus MCP tools to understand code, assess impact, and navigate safely.
 
 > If any GitNexus tool warns the index is stale, run `npx gitnexus analyze` in terminal first.
 
