@@ -1,44 +1,44 @@
-# 后台任务监控 Skill
+# Background Task Monitor Skill
 
-当你调用的外部工具（如 render_slides、render_docs）执行时间超过 120 秒时，
-工具会返回一条 `[PENDING]` 消息，包含子进程的 PID 和相关信息。
+When an external tool you call (such as `render_slides` or `render_docs`) exceeds 120 seconds,
+the tool returns a `[PENDING]` message containing the subprocess PID and related information.
 
-**你必须立即使用 `heartbeat_register_monitor` 工具注册监控。**
+**You must immediately use the `heartbeat_register_monitor` tool to register monitoring.**
 
 ---
 
-## 流程
+## Flow
 
-1. 你路由到外部工具（如 `render_slides`）
-2. 工具超过 120s 未返回 → 你收到 `[PENDING]` 消息，包含：
-   - `task_id`: 任务唯一标识
-   - `pid`: 子进程 PID
-   - `output_path`: 输出文件路径
-   - `hard_timeout`: 最大允许运行时间（秒）
-3. **你立即调用 `heartbeat_register_monitor`**，传入上述参数
-4. 告诉用户任务已转入后台监控，完成后会自动通知
-5. 监控系统每 60 秒检查一次 PID，完成后自动通知用户
+1. You route to an external tool (e.g. `render_slides`)
+2. Tool has not returned after 120s → you receive a `[PENDING]` message containing:
+   - `task_id`: unique task identifier
+   - `pid`: subprocess PID
+   - `output_path`: output file path
+   - `hard_timeout`: maximum allowed run time (seconds)
+3. **You immediately call `heartbeat_register_monitor`** with the above parameters
+4. Tell the user the task has been moved to background monitoring and they will be notified when complete
+5. The monitoring system checks the PID every 60 seconds and automatically notifies the user when done
 
-## 调用示例
+## Call Example
 
-当你收到类似这样的消息：
+When you receive a message like this:
 
 ```
-[PENDING] 命令执行超过 120s，子进程仍在后台运行。
+[PENDING] Command exceeded 120s, subprocess is still running in the background.
 task_id: tool_abc123
 pid: 12345
 output_path: /path/to/output
 hard_timeout: 600
 ```
 
-你应该立即调用：
+You should immediately call:
 
 ```
 heartbeat_register_monitor(task_id="tool_abc123", pid=12345, output_path="/path/to/output", hard_timeout=600)
 ```
 
-然后回复用户："幻灯片正在后台生成中，完成后我会自动通知你。"
+Then reply to the user: "The task is running in the background. I'll notify you automatically when it completes."
 
-## 其他可用工具
+## Other Available Tools
 
-- `heartbeat_my_monitors()` — 查看你当前正在监控的所有后台任务
+- `heartbeat_my_monitors()` — View all background tasks you are currently monitoring

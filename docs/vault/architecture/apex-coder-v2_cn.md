@@ -31,18 +31,18 @@ setup (DETERMINISTIC)
 ## 关键设计决策
 
 ### 1. inherit_from 模式
-ApexCoder 通过 `inherit_from` 从父图（Hani）继承 session 上下文，无需手动传递辩论结论。Hani 的对话历史中包含辩论结果，ApexCoder 自动可见。
+ApexCoder 通过 `inherit_from` 从父图（technical_architect）继承 session 上下文，无需手动传递辩论结论。technical_architect 的对话历史中包含辩论结果，ApexCoder 自动可见。
 
 ### 2. status 默认值
 `status` 字段默认值从无 → `"PENDING"`。解决 state merge 时未初始化字段导致路由异常的 bug。
 
 ### 3. 与辩论子图的协作流程
 ```
-用户需求 → Hani 评估复杂度
-  → 复杂: debate_brainstorm / debate_design → 辩论结论注入 Hani context
-  → Hani 整理实现指令 → route to apex_coder
+用户需求 → technical_architect 评估复杂度
+  → 复杂: debate_brainstorm / debate_design → 辩论结论注入 technical_architect context
+  → technical_architect 整理实现指令 → route to apex_coder
   → ApexCoder 继承 context（含辩论结论）→ QA 写测试 → Coder 实现
-  → Hani 验证结果（跑 benchmark、检查输出）
+  → technical_architect 验证结果（跑 benchmark、检查输出）
 ```
 
 ## State Schema

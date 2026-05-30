@@ -23,7 +23,7 @@
 
 ```json
 {
-  "name": "asa",
+  "name": "administrative_officer",
   "blueprint": "...",
   "mcps": [
     {
@@ -125,16 +125,16 @@ async def start_mcps(self):
 
 | Agent | 当前 MCP 配置 | 迁移后 mcps 字段 |
 |-------|-------------|----------------|
-| asa | `"heartbeat": [...]` | heartbeat + agent_mail |
-| jei | 无（但错误连了 heartbeat）| agent_mail |
-| hani | 无 | agent_mail |
+| administrative_officer | `"heartbeat": [...]` | heartbeat + agent_mail |
+| knowledge_curator | 无（但错误连了 heartbeat）| agent_mail |
+| technical_architect | 无 | agent_mail |
 
 ---
 
 ## 与现有设计的关系
 
 - **heartbeat 的 race condition 修复**：统一使用文件锁，根治竞争问题
-- **jei zombie 问题修复**：jei 的 mcps 字段不包含 heartbeat，彻底杜绝错误连接
+- **knowledge_curator zombie 问题修复**：knowledge_curator 的 mcps 字段不包含 heartbeat，彻底杜绝错误连接
 - **agent_mail 启动**：和 heartbeat 完全同等地位，第一个启动的 agent 拉起 mail server
 
 ---
@@ -143,7 +143,7 @@ async def start_mcps(self):
 
 - [ ] `framework/mcp_launcher.py` — 通用 MCPLauncher
 - [ ] `agent_loader.py` — `start_mcps()` 替换 `start_heartbeat()`
-- [ ] `asa/identity.json` — 迁移 heartbeat 配置到 mcps 字段，增加 agent_mail
-- [ ] `jei/identity.json` — 增加 agent_mail（无 heartbeat）
-- [ ] `hani/identity.json` — 增加 agent_mail
+- [ ] `administrative_officer/identity.json` — 迁移 heartbeat 配置到 mcps 字段，增加 agent_mail
+- [ ] `knowledge_curator/identity.json` — 增加 agent_mail（无 heartbeat）
+- [ ] `technical_architect/identity.json` — 增加 agent_mail
 - [ ] `mcp_servers/agent_mail/server.py` — 完善 SIGUSR1 通知逻辑

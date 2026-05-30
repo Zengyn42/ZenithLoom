@@ -1,3 +1,5 @@
+Note: The core engine of the project resides in this ZenithLoom repository. However, all the blueprints have been moved to a separate repository called VoidDraft.
+
 # Design: Remove Auto-Compact, Add Inline Token Display
 
 **Date**: 2026-04-10
@@ -101,7 +103,7 @@ Implementation notes:
 - Iterate the graph's nodes. For each node whose underlying callable is a `ClaudeSDKNode`, use the node's `_session_key` to find its session_id in `node_sessions`.
 - For each `(key, sid)` with non-empty sid: call `await node.compact_session(sid)`. Collect results.
 - If any sids changed, call `await self._graph.aupdate_state(config, {"node_sessions": updated_map})` to persist the new ids into the checkpoint.
-- Return a summary string like `"压缩了 1 个 Claude session (claude_main: abc12345 → def67890)"` or `"无 Claude session 可压缩"` when nothing matched.
+- Return a summary string like `"Compacted 1 Claude session (claude_main: abc12345 → def67890)"` or `"No Claude session to compact"` when nothing matched.
 - Uncaught exceptions bubble up to the `!compact` handler, which wraps them into a user-visible error line.
 
 Node-iteration detail: LangGraph compiled graphs expose `self._graph.nodes` (or similar) where each node's runnable can be an instance of the `ClaudeSDKNode`. The exact attribute path will be verified during implementation; if direct introspection is awkward, the fallback is to iterate `self._graph.builder.nodes` before compilation and stash a reference.
@@ -121,10 +123,10 @@ if cmd == "!compact":
     try:
         claude_msg = await controller.compact_claude_session(thread_id)
     except Exception as e:
-        claude_msg = f"❌ Claude 压缩失败: {e}"
+        claude_msg = f"❌ Claude compaction failed: {e}"
     return (
-        f"Compact 完成：\n"
-        f"  checkpoint DB: 删除 {deleted} 条旧记录，保留最近 {keep} 条\n"
+        f"Compaction completed:\n"
+        f"  checkpoint DB: Deleted {deleted} old records, keeping the most recent {keep}\n"
         f"  Claude session: {claude_msg}"
     )
 ```
@@ -152,7 +154,7 @@ This module mirrors the pattern of `framework/debug.py`.
 
 File: `ZenithLoom/framework/nodes/llm/claude.py`
 
-**Source-of-truth note**: Do NOT use `ResultMessage.usage` for the ctx/in/cache_read numbers in the inline line. `ResultMessage.usage` is cumulative across all API calls within one `sdk_query` (including tool-use sub-calls), so its `input_tokens` will be inflated to many times the real context window on tool-heavy turns. The existing code already addresses this by tracking context from `message_start` events (see the existing comment in `_run_once`: *"不能用 ResultMessage.usage — 那是累计值，复杂 tool use 会远超真实 context"*). We build on that mechanism.
+**Source-of-truth note**: Do NOT use `ResultMessage.usage` for the ctx/in/cache_read numbers in the inline line. `ResultMessage.usage` is cumulative across all API calls within one `sdk_query` (including tool-use sub-calls), so its `input_tokens` will be inflated to many times the real context window on tool-heavy turns. The existing code already addresses this by tracking context from `message_start` events (see the existing comment in `_run_once`: *"Cannot use ResultMessage.usage — it is a cumulative value; complex tool use will far exceed the actual context"*). We build on that mechanism.
 
 `ResultMessage.usage` is still the correct source for the cumulative process-level `update_token_stats()` call (billing), and that call is kept unchanged. The distinction is:
 - **Billing / `!tokens` cumulative**: `ResultMessage.usage` (cumulative is correct — you pay for every tool-use sub-call).
@@ -196,11 +198,11 @@ File: `ZenithLoom/framework/base_interface.py`
 
 Current behavior: `!tokens` prints the cumulative process-level stats from `token_tracker.get_token_stats()`. Extend it:
 
-- `!tokens` (no arg) → unchanged — print cumulative stats, append one line showing the current toggle state: `"内联显示: 开启"` or `"内联显示: 关闭"`.
-- `!tokens on` → `set_token_display(True)`, reply `"✅ Token 内联显示：开启"`.
-- `!tokens off` → `set_token_display(False)`, reply `"✅ Token 内联显示：关闭"`.
-- `!tokens status` → reply `"Token 内联显示：开启"` or `"关闭"`.
-- Any other arg → reply with usage hint `"用法：!tokens [on|off|status]"`.
+- `!tokens` (no arg) → unchanged — print cumulative stats, append one line showing the current toggle state: `"Inline display: Enabled"` or `"Inline display: Disabled"`.
+- `!tokens on` → `set_token_display(True)`, reply `"✅ Token inline display: Enabled"`.
+- `!tokens off` → `set_token_display(False)`, reply `"✅ Token inline display: Disabled"`.
+- `!tokens status` → reply `"Token inline display: Enabled"` or `"Disabled"`.
+- Any other arg → reply with usage hint `"Usage: !tokens [on|off|status]"`.
 
 File: `ZenithLoom/framework/command_registry.py`
 
@@ -218,7 +220,7 @@ All three blocks must preserve existing test passes (`test_cli.py` 8/8, `test_e2
 
 ## Risks and Open Questions
 
-1. **`/compact` semantics loss**: manual `!compact` still triggers lossy summarization. This is documented and the user accepted the tradeoff, but we should warn clearly in the `!compact` reply message. Consider adding `"(Claude 对话细节已压缩为摘要，继续提问时如涉及旧细节请重新说明)"` to the output when compact_claude_session reports success.
+1. **`/compact` semantics loss**: manual `!compact` still triggers lossy summarization. This is documented and the user accepted the tradeoff, but we should warn clearly in the `!compact` reply message. Consider adding `"(Claude conversation details have been compressed into a summary. If subsequent questions involve old details, please re-explain them)"` to the output when compact_claude_session reports success.
 2. **Graph node introspection**: the exact mechanism to iterate compiled graph nodes and identify `ClaudeSDKNode` instances needs implementation-time verification. If `self._graph.nodes` does not expose the underlying callable directly, we may need to keep a side-map in `AgentLoader.build_graph` from node_id → node instance.
 3. **`channel_send_final` suppression**: token line does not appear in debate subgraphs. If this becomes a pain point, a follow-up could append the token line to the final compound message at the `llm_node` level.
 4. **Gemini / Ollama token display**: marked as a follow-up. Not blocking the user's immediate need.

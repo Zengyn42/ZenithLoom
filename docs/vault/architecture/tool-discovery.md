@@ -1,58 +1,58 @@
-# 自动化工具发现与评估系统 — 架构设计
+# Automated Tool Discovery and Evaluation System — Architecture Design
 
-> 状态：设计稿 | 日期：2026-03-22
+> Status: Design draft | Date: 2026-03-22
 
-## 一、目标
+## I. Goals
 
-用户描述需求（如"找一个AI工具能写Google Slides"），系统自动搜索、筛选、克隆、测试、输出评估报告。
+User describes a requirement (e.g. "find an AI tool that can write Google Slides"), and the system automatically searches, filters, clones, tests, and outputs an evaluation report.
 
-## 二、流水线拓扑
+## II. Pipeline Topology
 
 ```
 __start__ → query_expand → search_aggregate → candidate_filter → sandbox_eval → report_gen → __end__
 ```
 
-| 节点 | 框架节点类型 | Provider | 职责 |
-|------|-------------|----------|------|
-| `query_expand` | `CLAUDE_CLI` | Claude | 理解自然语言需求，生成搜索关键词（中→英翻译、同义扩展） |
-| `search_aggregate` | `DETERMINISTIC` | 无 | GitHub API + Web 搜索 + 去重，纯 Python |
-| `candidate_filter` | `OLLAMA` | llama3.2:3b | 批量打分（0-10），按相关性筛选 Top-K |
-| `sandbox_eval` | `EXTERNAL_TOOL` | Docker | 克隆 → 安装 → 测试，容器隔离 |
-| `report_gen` | `CLAUDE_CLI` | Claude | 生成面向用户的评估报告 |
+| Node | Framework Node Type | Provider | Responsibility |
+|------|--------------------|---------|--------------:|
+| `query_expand` | `CLAUDE_CLI` | Claude | Understand natural language requirements, generate search keywords (translation, synonym expansion) |
+| `search_aggregate` | `DETERMINISTIC` | None | GitHub API + web search + dedup, pure Python |
+| `candidate_filter` | `OLLAMA` | llama3.2:3b | Batch scoring (0-10), filter Top-K by relevance |
+| `sandbox_eval` | `EXTERNAL_TOOL` | Docker | Clone → install → test, container isolation |
+| `report_gen` | `CLAUDE_CLI` | Claude | Generate user-facing evaluation report |
 
-## 三、集成方式
+## III. Integration Method
 
-通过 `SUBGRAPH_REF` 挂载到主 Agent 图（`technical_architect`）。
+Mounted to the main agent graph (`technical_architect`) via `SUBGRAPH_REF`.
 
-主图改动：
-- `entity.json`：+1 node（`tool_discovery`），+2 edges
-- `command_registry.py`：+1 行 `_r("!discover", ...)`
-- `base_interface.py`：`handle_command()` 添加 `!discover` 分支
+Main graph changes:
+- `entity.json`: +1 node (`tool_discovery`), +2 edges
+- `command_registry.py`: +1 line `_r("!discover", ...)`
+- `base_interface.py`: `handle_command()` adds `!discover` branch
 
-自动路由通过 `routing_hint` 实现，Claude 看到用户搜索意图时自动触发。
+Auto-routing via `routing_hint`; Claude triggers automatically when it detects user search intent.
 
-## 四、State Schema
+## IV. State Schema
 
 ```python
 class ToolDiscoveryState(TypedDict):
-    # 继承 BaseAgentState 必需字段
+    # Inherited BaseAgentState required fields
     messages: Annotated[list[BaseMessage], _keep_last_2]
     routing_target: str
     routing_context: str
     workspace: str
     project_root: str
     node_sessions: Annotated[dict, _merge_dict]
-    # Discovery 专属字段（JSON 序列化字符串）
-    user_query: str              # 原始自然语言需求
+    # Discovery-specific fields (JSON serialized strings)
+    user_query: str              # original natural language requirement
     search_intent: str           # {keywords, github_queries, web_queries}
     raw_candidates: str          # [{repo, stars, license, description, ...}]
     filtered_candidates: str     # Top-K [{..., relevance_score, rationale}]
     evaluation_results: str      # [{install_ok, test_pass_rate, ...}]
     discovery_config: str        # {depth: 5, timeout: 300}
-    discovery_errors: str        # 累积错误日志
+    discovery_errors: str        # accumulated error log
 ```
 
-## 五、数据结构
+## V. Data Structures
 
 ### CandidateRepo
 
@@ -66,7 +66,7 @@ class ToolDiscoveryState(TypedDict):
     "license": "MIT",
     "language": "Python",
     "description": str,
-    "readme_snippet": str,      # 前 500 字
+    "readme_snippet": str,      # first 500 chars
     "topics": list[str],
     "open_issues": int,
     "archived": bool,
@@ -85,7 +85,7 @@ class ToolDiscoveryState(TypedDict):
     "test_pass_rate": float,    # 0.0-1.0
     "dependency_count": int,
     "code_lines": int,
-    "api_surface": int,         # 导出函数/类数量
+    "api_surface": int,         # number of exported functions/classes
     "has_docs": bool,
     "has_examples": bool,
     "project_type": "python|node|rust|go|unknown",
@@ -94,51 +94,51 @@ class ToolDiscoveryState(TypedDict):
 }
 ```
 
-## 六、沙箱设计
+## VI. Sandbox Design
 
-`sandbox_eval` 使用 Docker 一次性容器（`--rm`）：
+`sandbox_eval` uses Docker one-shot containers (`--rm`):
 
-- `--read-only` + tmpfs `/workspace`：防止持久化写入
-- 网络白名单：仅允许 pypi.org / npmjs.com / github.com
-- 资源限制：`--memory=1g --cpus=1 --pids-limit=256`
-- 每个 repo 硬超时 300s
-- 降级方案：无 Docker 时用 `venv` + 静态分析，报告标注 `⚠️ 受限评估`
+- `--read-only` + tmpfs `/workspace`: prevents persistent writes
+- Network whitelist: only allows pypi.org / npmjs.com / github.com
+- Resource limits: `--memory=1g --cpus=1 --pids-limit=256`
+- Per-repo hard timeout: 300s
+- Fallback: without Docker, uses `venv` + static analysis, report marked `⚠️ Restricted Evaluation`
 
-安全措施：安装前静态扫描 `setup.py` / `pyproject.toml` 中的 `os.system` / `subprocess` / `eval` 调用。
+Security: static scan of `setup.py` / `pyproject.toml` for `os.system` / `subprocess` / `eval` calls before installation.
 
-## 七、文件结构
+## VII. File Structure
 
-### 新建
+### New Files
 
 ```
 blueprints/functional_graphs/tool_discovery/
-├── entity.json                  # 图定义
-└── ROLE.md                     # LLM 节点 persona
+├── entity.json                  # graph definition
+└── ROLE.md                     # LLM node persona
 
 framework/schema/tool_discovery.py              # State schema
 framework/nodes/tool_discovery/
-├── search_aggregator.py        # DETERMINISTIC：GitHub API + Web 搜索
-└── sandbox_runner.py           # EXTERNAL_TOOL：Docker 沙箱编排
+├── search_aggregator.py        # DETERMINISTIC: GitHub API + web search
+└── sandbox_runner.py           # EXTERNAL_TOOL: Docker sandbox orchestration
 
 docker/
-├── Dockerfile.sandbox-python   # Python 沙箱镜像
-└── Dockerfile.sandbox-node     # Node.js 沙箱镜像
+├── Dockerfile.sandbox-python   # Python sandbox image
+└── Dockerfile.sandbox-node     # Node.js sandbox image
 ```
 
-### 修改
+### Modified Files
 
 ```
 blueprints/role_agents/technical_architect/entity.json   # +1 node, +2 edges
-framework/command_registry.py                           # +1 行注册
-framework/base_interface.py                             # +1 命令处理分支
+framework/command_registry.py                           # +1 line registration
+framework/base_interface.py                             # +1 command handling branch
 ```
 
-## 八、entity.json 结构
+## VIII. entity.json Structure
 
 ```json
 {
   "name": "ToolDiscovery",
-  "routing_hint": "当用户要求发现/搜索/评估开源工具时使用",
+  "routing_hint": "Use when user requests discovery/search/evaluation of open source tools",
   "graph": {
     "state_schema": "tool_discovery_schema",
     "nodes": [
@@ -160,23 +160,23 @@ framework/base_interface.py                             # +1 命令处理分支
 }
 ```
 
-## 九、风险与缓解
+## IX. Risks and Mitigations
 
-| 风险 | 严重度 | 缓解 |
-|------|--------|------|
-| 恶意代码执行 | 🔴 | Docker 沙箱 + read-only + 网络白名单 + 安装前静态扫描 |
-| GitHub API Rate Limit | 🟡 | 要求 `GITHUB_TOKEN`；搜索结果缓存 1h |
-| 评估耗时过长 | 🟡 | 默认 depth=3；渐进式反馈；每步硬超时 |
-| Docker 不可用 | 🟡 | 降级到 venv + 静态分析，标注受限评估 |
-| Ollama 打分不稳定 | 🟢 | 要求输出 JSON；异常分数 fallback 到 5 |
+| Risk | Severity | Mitigation |
+|------|----------|-----------|
+| Malicious code execution | High | Docker sandbox + read-only + network whitelist + pre-install static scan |
+| GitHub API rate limit | Medium | Require `GITHUB_TOKEN`; cache search results for 1h |
+| Evaluation too slow | Medium | Default depth=3; progressive feedback; per-step hard timeout |
+| Docker unavailable | Medium | Degrade to venv + static analysis, mark restricted evaluation |
+| Ollama scoring unstable | Low | Require JSON output; invalid scores fall back to 5 |
 
-## 十、实现优先级
+## X. Implementation Priority
 
-| Phase | 内容 | 预计工作量 |
-|-------|------|-----------|
-| P1 | State schema + entity.json 骨架 | 2h |
-| P2 | search_aggregator.py（GitHub API + 去重） | 3h |
+| Phase | Content | Estimated Work |
+|-------|---------|---------------|
+| P1 | State schema + entity.json skeleton | 2h |
+| P2 | search_aggregator.py (GitHub API + dedup) | 3h |
 | P3 | sandbox_runner.py + Dockerfiles | 6h |
 | P4 | Report prompt + ROLE.md | 2h |
-| P5 | 主图集成 + Discord 命令 | 1h |
-| P6 | E2E 测试 + 安全验证 | 3h |
+| P5 | Main graph integration + Discord command | 1h |
+| P6 | E2E tests + security validation | 3h |

@@ -106,8 +106,8 @@
 ## 工作流
 
 ```
-需求 → Hani 评估
+需求 → technical_architect 评估
   ├── 规则明确（如 Othello）→ 直接下发 ApexCoder
   └── 需要设计（如 Planet Wars 引擎）→ debate_design → 辩论结论 → ApexCoder
-ApexCoder 编码 → Hani 验证（benchmark + 可视化）→ 记录结果到本文档
+ApexCoder 编码 → technical_architect 验证（benchmark + 可视化）→ 记录结果到本文档
 ```

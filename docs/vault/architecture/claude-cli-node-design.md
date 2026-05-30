@@ -1,3 +1,5 @@
+Note: The core engine of the project resides in this ZenithLoom repository. However, all the blueprints have been moved to a separate repository called VoidDraft.
+
 # ClaudeCLINode Design
 
 > Date: 2026-04-08
@@ -5,26 +7,26 @@
 
 ## Summary
 
-新增 `ClaudeCLINode`，通过 `asyncio.create_subprocess_exec("claude", "-p", ...)` 直接调用 Claude CLI subprocess，作为 `ClaudeSDKNode`（通过 `claude_agent_sdk`）的替代方案。功能对齐 SDK 版本，包括 streaming 和 session resume。
+Add `ClaudeCLINode`, which calls the Claude CLI subprocess directly via `asyncio.create_subprocess_exec("claude", "-p", ...)`, as an alternative to `ClaudeSDKNode` (which uses `claude_agent_sdk`). Functionality is aligned with the SDK version, including streaming and session resume.
 
 ## Motivation
 
-现有 `ClaudeSDKNode` 通过 `claude_agent_sdk` 的 `query()` 函数调用，SDK 底层封装了 CLI 子进程。新增 `ClaudeCLINode` 直接调用 CLI，绕过 SDK 层，提供：
-- 更直接的 CLI 控制（flag 级别参数透传）
-- 不依赖 `claude_agent_sdk` Python 包
-- 与 `GeminiCLINode` 对称的架构
+The existing `ClaudeSDKNode` is called via the `query()` function of `claude_agent_sdk`, which internally wraps the CLI subprocess. Adding `ClaudeCLINode` to call the CLI directly bypasses the SDK layer and provides:
+- More direct CLI control (flag-level parameter passthrough)
+- No dependency on the `claude_agent_sdk` Python package
+- Architectural symmetry with `GeminiCLINode`
 
 ## Architecture
 
-`ClaudeCLINode` 与 `ClaudeSDKNode` 并列，共存于 `framework/nodes/llm/claude.py`：
+`ClaudeCLINode` exists alongside `ClaudeSDKNode` in `framework/nodes/llm/claude.py`:
 
 ```
 claude.py
-  ├── ClaudeSDKNode  (CLAUDE_SDK) — 通过 claude_agent_sdk
-  └── ClaudeCLINode  (CLAUDE_CLI) — 通过 subprocess
+  ├── ClaudeSDKNode  (CLAUDE_SDK) — via claude_agent_sdk
+  └── ClaudeCLINode  (CLAUDE_CLI) — via subprocess
 ```
 
-### 继承关系
+### Inheritance Relationship
 
 ```
 LlmNode (base)
@@ -35,7 +37,7 @@ LlmNode (base)
   └── OllamaNode      → call_llm() via HTTP API
 ```
 
-`ClaudeCLINode` **复用基类 `LlmNode.__call__()`**，只实现 `call_llm()`。
+`ClaudeCLINode` **reuses the base class `LlmNode.__call__()`** and only implements `call_llm()`.
 
 ## CLI Invocation
 
@@ -56,40 +58,40 @@ claude -p \
   --mcp-config <json>
 ```
 
-- Prompt 通过 **stdin** 传入（避免 yargs 参数解析问题，同 GeminiCLINode）
-- 环境变量设置 `CLAUDE_AGENT_SDK=1` 抑制 hook 声音
+- Prompt is passed via **stdin** (to avoid yargs argument parsing issues, consistent with `GeminiCLINode`)
+- Environment variable `CLAUDE_AGENT_SDK=1` is set to suppress hook sounds
 
 ## Stream-JSON Parsing
 
-`--output-format stream-json --verbose --include-partial-messages` 输出为逐行 JSON：
+`--output-format stream-json --verbose --include-partial-messages` outputs line-by-line JSON:
 
-| `type` | 处理方式 |
+| `type` | Handling |
 |---|---|
-| `"stream_event"` | 解析 `event.content_block_delta`：`text_delta` → `cb(text, False)`，`thinking_delta` → `cb(thinking, True)` |
-| `"result"` | 提取 `result`、`session_id`、`is_error`、`usage`；调用 `update_token_stats()` |
-| `"system"` | 跳过（hook events、init info） |
-| `"assistant"` | 跳过（partial assembled messages） |
-| `"rate_limit_event"` | 跳过 |
+| `"stream_event"` | Parse `event.content_block_delta`: `text_delta` → `cb(text, False)`, `thinking_delta` → `cb(thinking, True)` |
+| `"result"` | Extract `result`, `session_id`, `is_error`, `usage`; call `update_token_stats()` |
+| `"system"` | Skip (hook events, init info) |
+| `"assistant"` | Skip (partial assembled messages) |
+| `"rate_limit_event"` | Skip |
 
 ## Session Resume
 
-- 新 session：不传 `--resume`
-- 续接：`--resume <session_id>`
-- Resume 失败（returncode != 0）→ 新 session 重试 → 再失败返回错误文本 + 空 session_id
-- 与 ClaudeSDKNode 的重试策略完全一致
+- New session: Do not pass `--resume`
+- Continuation: `--resume <session_id>`
+- Resume failure (returncode != 0) → Retry with new session → Return error text + empty session_id if it fails again
+- Exactly consistent with `ClaudeSDKNode` retry strategy
 
 ## Permission Mode
 
-CLI 原生支持 `--permission-mode`，直传 `self._permission_mode`。
-`disallowed_tools` 通过 `--disallowedTools` 传入（基类 `_get_disallowed_tools()` 计算）。
+The CLI natively supports `--permission-mode`, which is passed directly from `self._permission_mode`.
+`disallowed_tools` are passed via `--disallowedTools` (calculated by base class `_get_disallowed_tools()`).
 
 ## Timeout
 
-动态超时，借鉴 GeminiCLINode：
-- 基线：120s
-- 上限：600s
-- 缩放：`prompt_len / 200` 每字符增加时间
-- 公式：`min(600, max(120, prompt_len // 200))`
+Dynamic timeout, borrowed from `GeminiCLINode`:
+- Baseline: 120s
+- Upper limit: 600s
+- Scaling: `prompt_len / 200` added seconds per character
+- Formula: `min(600, max(120, prompt_len // 200))`
 
 ## SDK Options to CLI Flags Mapping
 
@@ -107,30 +109,30 @@ CLI 原生支持 `--permission-mode`，直传 `self._permission_mode`。
 | `mcp_servers` | `--mcp-config` (JSON string) |
 | `env` | subprocess env vars |
 | `cwd` | subprocess cwd |
-| `thinking` | 无直接 CLI 对应（依赖模型默认行为） |
-| `max_buffer_size` | 不适用（自行管理 stdout） |
+| `thinking` | No direct CLI equivalent (depends on model default behavior) |
+| `max_buffer_size` | Not applicable (manages stdout itself) |
 | `include_partial_messages` | `--include-partial-messages` |
 
 ## Registry Changes
 
-| builtins.py 注册 | 指向 |
+| builtins.py Registration | Points to |
 |---|---|
-| `CLAUDE_CLI` | `ClaudeCLINode`（新） |
-| `CLAUDE_SDK` | `ClaudeSDKNode`（不变） |
+| `CLAUDE_CLI` | `ClaudeCLINode` (New) |
+| `CLAUDE_SDK` | `ClaudeSDKNode` (Unchanged) |
 
 ## Entity.json Migration
 
-所有现有 entity.json 中的 `"type": "CLAUDE_CLI"` 改为 `"type": "CLAUDE_SDK"`，确保现有行为不变：
+All existing `"type": "CLAUDE_CLI"` in `entity.json` are changed to `"type": "CLAUDE_SDK"` to ensure existing behavior remains unchanged:
 
-- `blueprints/role_agents/technical_architect/entity.json` (1 处)
-- `blueprints/functional_graphs/debate_claude_first/entity.json` (3 处)
-- `blueprints/functional_graphs/debate_gemini_first/entity.json` (2 处)
-- `blueprints/functional_graphs/apex_coder/entity.json` (1 处)
-- `blueprints/functional_graphs/tool_discovery/entity.json` (3 处)
+- `blueprints/role_agents/technical_architect/entity.json` (1 location)
+- `blueprints/functional_graphs/debate_claude_first/entity.json` (3 locations)
+- `blueprints/functional_graphs/debate_gemini_first/entity.json` (2 locations)
+- `blueprints/functional_graphs/apex_coder/entity.json` (1 location)
+- `blueprints/functional_graphs/tool_discovery/entity.json` (3 locations)
 
 ## Not Doing
 
-- **不覆写 `__call__`** — 复用基类 LlmNode，避免 GeminiCLINode 的重复逻辑
-- **不使用 `--bare` 标志** — 保持与普通 CLI 行为一致，让 hooks/CLAUDE.md 正常工作
-- **不做模型降级链** — ClaudeSDKNode 没有，保持一致；降级是 Gemini 特有需求
-- **不需要 `get_recent_history` / `list_sessions`** — 这些是 SDK 专有方法，CLI 节点不需要
+- **Do not override `__call__`** — Reuse the base class `LlmNode` to avoid repeating `GeminiCLINode` logic
+- **Do not use the `--bare` flag** — Maintain consistency with normal CLI behavior to allow hooks/CLAUDE.md to function normally
+- **No model fallback chain** — `ClaudeSDKNode` doesn't have one, keep it consistent; fallback is a Gemini-specific requirement
+- **No need for `get_recent_history` / `list_sessions`** — These are SDK-specific methods; the CLI node does not need them

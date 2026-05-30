@@ -6,7 +6,7 @@
 
 ## 症状
 
-Hani 的 Discord session 里，Claude Main 每一轮看到的 prompt 都被塞进几 KB 的历史上下文，token 持续飙升。用户输入 "恢复gemma4"（8 字符）也会被扩成巨大 prompt。
+technical_architect 的 Discord session 里，Claude Main 每一轮看到的 prompt 都被塞进几 KB 的历史上下文，token 持续飙升。用户输入 "恢复gemma4"（8 字符）也会被扩成巨大 prompt。
 
 实测 session `hani_session_2d05f9a6` 最新 checkpoint：
 
@@ -56,7 +56,7 @@ discovery_report     : 0
 
 **受害主体**：
 
-- **Hani 主图：重伤**。调用链 debate_brainstorm / debate_design / apex_coder / tool_discovery / tool_evaluate / video_quality_loop，全部都会泄漏。
+- **technical_architect 主图：重伤**。调用链 debate_brainstorm / debate_design / apex_coder / tool_discovery / tool_evaluate / video_quality_loop，全部都会泄漏。
 - **ColonyCoder（作为独立主图）：间接轻伤**。plan/execute/qa 三个 fresh_per_call 子图会触发 A+B，但 ColonyCoder 内部 LLM 节点用自己的状态字段（`refined_plan`、`qa_analysis`、`e2e_plan` 等），不读 `debate_conclusion`/`apex_conclusion`，所以 C 类注入不直接增加 token。
 - **ColonyCoder 内部 `colony_coder_planner → debate_claude_first`** 的路径会让 planner 的 state 带上 `debate_conclusion`，planner 若再次跑 LlmNode 会被 C 注入一次。
 - ColonyCoder 2026-04-17 的 "session 重置 + 快照" context 防护遮住了部分 A/B 症状。
@@ -121,7 +121,7 @@ if self._output_field and raw_output:
 # 复现 B→get_type_hints(ApexCoderState, include_extras=True) 正常返回
 ```
 
-`systemctl --user restart hani` → `[Discord] controller 已初始化（graph 已编译）`，无 Annotated 报错。
+`systemctl --user restart technical_architect` → `[Discord] controller 已初始化（graph 已编译）`，无 Annotated 报错。
 
 ## 长期改进（与 subgraph-output-field-unification.md 关联）
 

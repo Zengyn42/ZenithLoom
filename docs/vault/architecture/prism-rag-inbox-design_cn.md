@@ -67,7 +67,7 @@ LLM 没有 PrismRagMCP 时，用框架原生 Write 工具自由写入 inbox：
 
 ```
 LLM 调用 Write(
-    path="~/Foundation/Vault/inbox/2026-04-09-hani-session-design-notes.md",
+    path="~/Foundation/Vault/inbox/2026-04-09-technical_architect-session-design-notes.md",
     content="..."   ← 格式随意，纯文本也行
 )
 ```
@@ -135,8 +135,8 @@ Knowledge_Curator 通过 heartbeat 或手动触发，定期处理 inbox：
 ```
 ~/Foundation/Vault/
 ├── inbox/                    ← 未分类投递箱（任何 LLM 可写）
-│   ├── 2026-04-09-hani-xxx.md
-│   ├── 2026-04-10-asa-yyy.md
+│   ├── 2026-04-09-technical_architect-xxx.md
+│   ├── 2026-04-10-administrative_officer-yyy.md
 │   └── processed/            ← Knowledge_Curator 整理后的原文件归档
 ├── Architecture/             ← 正式分类目录（Knowledge_Curator 通过 MCP 管理）
 ├── Projects/

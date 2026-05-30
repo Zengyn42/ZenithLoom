@@ -77,7 +77,7 @@ ack_mail(mail_id)              → marks as processed
 
 ### Storage
 
-Each agent's own SQLite db (e.g. `asa.db`) contains a `mailbox` table, or a unified `shared.db` is used.
+Each agent's own SQLite db (e.g. `administrative_officer.db`) contains a `mailbox` table, or a unified `shared.db` is used.
 Preference: **shared.db**, path `data/agent_mail/mail.db`, single source of truth, cross-agent queries are easy.
 
 ### SQLite Schema
@@ -156,9 +156,9 @@ The `EdenGateway/agents/` directory is itself a registry. Blueprint definitions 
 
 ```
 EdenGateway/agents/
-├── asa/identity.json    → name: "asa"  (administrative_officer instance)
-├── hani/identity.json   → name: "hani" (technical_architect instance)
-└── jei/identity.json    → name: "jei"  (knowledge_curator instance)
+├── administrative_officer/identity.json    → name: "administrative_officer"  (administrative_officer instance)
+├── technical_architect/identity.json   → name: "technical_architect" (technical_architect instance)
+└── knowledge_curator/identity.json    → name: "knowledge_curator"  (knowledge_curator instance)
 ```
 
 The `list_agents()` tool scans this directory and returns all known agents.
