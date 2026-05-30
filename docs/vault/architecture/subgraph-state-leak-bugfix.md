@@ -1,50 +1,52 @@
-# Subgraph State Leak Bugfix (父图 prompt 膨胀)
+Note: The core engine of the project resides in this ZenithLoom repository. However, all the blueprints have been moved to a separate repository called VoidDraft.
+
+# Subgraph State Leak Bugfix (Parent Graph Prompt Bloat)
 
 > Date: 2026-04-20
 > Status: Fixed
 > Related: unified-subgraph-integration.md, subgraph-output-field-unification.md, session-mode-design.md
 
-## 症状
+## Symptoms
 
-technical_architect 的 Discord session 里，Claude Main 每一轮看到的 prompt 都被塞进几 KB 的历史上下文，token 持续飙升。用户输入 "恢复gemma4"（8 字符）也会被扩成巨大 prompt。
+In the Discord session of `technical_architect`, the `claude_main` node sees a prompt injected with several KB of historical context in every round, causing tokens to skyrocket. A user input like "restore gemma4" (8 characters) is expanded into a massive prompt.
 
-实测 session `hani_session_2d05f9a6` 最新 checkpoint：
+Analysis of the latest checkpoint for session `hani_session_2d05f9a6`:
 
 ```
-debate_conclusion    : 3262 chars   （上一次 debate 子图的结论）
-subgraph_topic       : 1222 chars   （上一次辩题锚点）
+debate_conclusion    : 3262 chars   (Conclusion from the last debate subgraph)
+subgraph_topic       : 1222 chars   (Topic anchor from the last debate)
 previous_node_output : 107  chars
 apex_conclusion      : 0
 knowledge_result     : 0
 discovery_report     : 0
 ```
 
-这三个非空字段都由 `LlmNode._build_gemini_section()` / `_topic_inject` / `_prev_inject` 无条件拼进 Claude Main 的每一轮 prompt 前缀。
+These three non-empty fields are unconditionally spliced into the prefix of every round of the `claude_main` prompt by `LlmNode._build_gemini_section()`, `_topic_inject`, and `_prev_inject`.
 
-## 根因（三个独立泄漏路径）
+## Root Causes (Three Independent Leak Paths)
 
-### A. `subgraph_topic` 泄漏
+### A. `subgraph_topic` Leak
 
-- `framework/nodes/subgraph_init_node.py::_fresh_init` 会写入 `subgraph_topic = routing_context or subgraph_topic`（仅 `fresh_per_call` 模式）。
-- `_subgraph_exit` 原实现只发 `RemoveMessage` 清 `messages`，**没有清空 `subgraph_topic`**。
-- 结果：`fresh_per_call` 子图返回时，父图 state 继承了这个主题锚点。
-- 父图下一轮任何 LlmNode 读 `state["subgraph_topic"]` → `_topic_inject` 把 1KB+ 的辩题拼到 prompt。
+- `framework/nodes/subgraph_init_node.py::_fresh_init` writes `subgraph_topic = routing_context or subgraph_topic` (only in `fresh_per_call` mode).
+- The original implementation of `_subgraph_exit` only issued `RemoveMessage` to clear `messages` and **did not clear `subgraph_topic`**.
+- Result: When a `fresh_per_call` subgraph returns, the parent graph state inherits this topic anchor.
+- In the next round of the parent graph, any `LlmNode` reads `state["subgraph_topic"]` → `_topic_inject` splices the 1KB+ debate topic into the prompt.
 
-### B. `previous_node_output` 泄漏
+### B. `previous_node_output` Leak
 
-- 任何 LlmNode 执行后都会写 `result["previous_node_output"] = raw_output`（[llm_node.py:521](../../../framework/nodes/llm/llm_node.py)）。设计意图是子图**内部**节点间链式推理（Gemini → Claude → Gemini ...）。
-- 子图末尾节点也会写，`_subgraph_exit` 没清理 → 泄漏到父图。
-- 父图下一轮 Claude Main 读 `state["previous_node_output"]`；`_prev_inject` 的 gate 是 `if _subgraph_topic`，所以只要 A 已经泄漏，B 就跟着被注入。
+- After any `LlmNode` executes, it writes `result["previous_node_output"] = raw_output` ([llm_node.py:521](../../../framework/nodes/llm/llm_node.py)). The design intent is for chained reasoning between nodes **within** a subgraph (Gemini → Claude → Gemini ...).
+- The final node of a subgraph also writes this, and `_subgraph_exit` did not clear it → it leaks to the parent graph.
+- In the next round of the parent graph, `claude_main` reads `state["previous_node_output"]`; the gate for `_prev_inject` is `if _subgraph_topic`, so as long as Path A has already leaked, Path B is also injected.
 
-### C. `debate_conclusion` / `apex_conclusion` / `knowledge_result` / `discovery_report` 持续注入
+### C. Persistent Injection of Subgraph Conclusion Fields
 
-- 这四个字段是子图末尾节点通过 `node_config.output_field` 显式写入的设计，意图是**供父图下一轮的 Claude Main 消费一次**。
-- `LlmNode._build_gemini_section()` 读它们后拼进 prompt，但**没有在输出里清空**。
-- LangGraph checkpoint 持久化 → 每一轮父图 Claude Main 都重复注入同一份历史结论。
+- These four fields (`debate_conclusion`, `apex_conclusion`, `knowledge_result`, `discovery_report`) are explicitly designed to be written by the final node of a subgraph via `node_config.output_field`, intended to be **consumed once by the next round of the parent graph's `claude_main`**.
+- `LlmNode._build_gemini_section()` reads them and splices them into the prompt, but **did not clear them in the output**.
+- Due to LangGraph checkpoint persistence, every subsequent round of the parent graph's `claude_main` repeatedly injects the same historical conclusion.
 
-## 影响范围（不是辩论子图独有，是框架层）
+## Scope of Impact (Framework-level, not just Debate subgraph)
 
-| 子图 | session_mode | A 泄漏 | B 泄漏 | C 泄漏 |
+| Subgraph | session_mode | Path A Leak | Path B Leak | Path C Leak |
 |---|---|---|---|---|
 | debate_gemini_first (debate_brainstorm) | fresh_per_call | ✓ | ✓ | ✓ (`debate_conclusion`) |
 | debate_claude_first (debate_design) | fresh_per_call | ✓ | ✓ | ✓ (`debate_conclusion`) |
@@ -52,25 +54,25 @@ discovery_report     : 0
 | tool_discovery | fresh_per_call | ✓ | ✓ | ✓ (`discovery_report`) |
 | tool_evaluate | fresh_per_call | ✓ | ✓ | ✓ (`discovery_report`) |
 | video_quality_loop | fresh_per_call | ✓ | ✓ | — |
-| colony_coder（作为 Master）| fresh_per_call | ✓ | ✓ | — |
+| colony_coder (as Master) | fresh_per_call | ✓ | ✓ | — |
 
-**受害主体**：
+**Primary Victims**:
 
-- **technical_architect 主图：重伤**。调用链 debate_brainstorm / debate_design / apex_coder / tool_discovery / tool_evaluate / video_quality_loop，全部都会泄漏。
-- **ColonyCoder（作为独立主图）：间接轻伤**。plan/execute/qa 三个 fresh_per_call 子图会触发 A+B，但 ColonyCoder 内部 LLM 节点用自己的状态字段（`refined_plan`、`qa_analysis`、`e2e_plan` 等），不读 `debate_conclusion`/`apex_conclusion`，所以 C 类注入不直接增加 token。
-- **ColonyCoder 内部 `colony_coder_planner → debate_claude_first`** 的路径会让 planner 的 state 带上 `debate_conclusion`，planner 若再次跑 LlmNode 会被 C 注入一次。
-- ColonyCoder 2026-04-17 的 "session 重置 + 快照" context 防护遮住了部分 A/B 症状。
+- **`technical_architect` Main Graph: Severely affected**. The call chains for `debate_brainstorm`, `debate_design`, `apex_coder`, `tool_discovery`, `tool_evaluate`, and `video_quality_loop` all trigger leaks.
+- **`ColonyCoder` (as a standalone main graph): Indirectly and mildly affected**. The three `fresh_per_call` subgraphs (plan/execute/qa) trigger Path A+B leaks, but `ColonyCoder`'s internal LLM nodes use their own state fields (`refined_plan`, `qa_analysis`, `e2e_plan`, etc.) and do not read `debate_conclusion`/`apex_conclusion`, so Path C injection doesn't directly increase tokens.
+- The path `colony_coder_planner → debate_claude_first` inside `ColonyCoder` will cause the planner's state to include `debate_conclusion`; if the planner runs an `LlmNode` again, it will be injected by Path C once.
+- The "session reset + snapshot" context protection in `ColonyCoder` (2026-04-17) partially masked the symptoms of Path A/B leaks.
 
-## 修复
+## Fixes
 
-三处改动（2026-04-20 已 apply）：
+Three changes (applied on 2026-04-20):
 
-### 1. `framework/agent_loader.py` — 附带修 `Annotated is not defined`
+### 1. `framework/agent_loader.py` — Fixed `Annotated is not defined`
 
-Apex_coder / colony_coder 的 `state.py` 用了 `from __future__ import annotations`，`Annotated[dict, _merge_dict]` 被存为字符串。`get_type_hints()` 通过 `sys.modules[cls.__module__]` 找 globals 来 eval 这些字符串，但旧代码 `importlib.util.module_from_spec` + `exec_module` **没把 module 写进 `sys.modules`**，导致 globals 空 → `NameError: name 'Annotated' is not defined`。
+The `state.py` for `apex_coder` and `colony_coder` uses `from __future__ import annotations`, so `Annotated[dict, _merge_dict]` is stored as a string. `get_type_hints()` uses `sys.modules[cls.__module__]` to find globals to evaluate these strings, but the old code using `importlib.util.module_from_spec` + `exec_module` **failed to register the module in `sys.modules`**, resulting in empty globals and a `NameError: name 'Annotated' is not defined`.
 
 ```python
-_sys.modules[_mod_name] = _mod   # ← 新增：必须在 exec_module 前注册
+_sys.modules[_mod_name] = _mod   # ← Added: Must register before exec_module
 _spec.loader.exec_module(_mod)
 ```
 
@@ -79,14 +81,14 @@ _spec.loader.exec_module(_mod)
 ```python
 result = {
     "messages": removals,
-    "subgraph_topic": "",           # ← 新增，清 A
-    "previous_node_output": "",     # ← 新增，清 B
+    "subgraph_topic": "",           # ← Added, clears Path A
+    "previous_node_output": "",     # ← Added, clears Path B
 }
 ```
 
-所有 session_mode 的子图退出时一并清空，符合 `BaseAgentState` 注释里的承诺 "_subgraph_init 入口写入、出口清空"。
+Cleared upon exiting all `session_mode` subgraphs, fulfilling the promise in `BaseAgentState` comments: "written at `_subgraph_init` entry, cleared at exit".
 
-### 3. `framework/nodes/llm/llm_node.py` — 消费后清空 C
+### 3. `framework/nodes/llm/llm_node.py` — Clear Path C after consumption
 
 ```python
 result["debate_conclusion"] = ""
@@ -95,34 +97,34 @@ result["knowledge_result"]  = ""
 result["discovery_report"]  = ""
 
 if self._output_field and raw_output:
-    result[self._output_field] = raw_output   # 覆盖：子图末尾生产者不受影响
+    result[self._output_field] = raw_output   # Overwrite: Subgraph final producer nodes are unaffected
 ```
 
-`output_field` 写入在清空后，子图末尾生产这四个字段的节点仍然能把结论传回父图；父图 Claude Main 消费完下一轮自动清空，不再累积。
+Since the `output_field` write occurs after the cleanup, nodes at the end of a subgraph that produce these fields can still pass conclusions back to the parent graph. The parent graph's `claude_main` will consume them and then automatically clear them in the next round, preventing accumulation.
 
-## 遗留（历史 checkpoint 数据）
+## Residuals (Historical Checkpoint Data)
 
-代码修复只对新写入生效。现有 session checkpoint 里已泄漏的字段要等：
+Code fixes only apply to new writes. Fields already leaked in existing session checkpoints will persist until:
 
-- `debate_conclusion` / `apex_conclusion` / 等：下一次父图 LlmNode 跑一轮自动清（**一次**额外的大 prompt）。
-- `subgraph_topic` / `previous_node_output`：下一次子图调用才清（如果用户不再触发子图就一直留着）。
+- `debate_conclusion` / `apex_conclusion` / etc.: Automatically cleared after the next round of the parent graph's `LlmNode` (results in **one** additional large prompt).
+- `subgraph_topic` / `previous_node_output`: Cleared during the next subgraph call (will remain if the user never triggers a subgraph again).
 
-想立即清零：受影响频道执行 `!clear` 或 `!new`。
+To clear them immediately, execute `!clear` or `!new` in the affected channel.
 
-## 验证
+## Verification
 
 - [framework/nodes/llm/llm_node.py](../../../framework/nodes/llm/llm_node.py)
 - [framework/nodes/subgraph_init_node.py](../../../framework/nodes/subgraph_init_node.py)
 - [framework/agent_loader.py](../../../framework/agent_loader.py)
 
-手动 smoke：
+Manual Smoke Test:
 ```python
-# 复现 A→NameError 已通过
-# 复现 B→get_type_hints(ApexCoderState, include_extras=True) 正常返回
+# Reproduction of A→NameError passed
+# Reproduction of B→get_type_hints(ApexCoderState, include_extras=True) returns correctly
 ```
 
-`systemctl --user restart technical_architect` → `[Discord] controller 已初始化（graph 已编译）`，无 Annotated 报错。
+`systemctl --user restart technical_architect` → `[Discord] controller initialized (graph compiled)`, no `Annotated` error.
 
-## 长期改进（与 subgraph-output-field-unification.md 关联）
+## Long-term Improvement (Related to `subgraph-output-field-unification.md`)
 
-C 类泄漏的根因之一是 `BaseAgentState` 硬编码 4 个输出字段，每次加新子图都要同步修改 `_build_gemini_section`、`_fresh_init` 等多处。若落地 `subgraph_outputs: Annotated[dict, _merge_dict]` 统一方案，消费-清空逻辑可以集中在一处，避免再次出现类似泄漏。
+One root cause of Path C leaks is the hardcoding of 4 output fields in `BaseAgentState`, requiring synchronized updates in `_build_gemini_section`, `_fresh_init`, etc., every time a new subgraph is added. Implementing the unified `subgraph_outputs: Annotated[dict, _merge_dict]` solution would centralize the consumption-cleanup logic and prevent similar leaks in the future.
