@@ -5,140 +5,139 @@
 
 ## Summary
 
-LLM 产出的知识笔记（.md）通过**生产者-消费者模型**入库 Obsidian Vault。
-任何 LLM 都能写笔记（无论有没有 MCP），整理和索引由专职 Agent（Jei）统一处理。
+Knowledge notes (.md files) produced by LLMs enter the Obsidian Vault via a **producer-consumer model**.
+Any LLM can write notes (regardless of whether it has MCP access). Curation and indexing are handled exclusively by the dedicated knowledge_curator role.
 
 ## Design Principle
 
-**写入门槛为零，整理交给专人。**
+**Zero barrier to write; curation delegated to a specialist.**
 
-- 生产者（Hani / Asa / 任何 LLM）不需要理解图谱结构、标签体系、embedding 机制
-- 消费者（Jei + PrismRagMCP）负责所有知识工程：分类、打标签、embedding、图整理
-- 写入和索引解耦：LLM 不调 `embed()`，embedding 是基础设施自动处理
+- Producers (technical_architect / administrative_officer / any LLM) do not need to understand the graph structure, tag taxonomy, or embedding mechanism
+- Consumer (knowledge_curator + PrismRagMCP) handles all knowledge engineering: classification, tagging, embedding, graph maintenance
+- Writing and indexing are decoupled: LLMs never call `embed()` — embedding is handled transparently by infrastructure
 
 ## Architecture
 
 ```
-生产者（任何 LLM，有没有 MCP 都行）
+Producer (any LLM, with or without MCP)
     │
-    ├── 有 MCP：调 PrismRagMCP.write_note() → 直接入库 + 自动 embedding
+    ├── With MCP: call PrismRagMCP.write_note() → direct write + auto embedding
     │
-    └── 无 MCP：用 Write 工具 → ~/Foundation/Vault/inbox/*.md（纯文件投递）
+    └── No MCP: use Write tool → ~/Foundation/Vault/inbox/*.md (raw file drop)
                     │
                     ▼
-              ~/Foundation/Vault/inbox/          ← 未分类投递箱
+              ~/Foundation/Vault/inbox/          ← unsorted inbox
                     │
                     ▼
-              消费者（Jei，有 PrismRagMCP）
+              Consumer (knowledge_curator, with PrismRagMCP)
                     │
-                    ├── 定时扫描 inbox/ 中的新 .md
-                    ├── 理解内容 → 打标签 → 选择分类目录
-                    ├── 调 PrismRagMCP 工具写入正式 Vault 位置
-                    ├── 自动 embedding + 图整理
-                    └── 原文件移到 inbox/processed/（或删除）
+                    ├── Periodically scans inbox/ for new .md files
+                    ├── Understands content → assigns tags → selects category
+                    ├── Calls PrismRagMCP tools to write to official Vault location
+                    ├── Auto embedding + graph maintenance
+                    └── Moves original to inbox/processed/ (for traceability)
 ```
 
 ## Two Modes of Writing
 
 ### Mode 1: With PrismRagMCP (direct)
 
-LLM 拥有 PrismRagMCP 工具时，直接调用入库：
+LLMs with PrismRagMCP access write directly to the vault:
 
 ```
-LLM 调用 prism_write_note(
+LLM calls prism_write_note(
     path="Architecture/session-mode-design.md",
     content="...",
     tags=["session", "subgraph", "langgraph"]
 )
     │
     ▼
-PrismRagMCP 内部：
-    1. 写入文件到 Vault 正式目录
-    2. 自动补 frontmatter（created_at, author, tags）
-    3. 触发 embedding pipeline（chunk → embed → upsert vector store）
-    4. 更新知识图谱索引
+PrismRagMCP internally:
+    1. Writes file to official Vault directory
+    2. Auto-completes frontmatter (created_at, author, tags)
+    3. Triggers embedding pipeline (chunk → embed → upsert vector store)
+    4. Updates knowledge graph index
 ```
 
-**适用场景**：Jei（知识管理员）、未来升级后的 Hani/Asa
+**Applicable roles**: knowledge_curator, any future role granted MCP access
 
 ### Mode 2: Without PrismRagMCP (inbox drop)
 
-LLM 没有 PrismRagMCP 时，用框架原生 Write 工具自由写入 inbox：
+LLMs without PrismRagMCP use the native Write tool to drop files into inbox:
 
-```
-LLM 调用 Write(
-    path="~/Foundation/Vault/inbox/2026-04-09-hani-session-design-notes.md",
-    content="..."   ← 格式随意，纯文本也行
+```python
+LLM calls Write(
+    path="~/Foundation/Vault/inbox/2026-04-09-session-design-notes.md",
+    content="..."   # any format, plain text is fine
 )
 ```
 
-**约定**：
-- 路径：`~/Foundation/Vault/inbox/`
-- 文件名建议：`YYYY-MM-DD-<topic>.md`（但不强制）
-- 内容格式：完全自由，LLM 想怎么写就怎么写
-- Frontmatter：可有可无（消费者会补全）
+**Conventions**:
+- Path: `~/Foundation/Vault/inbox/`
+- Filename: `YYYY-MM-DD-<topic>.md` (recommended but not required)
+- Content format: completely free — consumer will normalize
+- Frontmatter: optional (consumer will complete)
 
-**适用场景**：当前的 Hani、Asa（无 MCP 权限）
+**Applicable roles**: technical_architect, administrative_officer (no MCP access)
 
-### Consumer: Jei's Inbox Processing
+### Consumer: knowledge_curator's Inbox Processing
 
-Jei 通过 heartbeat 或手动触发，定期处理 inbox：
+knowledge_curator processes the inbox periodically (via heartbeat or manual trigger):
 
 ```
-1. 扫描 inbox/ 中的 .md 文件（排除 processed/ 子目录）
-2. 逐个读取内容
-3. 调 prism_list_tags() 获取现有标签体系
-4. 基于内容理解：
-   - 选择目标目录（Architecture/ Projects/ Decisions/ etc.）
-   - 生成标签列表（优先复用现有标签，必要时创建新标签）
-   - 补全 frontmatter（author 从文件名或内容推断）
-5. 调 prism_write_note() 写入正式位置
-6. 自动 embedding（PrismRagMCP 内部处理）
-7. 将原文件移到 inbox/processed/（保留溯源）
+1. Scan inbox/ for .md files (excluding processed/ subdirectory)
+2. Read each file
+3. Call prism_list_tags() to get existing tag taxonomy
+4. Based on content understanding:
+   - Select target directory (Architecture/ Projects/ Decisions/ etc.)
+   - Generate tag list (reuse existing tags where possible, create new if needed)
+   - Complete frontmatter (infer author from filename or content)
+5. Call prism_write_note() to write to official location
+6. Auto embedding (handled internally by PrismRagMCP)
+7. Move original to inbox/processed/ (preserve traceability)
 ```
 
-## PrismRagMCP Tool Interface (Conceptual)
+## PrismRagMCP Tool Interface
 
-### LLM-facing tools (LLM 调用)
+### LLM-facing tools
 
 | Tool | Description |
 |---|---|
-| `prism_write_note(path, content, tags)` | 写入笔记到正式 Vault 位置 + frontmatter 规范化 |
-| `prism_patch_note(path, section, content)` | Section-based 局部修改 |
-| `prism_read_note(path)` | 读取完整笔记 |
-| `prism_search(query)` | 混合搜索：向量语义搜索 + 关键词搜索 |
-| `prism_list_tags()` | 返回现有标签体系（供写入时参考） |
-| `prism_list_files(directory)` | 列出目录下的文件 |
-| `prism_get_links(path)` | 查询双向链接关系 |
+| `prism_write_note(path, content, tags)` | Write note to official Vault location + normalize frontmatter |
+| `prism_patch_note(path, section, content)` | Section-based partial update |
+| `prism_read_note(path)` | Read complete note |
+| `prism_search(query)` | Hybrid search: vector semantic + keyword |
+| `prism_list_tags()` | Return existing tag taxonomy (reference when writing) |
+| `prism_list_files(directory)` | List files in directory |
+| `prism_get_links(path)` | Query bidirectional link relationships |
 
-### Internal (LLM 不调用，PrismRagMCP 自动处理)
+### Internal (auto-handled by PrismRagMCP, not called by LLMs)
 
 | Internal Process | Trigger |
 |---|---|
-| Chunk + embed + upsert vector store | `write_note()` / `patch_note()` 调用后自动触发 |
-| 标签索引更新 | 标签变更时自动触发 |
-| 知识图谱更新（链接关系） | 笔记写入/修改后自动触发 |
+| Chunk + embed + upsert vector store | Automatically after `write_note()` / `patch_note()` |
+| Tag index update | Automatically on tag changes |
+| Knowledge graph update (link relationships) | Automatically after note write/edit |
 
-**LLM 永远不需要知道 embedding 的存在。** 它写笔记、搜笔记、管标签。向量化是透明的基础设施。
+**LLMs never need to know embedding exists.** They write notes, search notes, manage tags. Vectorization is transparent infrastructure.
 
-## Agent Roles
+## Role Summary
 
-| Agent | MCP 权限 | 写入方式 | 知识管理职责 |
+| Role | MCP Access | Write Method | Knowledge Responsibility |
 |---|---|---|---|
-| **Hani** | 无 PrismRagMCP | Write → inbox/ | 生产者：记录设计决策、技术经验 |
-| **Asa** | 无 PrismRagMCP | Write → inbox/ | 生产者：记录管理流程、运营笔记 |
-| **Jei** | 有 PrismRagMCP | 直接 write_note() | 消费者 + 生产者：整理 inbox、管理知识库 |
-| **未来 Agent** | 视配置 | 有 MCP 则直接，无则 inbox | 取决于是否分配 MCP |
+| **technical_architect** | No PrismRagMCP | Write → inbox/ | Producer: records design decisions, technical learnings |
+| **administrative_officer** | No PrismRagMCP | Write → inbox/ | Producer: records operational processes, management notes |
+| **knowledge_curator** | Has PrismRagMCP | Direct write_note() | Consumer + Producer: curates inbox, manages knowledge base |
+| **Future roles** | Configurable | Direct if MCP, else inbox | Depends on MCP assignment |
 
 ## Directory Convention
 
 ```
 ~/Foundation/Vault/
-├── inbox/                    ← 未分类投递箱（任何 LLM 可写）
-│   ├── 2026-04-09-hani-xxx.md
-│   ├── 2026-04-10-asa-yyy.md
-│   └── processed/            ← Jei 整理后的原文件归档
-├── Architecture/             ← 正式分类目录（Jei 通过 MCP 管理）
+├── inbox/                    ← unsorted inbox (any LLM can write)
+│   ├── 2026-04-09-<topic>.md
+│   └── processed/            ← archived originals after knowledge_curator curation
+├── Architecture/             ← official categories (managed by knowledge_curator via MCP)
 ├── Projects/
 ├── Decisions/
 ├── Operations/
@@ -147,38 +146,38 @@ Jei 通过 heartbeat 或手动触发，定期处理 inbox：
 
 ## Key Design Decisions
 
-### Why not give all agents MCP?
+### Why not give all roles MCP access?
 
-- **关注点分离**：Hani 是技术架构师，不应该关心知识库的分类体系和标签一致性
-- **质量控制**：Jei 作为知识管理员，可以保证标签不混乱、分类一致、embedding 质量
-- **容错**：即使 MCP 服务挂了，Hani/Asa 仍然可以通过 inbox 产出知识，不丢失
+- **Separation of concerns**: technical_architect is a systems architect — managing tag taxonomy and vault organization is not its responsibility
+- **Quality control**: knowledge_curator as the knowledge manager ensures consistent tags, categories, and embedding quality
+- **Fault tolerance**: even if the MCP service is down, technical_architect and administrative_officer can still produce knowledge via inbox without data loss
 
 ### Why inbox + consumer, not direct write + async index?
 
-- **LLM 不知道 Vault 的目录结构**：如果让 Hani 直接写 `Architecture/xxx.md`，它需要先了解整个 Vault 的分类体系。这不是它的职责。
-- **标签一致性**：如果每个 LLM 自己打标签，标签会碎片化（一个叫 `#arch`，另一个叫 `#architecture`）。集中管理更可控。
-- **渐进式升级**：先 inbox 模式跑通，以后给 Hani/Asa 加 MCP 是无缝的（多一个 write 路径，inbox 仍然可用）。
+- **LLMs don't know the vault structure**: requiring technical_architect to write directly to `Architecture/xxx.md` means it must understand the entire taxonomy first — not its job
+- **Tag consistency**: if each LLM applies its own tags, fragmentation results (`#arch` vs `#architecture`). Centralized management is more controllable
+- **Progressive upgrade**: inbox mode first, adding MCP to other roles later is seamless (adds one more write path, inbox still works)
 
 ### Why move to processed/ instead of delete?
 
-- **溯源**：可以追溯原始内容和 Jei 整理后的版本差异
-- **防误删**：Jei 整理错了可以从 processed/ 恢复
-- **审计**：可以定期检查 Jei 的整理质量
+- **Traceability**: can track diffs between original content and knowledge_curator's curated version
+- **Recovery**: if knowledge_curator makes a mistake, originals can be restored from processed/
+- **Audit**: can periodically review knowledge_curator's curation quality
 
 ## Future: PrismRagMCP = Obsidian MCP + RAG
 
-PrismRagMCP 是当前 `mcp_servers/obsidian/` 和未来 vector embedding 系统的整合：
+PrismRagMCP consolidates the current `mcp_servers/obsidian/` with a future vector embedding system:
 
-| 当前 (Obsidian MCP) | 未来 (PrismRagMCP) |
+| Current (Obsidian MCP) | Future (PrismRagMCP) |
 |---|---|
-| 纯文件读写 | 文件读写 + 自动 embedding |
-| grep 文本搜索 | 向量语义搜索 + 关键词混合搜索 |
-| 手动管标签 | 写入时自动建议标签（参考现有体系）|
-| 无知识图谱 | 双向链接 + 标签 → 知识图谱 |
-| 无 inbox 机制 | inbox + consumer pipeline |
+| Plain file read/write | File read/write + auto embedding |
+| grep text search | Vector semantic search + keyword hybrid |
+| Manual tag management | Auto tag suggestions on write (referencing existing taxonomy) |
+| No knowledge graph | Bidirectional links + tags → knowledge graph |
+| No inbox mechanism | Inbox + consumer pipeline |
 
 ## See Also
 
-- `mcp_servers/obsidian/` — 当前 Obsidian MCP 实现
-- `blueprints/functional_graphs/knowledge_shelf/` — Jei 的知识库子图
-- `blueprints/role_agents/knowledge_curator/` — Jei 的角色定义
+- `mcp_servers/obsidian/` — current Obsidian MCP implementation
+- `blueprints/functional_graphs/knowledge_shelf/` — knowledge_curator's knowledge subgraph (in VoidDraft repo)
+- `blueprints/role_agents/knowledge_curator/` — knowledge_curator role definition (in VoidDraft repo)

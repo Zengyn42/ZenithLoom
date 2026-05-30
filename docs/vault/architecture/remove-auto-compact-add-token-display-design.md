@@ -26,7 +26,7 @@ The user does not want an automatic mechanism that silently loses detail. They w
 ## Non-Goals
 
 - Gemini and Ollama nodes are out of scope. Their `usage` payloads differ and the user did not report problems there. A TODO is noted below.
-- `ClaudeCLINode` is out of scope. All current role agents (Hani, Asa, Jei) use `ClaudeSDKNode`.
+- `ClaudeCLINode` is out of scope. All current role agents (technical_architect, administrative_officer, knowledge_curator) use `ClaudeSDKNode`.
 - Per-session toggle state. The toggle is process-global.
 - Reworking `/compact`'s summary behavior. Lossy compaction is Claude CLI's design; this spec surfaces it honestly rather than fighting it.
 
@@ -211,7 +211,7 @@ Update the `!tokens` registration's usage hint from whatever it currently is to 
 All three blocks must preserve existing test passes (`test_cli.py` 8/8, `test_e2e_debate.py` 8/8). No new tests are strictly required by this spec, but the following manual checks should be performed before declaring the work complete:
 
 1. **Auto-compact gone**: grep the repo for `_COMPACT_THRESHOLD`, `_last_context_size`, and `auto-compact` — should return zero hits in `claude.py`.
-2. **Token line appears**: start hani in CLI mode, issue a short prompt, confirm the reply ends with a line matching `^\[tokens: ctx=\d`.
+2. **Token line appears**: start the technical_architect agent in CLI mode, issue a short prompt, confirm the reply ends with a line matching `^\[tokens: ctx=\d`.
 3. **Toggle works**: `!tokens off` → next reply has no token line. `!tokens on` → token line returns.
 4. **!compact runs both compactions**: `!compact` output mentions both the checkpoint DB count and the Claude session status. Immediately after, issue a follow-up prompt and confirm the Claude node still responds coherently (the reply may lose detail from before compaction — this is expected and spec-documented).
 5. **Existing tests**: run `python -m pytest test_cli.py test_e2e_debate.py` and confirm no regressions.

@@ -77,8 +77,8 @@ PreToolUse hook 阻止 ClaudeCoder 修改 `test_tool/qa_tests/` 下的文件。
 
 ### 问题
 
-Phase 1 中，QA 和 Coder 各自创建全新 Claude session。当 ApexCoder 作为子图从 Hani 调用时：
-- QA 和 Coder 看不到 Hani 与用户的对话历史（需求讨论、辩论结论、设计细节）
+Phase 1 中，QA 和 Coder 各自创建全新 Claude session。当 ApexCoder 作为子图从 technical_architect 调用时：
+- QA 和 Coder 看不到 technical_architect 与用户的对话历史（需求讨论、辩论结论、设计细节）
 - 只能通过 state 字段（refined_plan、routing_context）传递简化后的上下文
 - 对复杂任务，丢失语境链会导致 QA 写出不合理的测试、Coder 误解需求
 
@@ -98,7 +98,7 @@ ClaudeAgentOptions(
 ### inherit 模式下的 session 生命周期
 
 ```
-Hani 主图:
+technical_architect 主图:
   claude_main session = uuid-A (完整对话历史)
   路由到 apex_coder 子图 (session_mode: inherit)
 
@@ -110,7 +110,7 @@ ApexCoder 子图:
   claude_qa 首次调用:
     node_sessions["apex_qa"] = ""（空）
     → fork uuid-A → 得到 uuid-fork-qa
-    → QA 看到 Hani 完整对话 + 自己写测试的过程
+    → QA 看到 technical_architect 完整对话 + 自己写测试的过程
     → node_sessions["apex_qa"] = "uuid-fork-qa"
   
   reset_for_coder: 清 QA messages
@@ -118,7 +118,7 @@ ApexCoder 子图:
   claude_coder 首次调用:
     node_sessions["apex_coder"] = ""（空）
     → fork uuid-A → 得到 uuid-fork-coder
-    → Coder 看到 Hani 完整对话（不含 QA 的 reasoning）
+    → Coder 看到 technical_architect 完整对话（不含 QA 的 reasoning）
     → node_sessions["apex_coder"] = "uuid-fork-coder"
   
   executor → route → FAIL → retry:
@@ -126,7 +126,7 @@ ApexCoder 子图:
   claude_coder 第 2 次调用:
     node_sessions["apex_coder"] = "uuid-fork-coder"（非空）
     → resume uuid-fork-coder（不 fork，继续自己的 session）
-    → Coder 看到：Hani 对话 + 自己第 1 次写的代码 + 新的错误反馈
+    → Coder 看到：technical_architect 对话 + 自己第 1 次写的代码 + 新的错误反馈
     → 不会重复犯同一个错
 
   _subgraph_exit:
@@ -202,7 +202,7 @@ setup 在 inherit 模式下可以从 state 读取更多父图上下文：
 
 ```python
 def setup(state):
-    # 优先用 refined_plan（Hani 辩论后的精炼设计）
+    # 优先用 refined_plan（technical_architect 辩论后的精炼设计）
     plan = state.get("refined_plan", "")
     debate = state.get("debate_conclusion", "")
     

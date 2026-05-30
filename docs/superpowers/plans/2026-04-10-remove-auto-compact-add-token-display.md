@@ -92,7 +92,7 @@ Claude reply.
 
 Pattern mirrors framework/debug.py: a single module-level boolean with
 get/set helpers. Process-global scope is intentional — each agent
-(hani/asa/jei) runs its own process, so the toggle naturally scopes to
+(technical_architect/administrative_officer/knowledge_curator) runs its own process, so the toggle naturally scopes to
 "the current agent". Per-session granularity would double the surface
 area with no observed benefit.
 
@@ -563,7 +563,7 @@ async def main():
 
 asyncio.run(main())
 "`
-Expected: a non-empty list of node_ids, one of which corresponds to the main Claude node (e.g. `['claude_main', ...]` or similar — exact names depend on Hani's blueprint).
+Expected: a non-empty list of node_ids, one of which corresponds to the main Claude node (e.g. `['claude_main', ...]` or similar — exact names depend on technical_architect's blueprint).
 
 - [ ] **Step 6: Run existing tests**
 
@@ -1109,13 +1109,13 @@ Expected: every script reports its own success (e.g. `8/8`, `"All tests passed"`
 
 Note: `test_commands.py` has a pre-existing known failure unrelated to this work (`bot._channel_locks` attribute absence; documented in the project memory). That failure predates this plan and is **not** a regression — if it appears, confirm it matches the pre-existing signature and move on.
 
-- [ ] **Step 3: Live smoke test with Hani**
+- [ ] Step 3: Live smoke test with technical_architect
 
 This step requires a real Claude CLI and should only be run if available.
 
 ```bash
 cd /home/kingy/Foundation
-python -m ZenithLoom.interfaces.cli --agent hani
+python -m ZenithLoom.interfaces.cli --agent technical_architect
 ```
 
 Inside the CLI:
@@ -1124,7 +1124,7 @@ Inside the CLI:
 你好，请简单介绍一下你自己。
 ```
 
-Expected: Hani replies, and the reply **ends with** a line matching the shape `[tokens: ctx=N in=N out=N cache_read=N]` (numbers with commas).
+Expected: The technical_architect replies, and the reply **ends with** a line matching the shape `[tokens: ctx=N in=N out=N cache_read=N]` (numbers with commas).
 
 Then run:
 
@@ -1143,7 +1143,7 @@ Then:
 !compact
 ```
 
-Expected reply of `!compact`: a two-section message mentioning both `checkpoint DB` and `Claude session`, plus the lossy-summary warning. Send another prompt and confirm Hani still responds coherently and the token line reappears.
+Expected reply of `!compact`: a two-section message mentioning both `checkpoint DB` and `Claude session`, plus the lossy-summary warning. Send another prompt and confirm the agent still responds coherently and the token line reappears.
 
 Exit with `!quit` (or equivalent).
 

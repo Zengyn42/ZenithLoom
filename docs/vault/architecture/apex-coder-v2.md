@@ -1,48 +1,48 @@
-# ApexCoder v2 — TDD Pipeline 架构实录
+# ApexCoder v2 — TDD Pipeline Architecture Record
 
-> 最后更新: 2026-04-17
-> 状态: 架构已定型，实现进行中
+> Last updated: 2026-04-17
+> Status: Architecture finalized, implementation in progress
 
 ---
 
-## 设计目标
+## Design Goals
 
-将 ApexCoder 从单一 Claude SDK 节点重构为 4 节点 TDD 流水线，实现「QA 先写测试 → Coder 写代码通过测试」的严格开发流程。
+Refactor ApexCoder from a single Claude SDK node into a 4-node TDD pipeline, implementing a strict development flow where "QA writes tests first → Coder writes code to pass tests."
 
-## 与 v1 的差异
+## Differences from v1
 
-| 项目 | v1 (Colony Coder) | v2 (Apex Coder TDD) |
+| Item | v1 (Colony Coder) | v2 (Apex Coder TDD) |
 |------|-------------------|---------------------|
-| 节点数 | 17 节点 (Master + Planner + Executor + QA) | 4 节点 (setup → ClaudeQA → reset → ClaudeCoder) |
-| 测试策略 | 事后验证 | TDD: QA 先写测试，Coder 必须通过 |
-| 会话模式 | 独立 session | `inherit_from: parent`，共享上下文 |
-| 辩论集成 | Planner 内部辩论 | 外部辩论子图结论注入 |
-| 防篡改 | 无 | PreToolUse hook 禁止 Coder 修改 QA 测试文件 |
+| Node count | 17 nodes (Master + Planner + Executor + QA) | 4 nodes (setup → ClaudeQA → reset → ClaudeCoder) |
+| Test strategy | Post-hoc validation | TDD: QA writes tests first, Coder must pass them |
+| Session mode | Independent session | `inherit_from: parent`, shared context |
+| Debate integration | Internal Planner debate | External debate subgraph conclusion injection |
+| Anti-tampering | None | PreToolUse hook prevents Coder from modifying QA test files |
 
-## 当前拓扑
+## Current Topology
 
 ```
 setup (DETERMINISTIC)
-  → ClaudeQA (CLAUDE_SDK) — 写测试、定义验收标准
-    → reset_for_coder (DETERMINISTIC) — 隔离消息，注入测试摘要
-      → ClaudeCoder (CLAUDE_SDK) — 实现代码，必须通过 QA 测试
+  → ClaudeQA (CLAUDE_SDK) — writes tests, defines acceptance criteria
+    → reset_for_coder (DETERMINISTIC) — isolates messages, injects test summary
+      → ClaudeCoder (CLAUDE_SDK) — implements code, must pass QA tests
 ```
 
-## 关键设计决策
+## Key Design Decisions
 
-### 1. inherit_from 模式
-ApexCoder 通过 `inherit_from` 从父图（Hani）继承 session 上下文，无需手动传递辩论结论。Hani 的对话历史中包含辩论结果，ApexCoder 自动可见。
+### 1. inherit_from Mode
+ApexCoder inherits session context from the parent graph (technical_architect) via `inherit_from`, without manually passing debate conclusions. The technical_architect's conversation history includes debate results, which ApexCoder automatically sees.
 
-### 2. status 默认值
-`status` 字段默认值从无 → `"PENDING"`。解决 state merge 时未初始化字段导致路由异常的 bug。
+### 2. status Default Value
+The `status` field's default value changed from none → `"PENDING"`. Fixes a routing anomaly bug caused by uninitialized fields during state merge.
 
-### 3. 与辩论子图的协作流程
+### 3. Collaboration Flow with Debate Subgraphs
 ```
-用户需求 → Hani 评估复杂度
-  → 复杂: debate_brainstorm / debate_design → 辩论结论注入 Hani context
-  → Hani 整理实现指令 → route to apex_coder
-  → ApexCoder 继承 context（含辩论结论）→ QA 写测试 → Coder 实现
-  → Hani 验证结果（跑 benchmark、检查输出）
+User requirement → technical_architect evaluates complexity
+  → complex: debate_brainstorm / debate_design → debate conclusion injected into technical_architect context
+  → technical_architect prepares implementation instructions → route to apex_coder
+  → ApexCoder inherits context (including debate conclusion) → QA writes tests → Coder implements
+  → technical_architect validates results (runs benchmark, checks output)
 ```
 
 ## State Schema
@@ -62,9 +62,9 @@ class ApexCoderState(BaseAgentState):
     node_sessions: Annotated[dict, _merge_dict]
 ```
 
-## 参考文件
+## Reference Files
 
-- 设计计划: `docs/superpowers/plans/2026-04-15-apex-coder-redesign.md`
+- Design plan: `docs/superpowers/plans/2026-04-15-apex-coder-redesign.md`
 - State: `blueprints/functional_graphs/apex_coder/state.py`
 - Entity: `blueprints/functional_graphs/apex_coder/entity.json`
-- Colony Coder v1 实录: `docs/vault/architecture/colony-coder.md`
+- Colony Coder v1 record: `docs/vault/architecture/colony-coder.md`

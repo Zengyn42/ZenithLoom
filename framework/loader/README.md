@@ -21,8 +21,8 @@ from pathlib import Path
 from framework.loader import EntityLoader
 
 loader = EntityLoader(
-    Path("blueprints/role_agents/technical_architect"),
-    data_dir=Path("~/Foundation/EdenGateway/agents/hani"),
+    Path("path/to/VoidDraft/blueprints/role_agents/technical_architect"),
+    data_dir=Path("~/Foundation/EdenGateway/agents/<instance-name>"),
 )
 
 # Recommended: get a GraphController (lazy-compiled, singleton)
@@ -37,17 +37,19 @@ response = await controller.run("用户输入")
 ## Directory layout expected
 
 ```
-blueprints/role_agents/technical_architect/   ← blueprint_dir
+VoidDraft/blueprints/role_agents/technical_architect/   ← blueprint_dir (in VoidDraft repo)
     entity.json        # graph, persona_files, llm type, etc.
     PERSONA.md         # role definition
     graph.py           # optional custom graph builder
 
-EdenGateway/agents/hani/                      ← data_dir
+EdenGateway/agents/<instance-name>/                     ← data_dir (runtime data, not in repo)
     identity.json      # name, discord_token, allowed_users
     SOUL.md            # instance-specific persona (auto-appended)
-    hani.db            # SQLite checkpoint store
+    <instance-name>.db # SQLite checkpoint store
     sessions.json      # session envelopes
 ```
+
+> **Note:** Blueprints (role definitions, graph configs) live in the `VoidDraft` repository. Instance runtime data (db, sessions, identity) lives in `EdenGateway/agents/<instance-name>/` on the local machine.
 
 ---
 

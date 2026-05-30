@@ -20,7 +20,7 @@ Defines the knowledge representation layer for ZenithLoom: how to model "knowled
 
 ### 1.1 The Four Levels of "Knowledge Element"
 
-The term *知识元* / *knowledge element* / *knowledge atom* has been used in literature to mean different things. We distinguish four levels:
+The term *knowledge element* / *knowledge element* / *knowledge atom* has been used in literature to mean different things. We distinguish four levels:
 
 | Level | Meaning | Example |
 |---|---|---|
@@ -41,8 +41,8 @@ Different types have fundamentally different update semantics — a fact being w
 | `concept` | "What `session_mode` means and what its values do" | Edit in place, git history preserves prior state |
 | `decision` | "Use `fresh_per_call` for the debate subgraph" | Can be **superseded**; original retained for audit; explicit `superseded_by` edge |
 | `rule` | "Never write to `.git/`" | Edit in place; append changelog section in body |
-| `procedure` | "How to restart Hani via systemd" | Edit in place; emphasize idempotency / no-breaking-change |
-| `relation` | "Hani routes to `knowledge_shelf` via routing signal" | Must sync with system reality; both endpoints updated in lockstep |
+| `procedure` | "How to restart technical_architect via systemd" | Edit in place; emphasize idempotency / no-breaking-change |
+| `relation` | "technical_architect routes to `knowledge_shelf` via routing signal" | Must sync with system reality; both endpoints updated in lockstep |
 
 These types are values for the `type` frontmatter field. They are not enforced by the framework but inform the LLM agent's update flow.
 
@@ -73,7 +73,7 @@ Considered alternatives and why they were rejected:
 
 | Alternative | Why rejected |
 |---|---|
-| **Section as node** (under `#` heading) | Heading text is mutable; renaming "## 决策" → "## 最终决策" silently breaks references. ID instability is a fatal flaw for a knowledge graph. |
+| **Section as node** (under `#` heading) | Heading text is mutable; renaming "## Decision" → "## Final Decision" silently breaks references. ID instability is a fatal flaw for a knowledge graph. |
 | **Obsidian block reference (`^block-id`)** | Pollutes Markdown source with noise; can't carry rich metadata (only ID); discouraged for human readability. |
 | **Extracted RDF triples (mem0 / GraphRAG style)** | Requires LLM extraction step on every edit; extraction quality variable; two stores to keep in sync; too much complexity for current scale (~100s of nodes). Deferred to long-term roadmap. |
 | **File with frontmatter** ✅ | MCP already parses frontmatter; ID lives in metadata, decoupled from content; clean Markdown source; one node per file is unambiguous. |
@@ -84,12 +84,12 @@ Considered alternatives and why they were rejected:
 ---
 knowledge_id: KNOW-042            # Immutable identity, format: KNOW-<integer>
 type: decision                    # fact | concept | decision | rule | procedure | relation
-title: 辩论子图采用 fresh_per_call # One-line title for indexing/listing
+title: Debate subgraph uses fresh_per_call # One-line title for indexing/listing
 status: active                    # active | superseded | invalidated | draft
 scope: ZenithLoom/framework       # Domain scope (project / module path)
 created: 2026-04-08
 updated: 2026-04-09
-authors: [hani, frankwings]       # Who curated this — agent IDs and human handles
+authors: [technical_architect, frankwings]       # Who curated this — agent IDs and human handles
 
 relations:
   supersedes: []                  # IDs of nodes this one replaces
@@ -100,8 +100,8 @@ relations:
   refines: []                     # I'm a more specific / precise version of these
 
 mentioned_in:                     # Reverse index: which documents reference me
-  - 设计细节/session-mode-design.md
-  - 设计细节/rag-architecture-design.md
+  - Design Details/session-mode-design.md
+  - Design Details/rag-architecture-design.md
 
 # Optional embedding metadata (added in Phase B)
 embed: true                       # Should this node be in the embedding index?
@@ -110,24 +110,24 @@ embed_updated: 2026-04-09T03:24:00Z
 embed_model: gemini-embedding-001
 ---
 
-# 决策
+# Decision
 
-采用 fresh_per_call，原因 ...
+Adopt fresh_per_call, reason ...
 
-# 上下文
+# Context
 
 ...
 
-# 历史
+# History
 
-2026-04-08 最初决策（KNOW-042 创建）
-2026-04-09 [被 KNOW-100 推翻] 发现 ...
+2026-04-08 Initial decision (KNOW-042 created)
+2026-04-09 [Overturned by KNOW-100] Found ...
 ```
 
 ### 2.4 ID Assignment
 
 - Format: `KNOW-<n>` where `n` is a monotonically increasing integer
-- Allocated by the curator (Jei, or human) at creation time
+- Allocated by the curator (knowledge_curator, or human) at creation time
 - A registry file (`knowledge/REGISTRY.md` or similar) tracks the next free ID
 - Once assigned, never reused (even after deletion)
 
@@ -137,9 +137,9 @@ Future option: namespace prefixes for multi-vault scenarios (e.g., `ZL-KNOW-042`
 
 ```
 Vault/
-├── 设计细节/                      # Documents (no knowledge_id)
-├── 问题整理/                      # Documents
-├── 操作手册/                      # Documents
+├── Design Details/                      # Documents (no knowledge_id)
+├── Problem Solving/                      # Documents
+├── Manuals/                      # Documents
 ├── ...
 └── knowledge/                     # Knowledge nodes (one file each)
     ├── REGISTRY.md                # ID allocator state
@@ -175,7 +175,7 @@ Edges in the knowledge graph can come from five sources, in order of preference:
 
 1. **Noise control** — at small graph scale (< 200 nodes), embedding-similarity edges produce many false positives. A graph with 1000 untrusted edges is harder to use than one with 100 trusted edges.
 2. **Commitment vs observation** — explicit edges are *commitments* (a curator validated this relationship). Similarity edges are *observations* (a pattern was detected). Mixing them confuses downstream consumers — "is this edge here because someone said so, or because the embedder said so?"
-3. **Forces curator discipline** — requiring explicit relations forces the LLM agent (Jei) to think about how a new node fits into the existing graph at creation time, surfacing potential contradictions / duplications early.
+3. **Forces curator discipline** — requiring explicit relations forces the LLM agent (knowledge_curator) to think about how a new node fits into the existing graph at creation time, surfacing potential contradictions / duplications early.
 4. **Cheap to add later** — embeddings are a separable layer. Deferring them locks in nothing.
 
 ### 3.4 Edge Types: Semantics
@@ -201,7 +201,7 @@ When a node's `status` changes, the framework should:
 | `active → invalidated` | Stronger notification — nodes with `depends_on` are now suspect. |
 | `* → active` *(undeleting)* | No automatic action; curator handles re-validation manually. |
 
-These notifications are **not implemented in Phase A**. In Phase A, the agent (Jei) is responsible for finding and reviewing affected nodes when she invalidates / supersedes a node.
+These notifications are **not implemented in Phase A**. In Phase A, the agent (knowledge_curator) is responsible for finding and reviewing affected nodes when she invalidates / supersedes a node.
 
 ---
 
@@ -229,7 +229,7 @@ Not every node should be embedded. Recommended tiering by type:
 | Type | Embed required? | Reason |
 |---|---|---|
 | `decision` | ✅ Yes | Frequently looked up via "what did we decide about X" semantic queries |
-| `concept` | ✅ Yes | Cross-terminology mapping ("session 共享" vs "context 隔离") |
+| `concept` | ✅ Yes | Cross-terminology mapping ("session sharing" vs "context isolation") |
 | `rule` | ✅ Yes | "Are there rules about X?" |
 | `procedure` | ✅ Yes | "How do I X?" |
 | `fact` | ⚠️ Optional | Most facts are queried by ID or metadata; embed only if heavily searched |
@@ -290,7 +290,7 @@ Adoption is incremental. Each phase produces a working system; later phases add 
 - Three-layer security (path sandbox + blacklist + soft delete to `.trash/`)
 - CAS optimistic locking + per-file `asyncio.Lock`
 - `knowledge_shelf` subgraph with Gemini integration
-- Jei (Knowledge Curator) agent dedicated to vault operations
+- knowledge_curator (Knowledge Curator) agent dedicated to vault operations
 - WSL↔Windows rsync sync (one-way push)
 - LangGraph state integration (`knowledge_vault`, `knowledge_result` auto-injection)
 - Implicit edges (wikilinks `[[...]]`, tag co-occurrence)
@@ -329,7 +329,7 @@ Add the formalization layer described in §2-§3 of this document:
 - Keyword full-text search (existing `obsidian_search_files`)
 - Graph traversal (BFS along typed edges)
 
-**Hard rule for the LLM curator (Jei):**
+**Hard rule for the LLM curator (knowledge_curator):**
 > When creating a knowledge node, you MUST declare its `relations` (references, depends_on, supersedes if applicable). If you don't know related nodes, run `knowledge_search` first to find candidates from existing nodes. An undeclared relation = an orphan node that no one will find.
 
 **Coexistence:** Phase 1 capabilities remain active. Documents (files without `knowledge_id`) and knowledge nodes coexist in the same vault.
@@ -427,7 +427,7 @@ Suggested seed set, extracted from current architectural decisions, to validate 
 These seed nodes serve double duty:
 1. Validate the schema works in practice
 2. Document the most-referenced architectural commitments in the new format
-3. Give the LLM agent (Jei) examples to follow when creating new nodes
+3. Give the LLM agent (knowledge_curator) examples to follow when creating new nodes
 
 ---
 
@@ -436,9 +436,9 @@ These seed nodes serve double duty:
 | Doc | Relationship |
 |---|---|
 | `rag-architecture-design.md` | Detailed description of Phase 1 (current production file-based RAG). This doc adds Phase 2 onward (formal knowledge graph, embeddings, automatic discovery). |
-| `session-mode-design.md` | Governs how `knowledge_shelf` subgraph isolates context per call — relevant when curator agent (Jei) operates on the graph. |
-| `claude-cli-node-design.md` | LLM tool execution layer used by Jei to interact with the MCP. |
-| `Vault/知识/PrismRag-v4.0-设计文档.md` | The graph-first RAG paradigm explored long-term — Phase 4 aligns with its embedding-derived edge approach. |
+| `session-mode-design.md` | Governs how `knowledge_shelf` subgraph isolates context per call — relevant when curator agent (knowledge_curator) operates on the graph. |
+| `claude-cli-node-design.md` | LLM tool execution layer used by knowledge_curator to interact with the MCP. |
+| `Vault/Knowledge/PrismRag-v4.0-Design-Doc.md` | The graph-first RAG paradigm explored long-term — Phase 4 aligns with its embedding-derived edge approach. |
 
 ---
 

@@ -1,113 +1,113 @@
-# AI Test Suite — ApexCoder 编码能力测试标准
+# AI Test Suite — ApexCoder Coding Capability Benchmarks
 
-> 最后更新: 2026-04-17
-> 状态: Game 1 (Snake Battle) 完成，Game 2 (Othello) 和 Game 3 (Planet Wars) 待实现
+> Last updated: 2026-04-17
+> Status: Game 1 (Snake Battle) complete; Game 2 (Othello) and Game 3 (Planet Wars) pending
 
 ---
 
-## 目的
+## Purpose
 
-通过让 ApexCoder 从零实现多个 AI 对战游戏，量化评估其编码能力。每个游戏覆盖不同的算法范式，形成综合能力评估矩阵。
+Quantitatively evaluate ApexCoder's coding capability by having it implement multiple AI battle games from scratch. Each game covers a different algorithmic paradigm, forming a comprehensive capability assessment matrix.
 
-## 统一交付标准
+## Unified Delivery Standard
 
-每个游戏必须包含：
+Each game must include:
 
-| 组件 | 要求 |
-|------|------|
-| 游戏引擎 | 完整规则实现，headless 模式支持 |
-| AI 梯度 | 至少 3 级: Random → Greedy/Aggressive → Strategic |
-| Benchmark | 胜率矩阵、round-robin 锦标赛、性能计时 |
-| 可视化 | 关键帧 PNG + 动画 GIF 回放 |
-| 测试 | 单元测试 + 集成测试（AI 胜率断言） |
-| 设计文档 | 算法选择、架构决策、性能分析 |
+| Component | Requirement |
+|-----------|-------------|
+| Game engine | Full rules implementation, headless mode support |
+| AI tiers | At least 3 levels: Random → Greedy/Aggressive → Strategic |
+| Benchmark | Win-rate matrix, round-robin tournament, performance timing |
+| Visualization | Key-frame PNG + animated GIF replay |
+| Tests | Unit tests + integration tests (AI win-rate assertions) |
+| Design doc | Algorithm choices, architecture decisions, performance analysis |
 
-## Game 1: Snake Battle（双蛇对战）✅
+## Game 1: Snake Battle (Dual Snake) ✅
 
-**位置**: `EdenGateway/CompanyTests/CoderTest/snake_battle/`
+**Location**: `EdenGateway/CompanyTests/CoderTest/snake_battle/`
 
-**规则**: 30×30 网格，两条蛇同时移动，吃食物增长，碰撞判定（头对头长蛇赢、咬身体按 tail_portion 判定、自咬截断不死）。
+**Rules**: 30×30 grid, two snakes move simultaneously, eat food to grow, collision detection (head-to-head: longer snake wins; body bite: determined by tail_portion; self-bite: truncation, not death).
 
-**AI 层级**:
-| AI | 算法 | 复杂度 |
-|----|------|--------|
-| RandomAI | 随机安全方向 | O(1) |
-| GreedyAI | 最近食物贪心 | O(F) |
-| AggressiveAI | 距离 < 6 时拦截对手 + 食物贪心 | O(F) |
-| StrategicAI | 4 层优先级状态机: ABSOLUTE_SURVIVAL → SPACE_MAXIMIZE (Time-Stamped BFS Voronoi) → STRATEGIC_FEED → ATTACK (Minimax) | O(W×H) |
+**AI Tiers**:
+| AI | Algorithm | Complexity |
+|----|-----------|-----------|
+| RandomAI | Random safe direction | O(1) |
+| GreedyAI | Nearest food greedy | O(F) |
+| AggressiveAI | Intercept opponent when distance < 6 + food greedy | O(F) |
+| StrategicAI | 4-tier priority state machine: ABSOLUTE_SURVIVAL → SPACE_MAXIMIZE (Time-Stamped BFS Voronoi) → STRATEGIC_FEED → ATTACK (Minimax) | O(W×H) |
 
-**Benchmark 基线** (40 games, 30×30):
-| 对局 | StrategicAI 胜率 |
-|------|-----------------|
+**Benchmark Baseline** (40 games, 30×30):
+| Match | StrategicAI Win Rate |
+|-------|---------------------|
 | vs RandomAI | ~100% |
 | vs GreedyAI | ~95% |
 | vs AggressiveAI | ~75-82% |
 
-**考验的算法能力**: Voronoi 分区、Flood Fill、Minimax 搜索、状态机设计
+**Algorithms tested**: Voronoi partitioning, Flood Fill, Minimax search, state machine design
 
-**待实现**: PURSUIT 模式（辩论方案已定型，待 ApexCoder 编码）
+**Pending**: PURSUIT mode (debate proposal finalized, pending ApexCoder implementation)
 
-**可视化工具**: `snake_battle/visualize.py` — 关键帧 PNG + GIF 动画
-
----
-
-## Game 2: Othello（黑白棋）⏳
-
-**位置**: `EdenGateway/CompanyTests/CoderTest/othello/`（待创建）
-
-**规则**: 标准 8×8 黑白棋规则。双方轮流下子，必须翻转对方棋子，无合法步时跳过，棋盘满或双方无步时结束，棋子多者胜。
-
-**AI 层级设计**:
-| AI | 算法 | 复杂度 |
-|----|------|--------|
-| RandomAI | 随机合法步 | O(1) |
-| GreedyAI | 最大翻转数贪心 | O(N) |
-| PositionalAI | 位置权重表（角 > 边 > 中心）| O(N) |
-| StrategicAI | Alpha-Beta 剪枝 + 评估函数（角稳定性、行动力、边界棋子）| O(b^d) |
-
-**考验的算法能力**: Alpha-Beta 剪枝、评估函数设计、位棋盘优化、迭代加深
-
-**交付要求**: 同统一标准 + StrategicAI vs GreedyAI 胜率 ≥ 80%
+**Visualization tool**: `snake_battle/visualize.py` — key-frame PNG + GIF animation
 
 ---
 
-## Game 3: Planet Wars（星球大战）⏳
+## Game 2: Othello (Reversi) ⏳
 
-**位置**: `EdenGateway/CompanyTests/CoderTest/planet_wars/`（待创建）
+**Location**: `EdenGateway/CompanyTests/CoderTest/othello/` (to be created)
 
-**规则**: 基于 Google AI Challenge 2010。2D 星图上分布若干星球，每颗星球有归属（P1/P2/中立）和驻军数。双方同时下令，从己方星球派舰队攻占其他星球。舰队飞行需要时间（距离 ÷ 速度）。星球每回合自动产兵。全灭对方或超时比总兵力。
+**Rules**: Standard 8×8 Othello rules. Players take turns placing pieces; must flip opponent's pieces; skip when no legal move; ends when board is full or both players have no moves; most pieces wins.
 
-**AI 层级设计**:
-| AI | 算法 | 复杂度 |
-|----|------|--------|
-| RandomAI | 随机选源和目标 | O(1) |
-| GreedyAI | 攻击最弱可达星球 | O(P²) |
-| RushAI | 全力攻对手母星 | O(P) |
-| StrategicAI | 多目标优化: 增长率最大化 + 前线防御 + 时机判断（对手舰队在途时趁虚） | O(P² × T) |
+**AI Tier Design**:
+| AI | Algorithm | Complexity |
+|----|-----------|-----------|
+| RandomAI | Random legal move | O(1) |
+| GreedyAI | Maximum flip count greedy | O(N) |
+| PositionalAI | Position weight table (corners > edges > center) | O(N) |
+| StrategicAI | Alpha-Beta pruning + evaluation function (corner stability, mobility, edge pieces) | O(b^d) |
 
-**考验的算法能力**: 多目标资源分配、时间规划（舰队在途）、博弈预测、启发式评估
+**Algorithms tested**: Alpha-Beta pruning, evaluation function design, bitboard optimization, iterative deepening
 
-**交付要求**: 同统一标准 + StrategicAI vs GreedyAI 胜率 ≥ 70%
+**Delivery requirement**: same unified standard + StrategicAI vs GreedyAI win rate ≥ 80%
 
 ---
 
-## 能力评估矩阵
+## Game 3: Planet Wars ⏳
 
-| 算法能力 | Snake Battle | Othello | Planet Wars |
-|---------|:---:|:---:|:---:|
-| 搜索树 (Minimax/AB) | ✓ | ✓✓✓ | ✓ |
-| 空间推理 (Voronoi/Flood Fill) | ✓✓✓ | - | ✓ |
-| 评估函数设计 | ✓✓ | ✓✓✓ | ✓✓ |
-| 状态机 / 模式切换 | ✓✓✓ | ✓ | ✓✓ |
-| 资源分配 / 多目标优化 | ✓ | - | ✓✓✓ |
-| 时间规划 / 预测 | - | ✓ | ✓✓✓ |
-| 性能优化 (< 100ms) | ✓✓ | ✓✓ | ✓ |
+**Location**: `EdenGateway/CompanyTests/CoderTest/planet_wars/` (to be created)
 
-## 工作流
+**Rules**: Based on Google AI Challenge 2010. Planets distributed on a 2D star map, each planet has ownership (P1/P2/neutral) and garrison count. Both players issue orders simultaneously, dispatching fleets from their planets to capture others. Fleet travel takes time (distance ÷ speed). Planets auto-produce troops each turn. Win by eliminating the opponent or highest troop count at timeout.
+
+**AI Tier Design**:
+| AI | Algorithm | Complexity |
+|----|-----------|-----------|
+| RandomAI | Random source and target | O(1) |
+| GreedyAI | Attack weakest reachable planet | O(P²) |
+| RushAI | Full force attack opponent's home planet | O(P) |
+| StrategicAI | Multi-objective optimization: growth rate maximization + front-line defense + timing (exploit vulnerability when opponent's fleet is in transit) | O(P² × T) |
+
+**Algorithms tested**: multi-objective resource allocation, time planning (fleet in transit), game theory prediction, heuristic evaluation
+
+**Delivery requirement**: same unified standard + StrategicAI vs GreedyAI win rate ≥ 70%
+
+---
+
+## Capability Assessment Matrix
+
+| Algorithm Capability | Snake Battle | Othello | Planet Wars |
+|---------------------|:---:|:---:|:---:|
+| Search tree (Minimax/AB) | ✓ | ✓✓✓ | ✓ |
+| Spatial reasoning (Voronoi/Flood Fill) | ✓✓✓ | - | ✓ |
+| Evaluation function design | ✓✓ | ✓✓✓ | ✓✓ |
+| State machine / mode switching | ✓✓✓ | ✓ | ✓✓ |
+| Resource allocation / multi-objective optimization | ✓ | - | ✓✓✓ |
+| Time planning / prediction | - | ✓ | ✓✓✓ |
+| Performance optimization (< 100ms) | ✓✓ | ✓✓ | ✓ |
+
+## Workflow
 
 ```
-需求 → Hani 评估
-  ├── 规则明确（如 Othello）→ 直接下发 ApexCoder
-  └── 需要设计（如 Planet Wars 引擎）→ debate_design → 辩论结论 → ApexCoder
-ApexCoder 编码 → Hani 验证（benchmark + 可视化）→ 记录结果到本文档
+Requirements → technical_architect evaluation
+  ├── Rules clear (e.g. Othello) → dispatch directly to ApexCoder
+  └── Design needed (e.g. Planet Wars engine) → debate_design → debate conclusion → ApexCoder
+ApexCoder codes → technical_architect validates (benchmark + visualization) → record results in this document
 ```

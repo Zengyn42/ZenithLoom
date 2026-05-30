@@ -27,8 +27,8 @@ The design optimizes for three properties:
 3. **Sandboxed LLM access** — agents never touch the vault filesystem directly through raw OS tools; all mutations are mediated by a path-constrained server that enforces blacklists and soft-delete.
 
 Agents access the vault in one of two ways:
-- **Mediated** (Jei, Knowledge Curator) — via the MCP server, with routing through a dedicated subgraph
-- **Direct** (Hani, Technical Architect) — via Claude's native `Read / Glob / Grep` tools, read-only in practice
+- **Mediated** (Knowledge_Curator, Knowledge Curator) — via the MCP server, with routing through a dedicated subgraph
+- **Direct** (Technical_Architect, Technical Architect) — via Claude's native `Read / Glob / Grep` tools, read-only in practice
 
 ## Design Principles
 
@@ -52,14 +52,14 @@ The vault is a conventional Obsidian repository on the WSL filesystem:
 ├── .git/                # Version control (not via MCP)
 ├── .obsidian/           # Obsidian GUI config, plugins, workspace state
 ├── .trash/              # Soft-delete staging area (created on first delete)
-├── 设计细节/            # Design detail specs
-├── 问题整理/            # Issue tracking and post-mortems
-├── 操作手册/            # Operational runbooks
-├── 概念介绍/            # Concept definitions
-├── 项目管理/            # Project management docs
-├── 知识/                # External knowledge imports (RAG research, papers)
+├── Design Details/            # Design detail specs
+├── Problem Solving/            # Issue tracking and post-mortems
+├── Manuals/            # Operational runbooks
+├── Concept Definitions/            # Concept definitions
+├── Project Management/            # Project management docs
+├── Knowledge/                # External knowledge imports (RAG research, papers)
 ├── superpowers/         # Skill specs
-└── 未分类/              # Uncategorized
+└── Uncategorized/              # Uncategorized
 ```
 
 A Windows mirror exists at `/mnt/c/Users/kingy/Documents/Obsidian Vault/` for use by the Obsidian desktop app. See Layer 6 (Sync).
@@ -81,7 +81,7 @@ tags:
   - nested/tag/path
 created: 2026-03-21
 aliases: [Alternative Name]
-category: 设计细节
+category: Design Details
 ---
 # Note Title
 
@@ -115,8 +115,8 @@ There is no vector store, no embedding pipeline, no inverted index. Every search
 
 **When this breaks:**
 - > 10,000 files → `rglob` walks become the bottleneck
-- Cross-lingual retrieval ("找上周讨论" where notes are in English) → regex can't bridge language gaps
-- Semantic queries ("与 session 污染相关的讨论") where the exact keywords don't appear in the target docs
+- Cross-lingual retrieval ("look for last week's discussion" where notes are in English) → regex can't bridge language gaps
+- Semantic queries ("discussions related to session pollution") where the exact keywords don't appear in the target docs
 
 See `docs/vault/architecture/rag-architecture-design.md` future sections (out of scope for this doc) or the PrismRag v4.0 design in the vault itself for the graph-first evolution plan.
 
@@ -192,7 +192,7 @@ The Obsidian MCP server is the sole mediated access point to the vault. It lives
 3. Detached subprocess (`start_new_session=True`) with PID written to `data/obsidian/obsidian.pid`
 4. SSE readiness polling before registering tools
 
-**Transport**: SSE over HTTP by default. stdio mode exists for single-client embedding, but SSE is used in production because multiple agents (Hani, Jei) share one daemon.
+**Transport**: SSE over HTTP by default. stdio mode exists for single-client embedding, but SSE is used in production because multiple agents (Technical_Architect, Knowledge_Curator) share one daemon.
 
 ## 3.2 Tool Surface
 
@@ -322,7 +322,7 @@ Wraps the MCP-mediated vault access as a reusable LangGraph subgraph. Any parent
 ```json
 {
   "name": "knowledge_shelf",
-  "routing_hint": "当需要读写、搜索、管理 Obsidian Vault 中的笔记时使用...",
+  "routing_hint": "Use when you need to read, write, search, and manage notes in the Obsidian Vault...",
   "llm": "gemini",
   "graph": {
     "entry": "gemini_obsidian",
@@ -380,11 +380,11 @@ The choice of Gemini for this subgraph is deliberate:
 
 - Vault operations are largely I/O-bounded (search, read, minor edits) — no deep reasoning required, which plays to Gemini's cheaper per-token cost
 - Gemini's longer context window accommodates multiple large notes without aggressive truncation
-- Jei (the role agent owning this subgraph) is also Gemini-based, making MCP session sharing conceptually cleaner (though session_mode currently prevents cross-subgraph sharing)
+- Knowledge_Curator (the role agent owning this subgraph) is also Gemini-based, making MCP session sharing conceptually cleaner (though session_mode currently prevents cross-subgraph sharing)
 
 ## 4.5 Session Mode
 
-When referenced from a parent agent, `knowledge_shelf` should be declared with `session_mode: "fresh_per_call"` (see `docs/vault/architecture/session-mode-design.md`) to ensure each query starts with a clean Gemini session. The current Hani blueprint doesn't yet reference knowledge_shelf; it accesses the vault through Jei instead.
+When referenced from a parent agent, `knowledge_shelf` should be declared with `session_mode: "fresh_per_call"` (see `docs/vault/architecture/session-mode-design.md`) to ensure each query starts with a clean Gemini session. The current Technical_Architect blueprint doesn't yet reference knowledge_shelf; it accesses the vault through Knowledge_Curator instead.
 
 ---
 
@@ -392,53 +392,53 @@ When referenced from a parent agent, `knowledge_shelf` should be declared with `
 
 Three agents have three distinct access patterns to the vault.
 
-## 5.1 Jei — Knowledge Curator (mediated access)
+## 5.1 Knowledge_Curator — Knowledge Curator (mediated access)
 
-`blueprints/role_agents/knowledge_curator/`:
+`blueprints/role_agents/Knowledge_Curator/`:
 
 - **LLM**: Gemini (consistent with knowledge_shelf)
 - **MCP attached**: `obsidian-vault` (shared daemon)
 - **Access pattern**: Routes to `knowledge_shelf` subgraph for any vault operation
 - **Additional subgraphs**: `render_slides` (Presenton), `render_docs` (Pandoc)
 
-Jei is the **dedicated curator role**. Her `PROTOCOL.md` makes routing explicit — she emits `{"route": "knowledge_shelf", "context": "..."}` as the first line of her output for vault tasks, and the framework handles the actual MCP interaction inside the subgraph.
+Knowledge_Curator is the **dedicated curator role**. Her `PROTOCOL.md` makes routing explicit — she emits `{"route": "knowledge_shelf", "context": "..."}` as the first line of her output for vault tasks, and the framework handles the actual MCP interaction inside the subgraph.
 
 Routing hint in her agent blueprint reads:
-> "当用户询问 Obsidian 笔记、知识库内容、文档整理时使用 knowledge_shelf 子图。"
+> "Use the knowledge_shelf subgraph when the user asks about Obsidian notes, knowledge base content, or document organization."
 
-**Why route instead of calling MCP directly from Jei's main node?** Isolation. The routing keeps Jei's top-level session clean — it sees only the final `knowledge_result`, not the multi-turn MCP tool-call dialogue. This prevents tool-call debris from polluting Jei's cross-session memory.
+**Why route instead of calling MCP directly from Knowledge_Curator's main node?** Isolation. The routing keeps Knowledge_Curator's top-level session clean — it sees only the final `knowledge_result`, not the multi-turn MCP tool-call dialogue. This prevents tool-call debris from polluting Knowledge_Curator's cross-session memory.
 
-## 5.2 Hani — Technical Architect (direct file access)
+## 5.2 Technical_Architect — Technical Architect (direct file access)
 
-`blueprints/role_agents/technical_architect/`:
+`blueprints/role_agents/Technical_Architect/`:
 
 - **LLM**: Claude
 - **MCP attached**: `obsidian-vault` declared but… essentially unused in practice
 - **Access pattern**: Direct `Read`, `Glob`, `Grep`, `Bash` tools on the filesystem
 - **Routes to knowledge_shelf**: No (could, but not wired in current entity.json)
 
-Hani reads the vault like any other directory using Claude's native tools. She doesn't write to it via MCP — her workflow is read-only in practice; any vault writes would either:
+Technical_Architect reads the vault like any other directory using Claude's native tools. She doesn't write to it via MCP — her workflow is read-only in practice; any vault writes would either:
 
 1. Go through raw `Write`/`Edit` (bypasses CAS but OK for single-agent use), or
-2. Be delegated to Jei by conversation context (Hani tells the user "ask Jei to file this in the vault")
+2. Be delegated to Knowledge_Curator by conversation context (Technical_Architect tells the user "ask Knowledge_Curator to file this in the vault")
 
-**Trade-off**: Hani gets faster, more direct access (no subgraph round-trip, no MCP serialization) but loses CAS safety and path sandboxing. This is acceptable because Hani is an architect role — her modifications to the vault are rare and always deliberate.
+**Trade-off**: Technical_Architect gets faster, more direct access (no subgraph round-trip, no MCP serialization) but loses CAS safety and path sandboxing. This is acceptable because Technical_Architect is an architect role — her modifications to the vault are rare and always deliberate.
 
-## 5.3 Asa — Administrative Officer (no vault access)
+## 5.3 Administrative_Officer — Administrative Officer (no vault access)
 
 - **LLM**: Llama (local Ollama)
 - **MCP attached**: None (no obsidian-vault entry in her config)
 - **Access pattern**: Local file I/O only, confined to her working scope
 
-Asa has no RAG role. She exists for operational tasks (heartbeat monitoring, system stats, background jobs) that don't involve knowledge retrieval.
+Administrative_Officer has no RAG role. She exists for operational tasks (heartbeat monitoring, system stats, background jobs) that don't involve knowledge retrieval.
 
 ## 5.4 Access Pattern Matrix
 
 | Agent | LLM | MCP | Subgraph | Direct file I/O | Writes CAS-safe? |
 |---|---|---|---|---|---|
-| Jei | Gemini | ✅ obsidian-vault | ✅ knowledge_shelf | No | ✅ |
-| Hani | Claude | ✅ obsidian-vault (declared, unused) | No | ✅ (Read/Glob/Grep) | ❌ (if writes via raw Write) |
-| Asa | Llama | No | No | Local scope only | N/A |
+| Knowledge_Curator | Gemini | ✅ obsidian-vault | ✅ knowledge_shelf | No | ✅ |
+| Technical_Architect | Claude | ✅ obsidian-vault (declared, unused) | No | ✅ (Read/Glob/Grep) | ❌ (if writes via raw Write) |
+| Administrative_Officer | Llama | No | No | Local scope only | N/A |
 
 ---
 
@@ -461,7 +461,7 @@ Asa has no RAG role. She exists for operational tasks (heartbeat monitoring, sys
    (manual / CI)
 ```
 
-**Source of truth**: WSL vault. This is what the MCP server serves, what Jei reads, what knowledge_shelf writes.
+**Source of truth**: WSL vault. This is what the MCP server serves, what Knowledge_Curator reads, what knowledge_shelf writes.
 
 **Windows mirror**: Updated by rsync at the end of every `knowledge_shelf` invocation. Opened in the Obsidian desktop app for human editing.
 
@@ -491,7 +491,7 @@ There is **no automatic bidirectional sync**. The design deliberately trades con
 
 ## 6.4 The Missing `vault-sync` MCP
 
-Hani's `entity.json` declares a second MCP:
+Technical_Architect's `entity.json` declares a second MCP:
 
 ```json
 {
@@ -505,7 +505,7 @@ Hani's `entity.json` declares a second MCP:
 
 **This module does not exist yet.** It's a forward-looking declaration. The intent was to wrap the rsync operation behind an MCP tool (`sync_pull`, `sync_push`, `sync_status`) so agents could trigger sync explicitly rather than having it tied to the `knowledge_shelf` exit node.
 
-Current behavior if Hani references this MCP: `MCPLauncher` will fail to start it and log a warning; Hani will continue without it since no tool actually depends on it.
+Current behavior if Technical_Architect references this MCP: `MCPLauncher` will fail to start it and log a warning; Technical_Architect will continue without it since no tool actually depends on it.
 
 ---
 
@@ -557,21 +557,21 @@ This ensures each `knowledge_shelf` call starts clean — Gemini won't see its o
 
 # End-to-End Flow
 
-## Scenario: User asks Hani "查一下我们上周讨论的 session_mode"
+## Scenario: User asks Technical_Architect "look up the session_mode we discussed last week"
 
 ### Step-by-step
 
 ```
-1. User → Hani (Discord channel)
-   "查一下我们上周讨论的 session_mode"
+1. User → Technical_Architect (Discord channel)
+   "look up the session_mode we discussed last week"
 
-2. Hani's claude_main node runs
+2. Technical_Architect's claude_main node runs
    - Reads messages[-1].content as latest_input
-   - system_prompt includes Hani's persona (ROLE.md + PROTOCOL.md)
+   - system_prompt includes Technical_Architect's persona (ROLE.md + PROTOCOL.md)
    - Decides: this is a vault lookup
    - Option A (current): Claude uses Glob + Grep directly on /home/kingy/Foundation/NimbusVault
    - Option B (if wired): Claude emits {"route": "knowledge_shelf", "context": "..."}
-                          → parent graph routes to Jei or knowledge_shelf subgraph
+                          → parent graph routes to Knowledge_Curator or knowledge_shelf subgraph
 
 3a. Option A — direct access
    - Claude calls Glob("/home/kingy/Foundation/NimbusVault/**/*.md")
@@ -599,7 +599,7 @@ This ensures each `knowledge_shelf` call starts clean — Gemini won't see its o
 ```
 After user input:
   state = {
-    messages: [HumanMessage("查一下我们上周讨论的 session_mode")],
+    messages: [HumanMessage("look up the session_mode we discussed last week")],
     workspace: "/home/kingy/Foundation",
     knowledge_vault: "/home/kingy/Foundation/NimbusVault",
     ...
@@ -607,7 +607,7 @@ After user input:
 
 After claude_main:
   state.routing_target = "knowledge_shelf"
-  state.routing_context = "查 session_mode 相关笔记"
+  state.routing_context = "look up session_mode related notes"
 
 After _fresh_wrapper (entering subgraph):
   state.node_sessions = {}
@@ -617,7 +617,7 @@ After _fresh_wrapper (entering subgraph):
   # or explicitly cleared by _fresh_wrapper
 
 After gemini_obsidian:
-  state.knowledge_result = "找到以下相关笔记: session-mode-design.md..."
+  state.knowledge_result = "Found the following related notes: session-mode-design.md..."
   state.node_sessions = {"knowledge_shelf": "<gemini_session_id>"}
 
 After vault_sync_push:
@@ -639,9 +639,9 @@ Final output:
 
 **Detection**: `MCPLauncher.wait_ready()` times out (default 10s).
 
-**Current behavior**: Agent bootstrap raises; agent fails to start. No graceful degradation — without the MCP, Jei is crippled (all her vault tools are gone).
+**Current behavior**: Agent bootstrap raises; agent fails to start. No graceful degradation — without the MCP, Knowledge_Curator is crippled (all her vault tools are gone).
 
-**Mitigation**: Hani's direct file access works independently of the MCP, so the user can at least ask Hani for vault lookups while the MCP is down.
+**Mitigation**: Technical_Architect's direct file access works independently of the MCP, so the user can at least ask Technical_Architect for vault lookups while the MCP is down.
 
 ## 8.2 CAS conflict (concurrent write)
 
@@ -680,7 +680,7 @@ Final output:
 3. **No incremental index**. Every search is a fresh pass; no caching beyond OS page cache.
 4. **One-way sync**. Windows edits require manual git pull to reach WSL.
 5. **No authentication on MCP**. The SSE server listens on localhost:8101 with no auth. Acceptable in WSL (single-user host) but would need TLS + auth for multi-user or network deployment.
-6. **`vault-sync` MCP is declared but not implemented** — Hani's entity.json references a module that doesn't exist. Currently harmless (the launcher logs a warning) but leaves a hanging reference.
+6. **`vault-sync` MCP is declared but not implemented** — Technical_Architect's entity.json references a module that doesn't exist. Currently harmless (the launcher logs a warning) but leaves a hanging reference.
 7. **No version history exposed to LLM**. The vault has a git repo, but agents can't query "what did this note look like last week" through the MCP. A future `obsidian_note_history(path, since)` tool would close this gap.
 8. **No structural queries**. "Find all notes tagged #architecture created after 2026-03" requires a frontmatter-indexing layer that doesn't exist. Workaround: list + read + filter in LLM.
 
@@ -688,7 +688,7 @@ Final output:
 
 # Future Direction (Summary)
 
-A full graph-first RAG v4.0 design exists in the vault itself (`Vault/知识/PrismRag-v4.0-设计文档.md`). Headline plans:
+A full graph-first RAG v4.0 design exists in the vault itself (`Vault/Knowledge/PrismRag-v4.0-Design-Doc.md`). Headline plans:
 
 - NetworkX knowledge graph built from wikilinks + embedding-derived edges
 - Leiden community detection to create hierarchical topic clusters
@@ -709,6 +709,6 @@ That's a substantial architectural change — out of scope for this document, wh
 - `mcp_servers/obsidian/core/vault.py` — path sandbox and security
 - `mcp_servers/obsidian/core/cas.py` — compare-and-swap implementation
 - `blueprints/functional_graphs/knowledge_shelf/entity.json` — subgraph definition
-- `blueprints/role_agents/knowledge_curator/` — Jei's persona and protocol
+- `blueprints/role_agents/Knowledge_Curator/` — Knowledge_Curator's persona and protocol
 - `framework/mcp_launcher.py` — MCP lifecycle management
-- `Vault/知识/PrismRag-v4.0-设计文档.md` — future graph-first RAG design (in vault)
+- `Vault/Knowledge/PrismRag-v4.0-Design-Doc.md` — future graph-first RAG design (in vault)

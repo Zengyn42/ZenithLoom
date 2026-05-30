@@ -1,49 +1,51 @@
 # ZenithLoom
 
-多 LLM Agent 编排框架，基于 LangGraph 构建。支持声明式图定义、多 Session 管理、子图嵌套、以及 Git 原子回滚。
+**Note:** The core engine of the project resides in this `ZenithLoom` repository. However, all the `blueprints` have been moved to a separate repository called `VoidDraft`.
+
+A multi-LLM Agent orchestration framework built on LangGraph. It supports declarative graph definition, multi-session management, subgraph nesting, and atomic Git rollbacks.
 
 ---
 
-## 目录结构
+## Directory Structure
 
 ```
 ZenithLoom/
-├── main.py                        # 入口（CLI / Discord / Tmux 模式）
-├── framework/                     # 核心框架层
+├── main.py                        # Entry point (CLI / Discord / Tmux modes)
+├── framework/                     # Core framework layer
 │   ├── state.py                   # BaseAgentState / DebateState (TypedDict)
-│   ├── config.py                  # AgentConfig dataclass（from entity.json）
-│   ├── registry.py                # 节点/条件注册（装饰器驱动）
-│   ├── agent_loader.py            # AgentLoader：加载 entity.json、编译图
-│   ├── graph.py                   # build_agent_graph()（Priority 3 默认图）
-│   ├── graph_controller.py        # GraphController：图执行 + Session 管理
-│   ├── builtins.py                # 注册所有内置节点类型和条件谓词
+│   ├── config.py                  # AgentConfig dataclass (from entity.json)
+│   ├── registry.py                # Node/condition registration (decorator-driven)
+│   ├── agent_loader.py            # AgentLoader: loads entity.json, compiles graph
+│   ├── graph.py                   # build_agent_graph() (Priority 3 default graph)
+│   ├── graph_controller.py        # GraphController: graph execution + session management
+│   ├── builtins.py                # Registers all built-in node types and condition predicates
 │   ├── debug.py                   # is_debug() / set_debug()
-│   ├── session_mgr.py             # SessionManager（sessions.json I/O）
-│   ├── signal_parser.py           # 路由信号提取（JSON 解析）
-│   ├── token_tracker.py           # Token 用量统计
-│   ├── nodes/                     # 节点实现
-│   │   ├── agent_node.py          # AgentNode 基类（抽象）
-│   │   ├── agent_ref_node.py      # AgentRefNode：嵌入外部 Agent 子图
+│   ├── session_mgr.py             # SessionManager (sessions.json I/O)
+│   ├── signal_parser.py           # Routing signal extraction (JSON parsing)
+│   ├── token_tracker.py           # Token usage tracking
+│   ├── nodes/                     # Node implementations
+│   │   ├── agent_node.py          # AgentNode base class (abstract)
+│   │   ├── agent_ref_node.py      # AgentRefNode: embeds external Agent subgraphs
 │   │   ├── git_nodes.py           # GitSnapshotNode / GitRollbackNode
-│   │   ├── validate_node.py       # ValidateNode：输出质量检查
-│   │   ├── vram_flush_node.py     # VramFlushNode：GPU 显存清理
-│   │   └── subgraph_mapper.py     # SubgraphMapperNode：字段映射
+│   │   ├── validate_node.py       # ValidateNode: output quality checks
+│   │   ├── vram_flush_node.py     # VramFlushNode: GPU VRAM cleanup
+│   │   └── subgraph_mapper.py     # SubgraphMapperNode: field mapping
 │   ├── claude/
-│   │   └── node.py                # ClaudeNode（Claude SDK，可 resume）
+│   │   └── node.py                # ClaudeNode (Claude SDK, resumable)
 │   ├── gemini/
-│   │   ├── node.py                # GeminiNode（Gemini API，独立 Session）
-│   │   └── gemini_session.py      # Session 存储 & 刷新
+│   │   ├── node.py                # GeminiNode (Gemini API, separate Session)
+│   │   └── gemini_session.py      # Session storage & refresh
 │   └── llama/
-│       └── node.py                # LlamaNode（Ollama/vLLM，stub）
-├── agents/                        # 每个 Agent 一个目录
-│   ├── hani/                      # 主 Agent（Claude 驱动）
-│   │   ├── entity.json             # 图配置 + 工具 + 节点
-│   │   ├── sessions.json          # 活跃 Session & node_sessions
-│   │   ├── hani.db                # LangGraph checkpoint（SQLite）
-│   │   └── *.md                   # Persona 文件（SOUL / IDENTITY / ...）
-│   ├── debate_gemini_first/       # 辩论子图（Gemini 先手）
+│       └── node.py                # LlamaNode (Ollama/vLLM, stub)
+├── agents/                        # One directory per Agent
+│   ├── technical_architect/       # Main Agent (Claude-driven)
+│   │   ├── entity.json             # Graph config + tools + nodes
+│   │   ├── sessions.json          # Active sessions & node_sessions
+│   │   ├── technical_architect.db # LangGraph checkpoint (SQLite)
+│   │   └── *.md                   # Persona files (SOUL / IDENTITY / ...)
+│   ├── debate_gemini_first/       # Debate subgraph (Gemini starts)
 │   │   └── entity.json
-│   └── debate_claude_first/       # 辩论子图（Claude 先手）
+│   └── debate_claude_first/       # Debate subgraph (Claude starts)
 │       └── entity.json
 └── interfaces/
     ├── cli.py                     # run_cli() / run_tmux()
@@ -52,73 +54,73 @@ ZenithLoom/
 
 ---
 
-## 状态 Schema
+## State Schema
 
-### BaseAgentState（主图）
+### BaseAgentState (Main Graph)
 
 ```python
 class BaseAgentState(TypedDict):
-    messages:           list[BaseMessage]   # 最近 2 条（reducer: _keep_last_2）
-    routing_target:     str                 # 路由目标节点 ID（空 = 无路由）
-    routing_context:    str                 # 传给路由目标节点的问题/背景
-    workspace:          str                 # 当前工作目录
-    project_root:       str                 # !setproject 指定的项目根
+    messages:           list[BaseMessage]   # Last 2 messages (reducer: _keep_last_2)
+    routing_target:     str                 # Target node ID for routing (empty = no route)
+    routing_context:    str                 # Question/context for the routed node
+    workspace:          str                 # Current working directory
+    project_root:       str                 # Project root set by !setproject
     project_meta:       dict                # {"plan": "path", "tasks": "path"}
-    consult_count:      int                 # 当前轮咨询次数
-    last_stable_commit: str                 # git snapshot hash
-    retry_count:        int                 # rollback 重试计数
-    rollback_reason:    str                 # 非空 = 触发 rollback
+    consult_count:      int                 # Number of consultations in the current turn
+    last_stable_commit: str                 # Git snapshot hash
+    retry_count:        int                 # Rollback retry counter
+    rollback_reason:    str                 # Not empty = trigger rollback
     node_sessions:      dict                # {"claude_main": uuid, ...}
-    knowledge_vault:    str                 # Obsidian vault 根路径
-    project_docs:       str                 # 子项目 /docs/ 路径
-    debate_conclusion:  str                 # 辩论子图最终结论
+    knowledge_vault:    str                 # Obsidian vault root path
+    project_docs:       str                 # Subproject /docs/ path
+    debate_conclusion:  str                 # Final conclusion from the debate subgraph
 ```
 
-### DebateState（辩论子图）
+### DebateState (Debate Subgraph)
 
-与 `BaseAgentState` 字段一致，但 `messages` 使用 `add_messages` reducer（累积所有轮次消息，不截断）。
-
----
-
-## Agent 配置（entity.json）
-
-### 顶层字段
-
-| 字段 | 类型 | 说明 |
-|------|------|------|
-| `name` | str | Agent 名称 |
-| `tools` | list[str] | 允许的工具列表 |
-| `permission_mode` | str | Claude SDK 权限模式（`bypassPermissions` 等） |
-| `max_retries` | int | git rollback 最大重试次数（默认 2） |
-| `db_path` | str | LangGraph checkpoint SQLite 路径 |
-| `sessions_file` | str | sessions.json 路径 |
-| `setting_sources` | list \| null | SDK 技能注入来源（注：`["user","project"]` 增加 ~14k token 系统提示） |
-| `persona_files` | list[str] | Persona 文件列表，拼接为 system prompt |
-| `discord_token` | str | Discord Bot Token（env `DISCORD_BOT_TOKEN` 优先） |
-| `discord_allowed_users` | list[str] | 白名单用户（env `DISCORD_ALLOWED_USERS` 逗号分隔覆盖） |
-| `graph` | dict | 图定义（nodes + edges） |
+Same fields as `BaseAgentState`, but `messages` uses the `add_messages` reducer (accumulates all messages, no truncation).
 
 ---
 
-## 节点类型
+## Agent Configuration (entity.json)
 
-| 类型 | 实现类 | 用途 | Session 存储 |
-|------|--------|------|-------------|
-| `CLAUDE_CLI` | ClaudeCLINode | Claude CLI subprocess（直接调用 claude 命令） | `~/.claude/` |
-| `CLAUDE_SDK` | ClaudeSDKNode | Claude Agent SDK（通过 claude_agent_sdk） | `~/.claude/` |
-| `GEMINI_CLI` | GeminiNode | Gemini API 对话 | `~/.gemini/tmp/` |
-| `LOCAL_VLLM` | LlamaNode | 本地 Ollama/vLLM（stub） | 无 |
-| `GIT_SNAPSHOT` | GitSnapshotNode | 任务前自动 git commit | 无 |
-| `GIT_ROLLBACK` | GitRollbackNode | 验证失败时回退到快照 | 无 |
-| `VALIDATE` | ValidateNode | 输出质量检查（Python 语法、超时检测等） | 无 |
-| `VRAM_FLUSH` | VramFlushNode | 杀死残留 GPU 进程 | 无 |
-| `SUBGRAPH_MAPPER` | SubgraphMapperNode | 父图↔子图字段重映射 | 无 |
-| `AGENT_REF` | AgentRefNode | 将外部 Agent 目录编译为子图并嵌入 | 继承父图 |
+### Top-level Fields
 
-### 自定义节点注册
+| Field                   | Type         | Description                                                              |
+|-------------------------|--------------|--------------------------------------------------------------------------|
+| `name`                  | str          | Agent name                                                               |
+| `tools`                 | list[str]    | List of allowed tools                                                    |
+| `permission_mode`       | str          | Claude SDK permission mode (`bypassPermissions`, etc.)                   |
+| `max_retries`           | int          | Max git rollback retries (default 2)                                     |
+| `db_path`               | str          | LangGraph checkpoint SQLite path                                         |
+| `sessions_file`         | str          | sessions.json path                                                       |
+| `setting_sources`       | list \| null | SDK skill injection sources (Note: `["user","project"]` adds ~14k tokens to system prompt) |
+| `persona_files`         | list[str]    | List of persona files, concatenated into the system prompt               |
+| `discord_token`         | str          | Discord Bot Token (env `DISCORD_BOT_TOKEN` takes precedence)             |
+| `discord_allowed_users` | list[str]    | Whitelisted users (comma-separated `DISCORD_ALLOWED_USERS` env var overrides) |
+| `graph`                 | dict         | Graph definition (nodes + edges)                                         |
+
+---
+
+## Node Types
+
+| Type                | Implementation Class    | Purpose                                               | Session Storage     |
+|---------------------|-------------------------|-------------------------------------------------------|---------------------|
+| `CLAUDE_CLI`        | ClaudeCLINode           | Claude CLI subprocess (calls `claude` command directly) | `~/.claude/`        |
+| `CLAUDE_SDK`        | ClaudeSDKNode           | Claude Agent SDK (via `claude_agent_sdk`)             | `~/.claude/`        |
+| `GEMINI_CLI`        | GeminiNode              | Gemini API conversation                               | `~/.gemini/tmp/`    |
+| `LOCAL_VLLM`        | LlamaNode               | Local Ollama/vLLM (stub)                              | None                |
+| `GIT_SNAPSHOT`      | GitSnapshotNode         | Automatic git commit before a task                    | None                |
+| `GIT_ROLLBACK`      | GitRollbackNode         | Reverts to snapshot on validation failure             | None                |
+| `VALIDATE`          | ValidateNode            | Output quality checks (Python syntax, timeout, etc.)  | None                |
+| `VRAM_FLUSH`        | VramFlushNode           | Kills residual GPU processes                          | None                |
+| `SUBGRAPH_MAPPER`   | SubgraphMapperNode      | Remaps fields between parent and subgraphs            | None                |
+| `AGENT_REF`         | AgentRefNode            | Compiles an external Agent directory into a subgraph and embeds it | Inherits from parent |
+
+### Custom Node Registration
 
 ```python
-# framework/builtins.py（或任意被 import 的模块）
+# framework/builtins.py (or any imported module)
 from framework.registry import register_node, register_condition
 
 @register_node("MY_NODE")
@@ -132,18 +134,18 @@ def _(state: dict) -> bool:
 
 ---
 
-## 声明式图定义
+## Declarative Graph Definition
 
-### 节点定义（entity.json → graph.nodes）
+### Node Definition (entity.json → graph.nodes)
 
 ```json
 {
   "id": "claude_main",
   "type": "CLAUDE_SDK",
   "model": null,
-  "system_prompt": "（可选，优先级低于 persona_files）",
-  "first_turn_suffix": "Hani:",
-  "user_msg_prefix": "老板: ",
+  "system_prompt": "(Optional, lower priority than persona_files)",
+  "first_turn_suffix": "technical_architect:",
+  "user_msg_prefix": "Boss: ",
   "tombstone_enabled": true,
   "tool_rules": [
     {"pattern": "implement", "flags": [], "tools": ["Write", "Edit", "Bash"]}
@@ -151,19 +153,19 @@ def _(state: dict) -> bool:
 }
 ```
 
-### 边类型（entity.json → graph.edges）
+### Edge Types (entity.json → graph.edges)
 
-| type 值 | 触发条件 | 示例 |
-|---------|----------|------|
-| （无） | 直接连接 | `{"from": "a", "to": "b"}` |
-| `routing_to` | `state["routing_target"] == to` | `{"type": "routing_to", "from": "validate", "to": "debate_brainstorm", "max_retry": 3}` |
-| `on_error` | `rollback_reason != ""` | `{"type": "on_error", "from": "validate", "to": "git_rollback"}` |
-| `no_routing` | `routing_target == ""` | `{"type": "no_routing", "from": "validate", "to": "__end__"}` |
-| 自定义名 | registry 中注册的条件函数 | `{"type": "my_condition", "from": "a", "to": "b"}` |
+| `type` value      | Trigger Condition                    | Example                                                              |
+|-------------------|--------------------------------------|----------------------------------------------------------------------|
+| (none)            | Direct connection                    | `{"from": "a", "to": "b"}`                                           |
+| `routing_to`      | `state["routing_target"] == to`      | `{"type": "routing_to", "from": "validate", "to": "debate_brainstorm", "max_retry": 3}` |
+| `on_error`        | `rollback_reason != ""`              | `{"type": "on_error", "from": "validate", "to": "git_rollback"}`      |
+| `no_routing`      | `routing_target == ""`               | `{"type": "no_routing", "from": "validate", "to": "__end__"}`         |
+| Custom name       | Registered condition function        | `{"type": "my_condition", "from": "a", "to": "b"}`                   |
 
-`max_retry` 字段：触发超过 N 次后条件强制返回 False（防止路由死循环）。
+`max_retry` field: After N triggers, the condition is forced to return `False` (prevents routing loops).
 
-### AGENT_REF 节点（嵌入外部 Agent 子图）
+### AGENT_REF Node (Embed External Agent Subgraph)
 
 ```json
 {
@@ -175,51 +177,53 @@ def _(state: dict) -> bool:
 }
 ```
 
-- `state_in`: `{子图字段: 父图字段}` — 调用前注入
-- `state_out`: `{父图字段: 子图字段 | "last_message"}` — 调用后写回
-- `"last_message"` 特殊值：取子图最后一条消息的 `.content`
-- 辩论结论自动以 `AIMessage(content="[辩论结论]\n\n...")` 注入父图 messages
+- `state_in`: `{subgraph_field: parent_graph_field}` — Injected before call.
+- `state_out`: `{parent_graph_field: subgraph_field | "last_message"}` — Written back after call.
+- `"last_message"` special value: Takes the `.content` of the subgraph's last message.
+- The debate conclusion is automatically injected into the parent graph's messages as `AIMessage(content="[Debate Conclusion]
+
+...")`.
 
 ---
 
-## 图编译流程（build_graph）
+## Graph Compilation Flow (build_graph)
 
-三优先级系统：
+A three-priority system:
 
 ```
 AgentLoader.build_graph(checkpointer=_DEFAULT)
 │
-├─ Priority 1: agents/{name}/graph.py 存在？
-│   └─ mod.build_graph(loader, checkpointer)       # 完全自定义图
+├─ Priority 1: Does agents/{name}/graph.py exist?
+│   └─ mod.build_graph(loader, checkpointer)       # Fully custom graph
 │
-├─ Priority 2: entity.json["graph"]["nodes"] 存在？
+├─ Priority 2: Does entity.json["graph"]["nodes"] exist?
 │   └─ _build_declarative(graph_spec)
-│       ├─ 验证：节点 ID 唯一、边引用有效、BFS 可达性
-│       ├─ 选择 state_schema（"base" → BaseAgentState / "debate" → DebateState）
+│       ├─ Validation: unique node IDs, valid edge refs, BFS reachability
+│       ├─ Select state_schema ("base" → BaseAgentState / "debate" → DebateState)
 │       ├─ StateGraph(schema).add_node() for each node
-│       │   ├─ ID 含 "main" 的节点注入 system_prompt
-│       │   └─ AGENT_REF 节点递归编译子图（checkpointer=None）
+│       │   ├─ Node with "main" in ID gets system_prompt injected
+│       │   └─ AGENT_REF nodes recursively compile subgraphs (checkpointer=None)
 │       ├─ add_edge / add_conditional_edges
-│       │   └─ routing_to 自动生成 target 匹配条件
+│       │   └─ `routing_to` automatically generates target matching condition
 │       └─ .compile(checkpointer=AsyncSqliteSaver(db_path))
 │
-└─ Priority 3: GraphSpec 默认图
+└─ Priority 3: Default GraphSpec
     └─ build_agent_graph(config, agent_node, checkpointer, spec)
-        # 固定拓扑：git_snapshot → claude_agent → validate
+        # Fixed topology: git_snapshot → claude_agent → validate
         #            validate →[on_error]→ git_rollback → claude_agent
         #            validate →[no_routing]→ __end__
 ```
 
-### 图编译验证规则
+### Graph Compilation Validation Rules
 
-1. 所有节点 ID 全局唯一（含子图内部节点）
-2. 所有边引用的节点 ID 存在
-3. 所有节点从 `__start__` BFS 可达
-4. 若提供 system_prompt，图中恰好有 1 个 ID 含 `"main"` 的节点
+1. All node IDs are globally unique (including within subgraphs).
+2. All edge-referenced node IDs exist.
+3. All nodes are reachable from `__start__` via BFS.
+4. If a `system_prompt` is provided, there is exactly one node with `"main"` in its ID.
 
 ---
 
-## 主图拓扑（Hani）
+## Main Graph Topology (technical_architect)
 
 ```
 __start__
@@ -240,43 +244,43 @@ validate ──[routing_to:debate_brainstorm]──▶ debate_brainstorm ┘
          └──[no_routing]─────────────────────▶ __end__
 ```
 
-Agent 通过输出路由信号触发跳转：
+The Agent triggers transitions by outputting a routing signal:
 
 ```json
-{"route": "debate_brainstorm", "context": "微服务 vs 单体架构选型"}
+{"route": "debate_brainstorm", "context": "Microservices vs Monolith architecture choice"}
 ```
 
 ---
 
-## 辩论子图拓扑
+## Debate Subgraph Topology
 
-### debate_gemini_first（Gemini 先手，适合头脑风暴）
+### debate_gemini_first (Gemini starts, good for brainstorming)
 
 ```
 __start__ → gemini_propose → claude_critique_1 → gemini_revise → claude_critique_2 → gemini_conclusion → __end__
 ```
 
-### debate_claude_first（Claude 先手，适合工程/设计决策）
+### debate_claude_first (Claude starts, good for engineering/design decisions)
 
 ```
 __start__ → claude_propose → gemini_critique_1 → claude_revise → gemini_critique_2 → claude_conclusion → __end__
 ```
 
-- 线性图，无条件边，5 轮辩论
-- 每轮节点通过消息历史（`add_messages` 累积）读取所有前轮内容
-- 实时流式输出，每轮标注说话节点身份
-- 结论自动映射回父图 `debate_conclusion` 字段
+- Linear graph, no conditional edges, 5 rounds of debate.
+- Each node reads all previous rounds' content from the message history (`add_messages` accumulation).
+- Real-time streaming output, with the speaker's identity marked in each round.
+- The conclusion is automatically mapped back to the parent graph's `debate_conclusion` field.
 
 ---
 
-## Session 架构
+## Session Architecture
 
-### sessions.json 结构
+### sessions.json Structure
 
 ```json
 {
   "default": {
-    "thread_id": "hani_session_abc123",
+    "thread_id": "technical_architect_session_abc123",
     "node_sessions": {
       "claude_main": "claude-uuid-..."
     },
@@ -285,35 +289,35 @@ __start__ → claude_propose → gemini_critique_1 → claude_revise → gemini_
 }
 ```
 
-### 生命周期
+### Lifecycle
 
-1. `GraphController._init_session()` — 加载 sessions.json 或创建 "default"
-2. `graph.ainvoke(config={"configurable": {"thread_id": ...}})` — LangGraph 从 SQLite checkpoint 恢复 BaseAgentState
-3. 每个 `AgentNode` 从 `state["node_sessions"][node_id]` 读取上次 Session UUID → resume
-4. 图完成后 — GraphController 将新 `node_sessions` 写回 sessions.json
+1. `GraphController._init_session()` — Loads `sessions.json` or creates a "default" session.
+2. `graph.ainvoke(config={"configurable": {"thread_id": ...}})` — LangGraph restores `BaseAgentState` from the SQLite checkpoint.
+3. Each `AgentNode` resumes its session using the UUID from `state["node_sessions"][node_id]`.
+4. After the graph completes, `GraphController` writes the new `node_sessions` back to `sessions.json`.
 
-### Claude 新 Session 两阶段初始化（WSL2 Unicode 修复）
+### Claude New Session Two-Phase Initialization (WSL2 Unicode Fix)
 
-WSL2 上 Claude CLI 在创建新 Session 时，中文在 Anthropic API 请求 JSON 第 714 字节处被截断，导致 `400 invalid high surrogate` 错误。Resume 已有 Session 时不触发（CLI 跳过 system prompt 处理）。
+On WSL2, when creating a new session with the Claude CLI, Chinese characters can be truncated at the 714th byte of the Anthropic API request JSON, causing a `400 invalid high surrogate` error. This is not triggered when resuming an existing session because the CLI skips system prompt processing.
 
-**修复方案（ClaudeNode 内部自动执行）**：
+**Fix (handled automatically inside ClaudeNode)**:
 
-1. Phase 1：发送 ASCII-only 消息 `"hi"` 创建 Session → 获得 `new_session_id`
-2. Phase 2：立即 `resume` 该 Session，注入完整 persona + 实际 prompt
+1. Phase 1: Send an ASCII-only message `"hi"` to create the session → get `new_session_id`.
+2. Phase 2: Immediately `resume` that session and inject the full persona + actual prompt.
 
 ---
 
-## AgentNode 基类
+## AgentNode Base Class
 
-子类只需实现 `call_llm()`，框架自动处理：
+Subclasses only need to implement `call_llm()`, and the framework handles the rest:
 
-- node_sessions UUID 路由（读取/写入 per-node session）
-- Rollback warning 注入（失败历史）
-- Gemini section 注入（跨 LLM 上下文传递）
-- project_meta 注入（plan/tasks 文件内容）
-- tool_rules 关键词驱动的工具选择
-- 路由信号解析（`{"route": "..."}` → routing_target / routing_context）
-- 资源锁（GPU 互斥，可选）
+- `node_sessions` UUID routing (reading/writing per-node sessions).
+- Rollback warning injection (failure history).
+- Gemini section injection (passing context across LLMs).
+- `project_meta` injection (content of plan/tasks files).
+- Keyword-driven tool selection via `tool_rules`.
+- Routing signal parsing (`{"route": "..."}` → `routing_target` / `routing_context`).
+- Resource locking (mutual exclusion for GPUs, optional).
 
 ```python
 class MyNode(AgentNode):
@@ -329,21 +333,21 @@ class MyNode(AgentNode):
 
 ---
 
-## 运行方式
+## How to Run
 
 ```bash
-# CLI 交互模式
+# Interactive CLI mode
 python main.py cli
 
-# CLI debug 模式（详细日志）
+# CLI debug mode (detailed logs)
 python main.py --debug cli
 
 # Discord Bot
 python main.py discord
 
-# tmux 分屏模式
+# tmux split-screen mode
 python main.py tmux
 
-# E2E 测试（11 个测试）
+# E2E tests (11 tests)
 python3 test_e2e_debate.py
 ```

@@ -1,43 +1,43 @@
-# Agent Mail — 设计决策记录
+# Agent Mail — Design Decision Record
 
-> 创建时间: 2026-04-01
-> 状态: 设计阶段，待实现
-
----
-
-## 背景
-
-当前问题：Jei 的 EXTERNAL_TOOL 执行超过 120s 后，需要将监控任务委托给 Asa（集团唯一监工）。
-根本需求：Agent 间需要可靠的异步消息通信机制。
+> Created: 2026-04-01
+> Status: Design phase, pending implementation
 
 ---
 
-## 设计原则
+## Background
 
-1. **Asa 是唯一 heartbeat owner**：其他 agent 不启动 heartbeat MCP server，不在启动时连接 heartbeat proxy
-2. **异步解耦**：发送方发完即走，不等接收方在线
-3. **持久化优先**：agent 重启后收件箱不丢
-4. **MCP 接口**：与框架现有 MCP 架构同构，工具调用方式一致
+Current problem: when the knowledge_curator's EXTERNAL_TOOL execution exceeds 120s, monitoring of the task needs to be delegated to the administrative_officer (the sole heartbeat owner in the system).
+Core requirement: agents need a reliable asynchronous messaging mechanism.
 
 ---
 
-## 核心设计："邮件收件箱"模型
+## Design Principles
 
-每个 agent 有独立收件箱。通信通过三个动词完成：
+1. **administrative_officer is the sole heartbeat owner**: other agents do not start a heartbeat MCP server, and do not connect to the heartbeat proxy at startup
+2. **Asynchronous decoupling**: sender fires and forgets; does not wait for the receiver to be online
+3. **Persistence first**: inbox survives agent restarts
+4. **MCP interface**: consistent with the existing MCP architecture; tools are invoked the same way
+
+---
+
+## Core Design: "Mailbox" Model
+
+Each agent has an independent inbox. Communication uses three verbs:
 
 ```
-send_mail(to, subject, body)   → 写入收件人 inbox
-fetch_inbox(agent_name)        → 读取自己未处理的邮件
-ack_mail(mail_id)              → 标记已处理
+send_mail(to, subject, body)   → writes to recipient's inbox
+fetch_inbox(agent_name)        → reads own unprocessed mail
+ack_mail(mail_id)              → marks as processed
 ```
 
-### 消息结构
+### Message Structure
 
 ```json
 {
   "mail_id": "uuid",
-  "from_agent": "jei",
-  "to_agent": "asa",
+  "from_agent": "knowledge_curator",
+  "to_agent": "administrative_officer",
   "subject": "monitor_delegate",
   "body": {
     "task_id": "tool_abc123",
@@ -53,32 +53,32 @@ ack_mail(mail_id)              → 标记已处理
 
 ---
 
-## 架构方案
+## Architecture Options
 
-### 选型过程
+### Selection Process
 
-| 方案 | 结论 |
-|------|------|
-| Discord 频道作总线 | ❌ 关键路径不该绑外部网络 |
-| SQLite + inotify | ⚠️ 可行但 asyncio 集成有坑 |
-| Agent Bus MCP Server（新建） | ⚠️ 架构一致但 Asa 无工具调用能力 |
-| Unix Domain Socket | ✅ 低延迟但无持久化 |
-| **Agent Mail MCP Server** | ✅ 最终选择 |
-| Supervisor LLM（Grok 提案） | ❌ 传输层不该用 LLM，幻觉风险，单点故障 |
+| Option | Conclusion |
+|--------|-----------|
+| Discord channel as message bus | ❌ Critical path should not depend on external network |
+| SQLite + inotify | ⚠️ Feasible but asyncio integration has pitfalls |
+| Agent Bus MCP Server (new) | ⚠️ Architecture-consistent but administrative_officer lacks tool-calling ability |
+| Unix Domain Socket | ✅ Low latency but no persistence |
+| **Agent Mail MCP Server** | ✅ Final choice |
+| Supervisor LLM (Grok proposal) | ❌ Transport layer should not use LLM; hallucination risk; single point of failure |
 
-### 参考项目
+### Reference Projects
 
-- [mcp_agent_mail](https://github.com/Dicklesworthstone/mcp_agent_mail)（1.9k stars）：设计方向一致，但功能过重（file reservations、git 追踪、Beads 集成、Python 3.14）
-- 决策：**参考其接口设计，自建轻量版** `mcp_servers/agent_mail/`
+- [mcp_agent_mail](https://github.com/Dicklesworthstone/mcp_agent_mail) (1.9k stars): aligned design direction but too heavyweight (file reservations, git tracking, Beads integration, Python 3.14)
+- Decision: **reference its interface design, build a lightweight version** `mcp_servers/agent_mail/`
 
 ---
 
-## 实现规划
+## Implementation Plan
 
-### 存储
+### Storage
 
-每个 agent 自己的 SQLite db（如 `asa.db`）里有 `mailbox` 表，或统一用 `shared.db`。
-倾向：**shared.db**，路径 `data/agent_mail/mail.db`，单一事实来源，查询跨 agent 方便。
+Each agent's own SQLite db (e.g. `asa.db`) contains a `mailbox` table, or a unified `shared.db` is used.
+Preference: **shared.db**, path `data/agent_mail/mail.db`, single source of truth, cross-agent queries are easy.
 
 ### SQLite Schema
 
@@ -96,7 +96,7 @@ CREATE TABLE IF NOT EXISTS mailbox (
 CREATE INDEX idx_inbox ON mailbox (to_agent, acked_at);
 ```
 
-### MCP 工具接口
+### MCP Tool Interface
 
 ```python
 @mcp.tool()
@@ -109,110 +109,110 @@ async def fetch_inbox(agent_name: str, unread_only: bool = True) -> list[dict]
 async def ack_mail(mail_id: str) -> dict
 
 @mcp.tool()
-async def list_agents() -> list[dict]   # agent 发现
+async def list_agents() -> list[dict]   # agent discovery
 ```
 
-### 收发分离：启动时不强制连接 MCP
+### Read/Write Separation: No Forced MCP Connection at Startup
 
-**核心原则：读直接 SQL，写才走 MCP。**
+**Core principle: reads go directly to SQL, writes go through MCP.**
 
 ```
-读路径（收邮件）：agent 进程内 background task 直接读 mail.db
-                  → 无 MCP 长连接，无额外进程依赖
-                  → mail server 挂了，收件箱照常可读
+Read path (receiving mail): agent process's background task reads mail.db directly
+                  → no MCP persistent connection, no additional process dependency
+                  → if mail server is down, inbox is still readable
 
-写路径（发邮件）：懒加载，首次需要发邮件时才连接 mail MCP server
-                  → 发完即断，无持久连接
+Write path (sending mail): lazy-load, connect to mail MCP server only when first send is needed
+                  → disconnect after sending, no persistent connection
 ```
 
-| Agent | 启动时连接 mail MCP？ | 理由 |
-|-------|---------------------|------|
-| Asa | ❌ 直接读 SQLite（background task） | 监工，持续轮询收件箱 |
-| Jei | ❌ PENDING 时懒加载连接 | 只在超时委托时发一封 |
-| Hani | ❌ 按需懒加载 | 需要协调时才发 |
+| Agent | Connect to mail MCP at startup? | Reason |
+|-------|--------------------------------|--------|
+| administrative_officer | ❌ reads SQLite directly (background task) | monitor owner, continuously polls inbox |
+| knowledge_curator | ❌ lazy-load when PENDING | only sends one mail on timeout delegation |
+| technical_architect | ❌ lazy-load on demand | sends only when coordination is needed |
 
-**mail MCP server 只是写的入口**，不是所有 agent 都需要在启动时与它建立连接。
+**The mail MCP server is only the write entry point** — not all agents need to connect to it at startup.
 
-### 触发机制（agent 如何感知新邮件）
+### Trigger Mechanism (How Agents Detect New Mail)
 
-每个 agent 进程内启动一个 asyncio background task，每 **1 秒**直接查询 `mail.db`：
+Each agent process starts an asyncio background task that directly queries `mail.db` every **1 second**:
 
 ```sql
 SELECT * FROM mailbox WHERE to_agent = ? AND acked_at IS NULL ORDER BY created_at ASC
 ```
 
-收到新邮件 → 触发 `_on_mail_received(mail)` 回调 → 框架层处理
-（例：Asa 收到 `monitor_delegate` → 调 `heartbeat_register_monitor`）。
+New mail received → triggers `_on_mail_received(mail)` callback → handled by the framework layer
+(e.g.: administrative_officer receives `monitor_delegate` → calls `heartbeat_register_monitor`).
 
-### Agent 发现（见下节）
+### Agent Discovery (see next section)
 
 ---
 
-## Agent 发现机制
+## Agent Discovery Mechanism
 
-### 静态发现：目录扫描
+### Static Discovery: Directory Scan
 
-`EdenGateway/agents/` 目录本身就是注册表：
+The `EdenGateway/agents/` directory is itself a registry. Blueprint definitions are in the VoidDraft repo; instance runtime data lives in EdenGateway:
 
 ```
 EdenGateway/agents/
-├── asa/identity.json    → name: "asa"
-├── hani/identity.json   → name: "hani"
-└── jei/identity.json    → name: "jei"
+├── asa/identity.json    → name: "asa"  (administrative_officer instance)
+├── hani/identity.json   → name: "hani" (technical_architect instance)
+└── jei/identity.json    → name: "jei"  (knowledge_curator instance)
 ```
 
-`list_agents()` 工具扫描此目录，返回所有已知 agent。
-优点：离线 agent 也能被发现；无需运行时注册。
+The `list_agents()` tool scans this directory and returns all known agents.
+Advantage: offline agents can still be discovered; no runtime registration required.
 
-### 动态状态：心跳注册
+### Dynamic State: Heartbeat Registration
 
-agent 进程启动时向 mail server 调 `register_agent(name, pid)`，
-shutdown 时调 `unregister_agent(name)`，
-mail server 维护 `online_since` / `last_seen` 字段。
+When an agent process starts, it calls `register_agent(name, pid)` on the mail server,
+and calls `unregister_agent(name)` on shutdown.
+The mail server maintains `online_since` / `last_seen` fields.
 
-结合两者：**静态知道有谁，动态知道谁在线。**
+Combined: **statically know who exists, dynamically know who is online.**
 
 ---
 
-## 与现有架构的集成点
+## Integration with Existing Architecture
 
-### 修复 Jei 启动时错误绑定 heartbeat 的问题
+### Fix the knowledge_curator Startup Heartbeat Binding Issue
 
-`agent_loader.py` 第 344-348 行需修改：
+`agent_loader.py` lines 344-348 need to be modified:
 ```python
-# 当前（错误）：有 EXTERNAL_TOOL 就连 heartbeat
+# Current (incorrect): connect heartbeat if EXTERNAL_TOOL nodes exist
 if self._has_external_tool_nodes():
     return await self._connect_heartbeat_proxy_only()
 
-# 修改后：有 EXTERNAL_TOOL 但配置了 mail_delegate，走 agent mail 路径
-# Jei 启动时不连 heartbeat，PENDING 时通过 mail 委托给 Asa
+# After fix: EXTERNAL_TOOL present but mail_delegate configured → use agent mail path
+# knowledge_curator does not connect heartbeat at startup; delegates via mail when PENDING
 ```
 
-### ExternalToolNode._on_timeout() 新增委托逻辑
+### ExternalToolNode._on_timeout() New Delegation Logic
 
 ```python
-# PENDING 发生时，发邮件给 asa
+# When PENDING occurs, send mail to administrative_officer
 await send_mail(
-    to="asa",
+    to="administrative_officer",
     subject="monitor_delegate",
     body={"task_id": task_id, "pid": proc.pid, ...}
 )
 ```
 
-### Asa 收件箱处理
+### administrative_officer Inbox Handling
 
-Asa 的 mailbox watcher 收到 `monitor_delegate` → 直接调 `heartbeat_register_monitor` → 注册完成后发邮件回 notify_channel 对应的 agent。
+The administrative_officer's mailbox watcher receives `monitor_delegate` → directly calls `heartbeat_register_monitor` → after registration, sends mail back to the notify_channel's corresponding agent.
 
 ---
 
-## 待决策
+## Pending Decisions
 
-- [x] ~~每个 agent 启动时是否必须连接 mail MCP？~~ → **是，统一走 MCP 自启动机制**
-- [x] ~~懒加载 vs 启动时连接？~~ → **启动时连接，由 entity.json mcps 字段声明**
-- [x] ~~注册 PID 走 MCP 还是直接 SQL？~~ → **连接时通过 MCP 工具注册，连接即注册**
-- [ ] shared.db 还是各自 db？→ 倾向 shared.db（`data/agent_mail/mail.db`）
-- [ ] `list_agents()` 是否需要"在线状态"？
+- [x] ~~Must agents connect to mail MCP at startup?~~ → **Yes, through the unified MCP auto-start mechanism**
+- [x] ~~Lazy-load vs startup connection?~~ → **Startup connection, declared in entity.json mcps field**
+- [x] ~~Register PID via MCP or directly SQL?~~ → **Register via MCP tool on connection; connection = registration**
+- [ ] shared.db vs individual dbs? → preference for shared.db (`data/agent_mail/mail.db`)
+- [ ] Does `list_agents()` need "online status"?
 
-## 关联文档
+## Related Documents
 
-- [MCP 自启动机制](./mcp-autostart-design.md) — agent_mail 启动逻辑属于框架级通用设计的一部分
+- [MCP Auto-Start Mechanism](./mcp-autostart-design.md) — the agent_mail startup logic is part of the framework-level general design

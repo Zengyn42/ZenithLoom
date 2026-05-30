@@ -64,7 +64,7 @@ START → _subgraph_init → entry → ... → exit → _subgraph_exit → END
 #### inherit 的 fork 语义
 
 ```
-父图 session: uuid-A (Hani 与用户的完整对话)
+父图 session: uuid-A (technical_architect 与用户的完整对话)
 
 子图 LLM 节点首次调用:
   node_sessions["apex_qa"] = ""（空）
