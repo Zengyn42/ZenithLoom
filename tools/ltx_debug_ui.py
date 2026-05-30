@@ -15,7 +15,7 @@ Each tab allows:
     3. Submit to ComfyUI
     5. Preview the generated video inline
 
-— Hani · 无垠智穹
+— technical_architect · 无垠智穹
 """
 
 from __future__ import annotations
