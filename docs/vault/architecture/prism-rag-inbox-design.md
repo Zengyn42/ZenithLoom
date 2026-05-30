@@ -179,5 +179,5 @@ PrismRagMCP consolidates the current `mcp_servers/obsidian/` with a future vecto
 ## See Also
 
 - `mcp_servers/obsidian/` — current Obsidian MCP implementation
-- `blueprints/functional_graphs/knowledge_shelf/` — knowledge_curator's knowledge subgraph (in VoidDraft repo)
-- `blueprints/role_agents/knowledge_curator/` — knowledge_curator role definition (in VoidDraft repo)
+- `VoidDraft/blueprints/functional_graphs/knowledge_shelf/` — knowledge_curator's knowledge subgraph (in VoidDraft repo)
+- `VoidDraft/blueprints/role_agents/knowledge_curator/` — knowledge_curator role definition (in VoidDraft repo)

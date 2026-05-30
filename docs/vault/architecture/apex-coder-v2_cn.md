@@ -65,6 +65,6 @@ class ApexCoderState(BaseAgentState):
 ## 参考文件
 
 - 设计计划: `docs/superpowers/plans/2026-04-15-apex-coder-redesign.md`
-- State: `blueprints/functional_graphs/apex_coder/state.py`
-- Entity: `blueprints/functional_graphs/apex_coder/entity.json`
+- State: `VoidDraft/blueprints/functional_graphs/apex_coder/state.py`
+- Entity: `VoidDraft/blueprints/functional_graphs/apex_coder/entity.json`
 - Colony Coder v1 实录: `docs/vault/architecture/colony-coder.md`

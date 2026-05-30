@@ -23,7 +23,7 @@
 ```markdown
 ---
 title: 文档标题
-author: Knowledge_Curator · 无垠智穹
+author: knowledge_curator · 无垠智穹
 date: 2026-03-23
 ---
 

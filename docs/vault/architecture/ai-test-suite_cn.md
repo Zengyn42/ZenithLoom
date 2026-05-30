@@ -24,7 +24,7 @@
 
 ## Game 1: Snake Battle（双蛇对战）✅
 
-**位置**: `EdenGateway/CompanyTests/CoderTest/snake_battle/`
+**位置**: `VoidDraft/CompanyTests/CoderTest/snake_battle/`
 
 **规则**: 30×30 网格，两条蛇同时移动，吃食物增长，碰撞判定（头对头长蛇赢、咬身体按 tail_portion 判定、自咬截断不死）。
 
@@ -53,7 +53,7 @@
 
 ## Game 2: Othello（黑白棋）⏳
 
-**位置**: `EdenGateway/CompanyTests/CoderTest/othello/`（待创建）
+**位置**: `VoidDraft/CompanyTests/CoderTest/othello/`（待创建）
 
 **规则**: 标准 8×8 黑白棋规则。双方轮流下子，必须翻转对方棋子，无合法步时跳过，棋盘满或双方无步时结束，棋子多者胜。
 
@@ -73,7 +73,7 @@
 
 ## Game 3: Planet Wars（星球大战）⏳
 
-**位置**: `EdenGateway/CompanyTests/CoderTest/planet_wars/`（待创建）
+**位置**: `VoidDraft/CompanyTests/CoderTest/planet_wars/`（待创建）
 
 **规则**: 基于 Google AI Challenge 2010。2D 星图上分布若干星球，每颗星球有归属（P1/P2/中立）和驻军数。双方同时下令，从己方星球派舰队攻占其他星球。舰队飞行需要时间（距离 ÷ 速度）。星球每回合自动产兵。全灭对方或超时比总兵力。
 

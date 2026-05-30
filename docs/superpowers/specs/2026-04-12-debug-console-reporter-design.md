@@ -209,7 +209,7 @@ SNAKE_TASK = """Write a two-player snake battle game in Python (Snake Battle).
 async def main():
     set_debug(True)
     
-    loader = EntityLoader(Path("blueprints/functional_graphs/colony_coder"))
+    loader = EntityLoader(Path("VoidDraft/blueprints/functional_graphs/colony_coder"))
     graph = await loader.build_graph(checkpointer=None)
     
     reporter = DebugConsoleReporter("colony_coder")

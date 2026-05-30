@@ -319,7 +319,7 @@ Wraps the MCP-mediated vault access as a reusable LangGraph subgraph. Any parent
 
 ## 4.2 Graph Definition
 
-`blueprints/functional_graphs/knowledge_shelf/entity.json`:
+`VoidDraft/blueprints/functional_graphs/knowledge_shelf/entity.json`:
 
 ```json
 {
@@ -396,7 +396,7 @@ Three agents have three distinct access patterns to the vault.
 
 ## 5.1 knowledge_curator (mediated access)
 
-`blueprints/role_agents/knowledge_curator/`:
+`VoidDraft/blueprints/role_agents/knowledge_curator/`:
 
 - **LLM**: Gemini (consistent with knowledge_shelf)
 - **MCP attached**: `obsidian-vault` (shared daemon)
@@ -412,7 +412,7 @@ Routing hint in its agent blueprint reads:
 
 ## 5.2 technical_architect (direct file access)
 
-`blueprints/role_agents/technical_architect/`:
+`VoidDraft/blueprints/role_agents/technical_architect/`:
 
 - **LLM**: Claude
 - **MCP attached**: `obsidian-vault` declared but… essentially unused in practice
@@ -710,7 +710,7 @@ That's a substantial architectural change — out of scope for this document, wh
 - `mcp_servers/obsidian/server.py` — MCP server entry point
 - `mcp_servers/obsidian/core/vault.py` — path sandbox and security
 - `mcp_servers/obsidian/core/cas.py` — compare-and-swap implementation
-- `blueprints/functional_graphs/knowledge_shelf/entity.json` — subgraph definition
-- `blueprints/role_agents/knowledge_curator/` — knowledge_curator's persona and protocol
+- `VoidDraft/blueprints/functional_graphs/knowledge_shelf/entity.json` — subgraph definition
+- `VoidDraft/blueprints/role_agents/knowledge_curator/` — knowledge_curator's persona and protocol
 - `framework/mcp_launcher.py` — MCP lifecycle management
 - `Vault/Knowledge/PrismRag-v4.0-Design-Doc.md` — future graph-first RAG design (in vault)

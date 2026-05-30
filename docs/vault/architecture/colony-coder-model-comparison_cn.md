@@ -181,7 +181,7 @@ technical_architect 的辩论研究（`Vault/设计细节/Colony Coder Context E
 | 修复 | 文件 | 内容 |
 |------|------|------|
 | Ollama tool call 容错 | `framework/nodes/llm/ollama.py` | catch TypeError on missing args, 返回错误给模型重试 |
-| QA 测试速度约束 | `colony_coder_qa/entity.json` | prompt 加 "每个测试<10s, 总计<90s" |
+| QA 测试速度约束 | `VoidDraft/colony_coder_qa/entity.json` | prompt 加 "每个测试<10s, 总计<90s" |
 | DebugConsoleReporter | `framework/debug_reporter.py` | 通用子图 debug 可视化 |
 
 ### 待实施

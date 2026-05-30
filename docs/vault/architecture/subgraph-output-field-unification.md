@@ -45,8 +45,8 @@ subgraph_outputs: Annotated[dict, _merge_dict]
 - `framework/schema/base.py` — Field definition
 - `framework/nodes/llm/llm_node.py` — `output_field` write logic + `_build_gemini_section()` read logic
 - `framework/nodes/session_init_node.py` — Cleanup logic
-- `blueprints/functional_graphs/*/entity.json` — `output_field` declaration (semantics unchanged, only the write target changes)
-- `blueprints/functional_graphs/colony_coder_*/validators.py` — Places where `refined_plan` is read
+- `VoidDraft/blueprints/functional_graphs/*/entity.json` — `output_field` declaration (semantics unchanged, only the write target changes)
+- `VoidDraft/blueprints/functional_graphs/colony_coder_*/validators.py` — Places where `refined_plan` is read
 - All schema subclasses — Remove their respective output field overrides
 
 ### Note

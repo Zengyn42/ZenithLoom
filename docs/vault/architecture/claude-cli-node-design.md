@@ -124,11 +124,11 @@ Dynamic timeout, borrowed from `GeminiCLINode`:
 
 All existing `"type": "CLAUDE_CLI"` in `entity.json` are changed to `"type": "CLAUDE_SDK"` to ensure existing behavior remains unchanged:
 
-- `blueprints/role_agents/technical_architect/entity.json` (1 location)
-- `blueprints/functional_graphs/debate_claude_first/entity.json` (3 locations)
-- `blueprints/functional_graphs/debate_gemini_first/entity.json` (2 locations)
-- `blueprints/functional_graphs/apex_coder/entity.json` (1 location)
-- `blueprints/functional_graphs/tool_discovery/entity.json` (3 locations)
+- `VoidDraft/blueprints/role_agents/technical_architect/entity.json` (1 location)
+- `VoidDraft/blueprints/functional_graphs/debate_claude_first/entity.json` (3 locations)
+- `VoidDraft/blueprints/functional_graphs/debate_gemini_first/entity.json` (2 locations)
+- `VoidDraft/blueprints/functional_graphs/apex_coder/entity.json` (1 location)
+- `VoidDraft/blueprints/functional_graphs/tool_discovery/entity.json` (3 locations)
 
 ## Not Doing
 

@@ -216,17 +216,17 @@ node_config["token_limit"]  >  按 type 默认值  >  BB_TOKEN_LIMIT 环境变�
 
 | 文件 | 职责 |
 |------|------|
-| `blueprints/functional_graphs/colony_coder/entity.json` | Master 图: plan -> execute -> qa |
-| `blueprints/functional_graphs/colony_coder/state.py` | ColonyCoderState TypedDict (colony_coder_schema) |
-| `blueprints/functional_graphs/colony_coder_planner/entity.json` | Planner: debate -> swarm -> decompose -> validate |
-| `blueprints/functional_graphs/colony_coder_planner/validators.py` | decomposition_validator + JSON 解析 |
-| `blueprints/functional_graphs/colony_coder_executor/entity.json` | Executor: 4 节点 (inject -> code_gen -> run_tests -> test_route) |
-| `blueprints/functional_graphs/colony_coder_executor/validators.py` | inject_task_context, run_tests, test_route |
-| `blueprints/functional_graphs/colony_coder_qa/entity.json` | QA: 8 节点 E2E 验收 + rescue |
-| `blueprints/functional_graphs/colony_coder_qa/validators.py` | inject_e2e_context, run_e2e, e2e_route, inject_rescue_context, run_e2e_rescue, rescue_route |
-| `blueprints/functional_graphs/colony_coder_integrator/entity.json` | Integrator: 3 节点集成测试 + 修复循环 |
-| `blueprints/functional_graphs/colony_coder_integrator/validators.py` | integration_test, integration_route |
-| `blueprints/functional_graphs/debate_claude_first/entity.json` | 异构辩论子图 (Claude x 3 + Gemini x 2) |
+| `VoidDraft/blueprints/functional_graphs/colony_coder/entity.json` | Master 图: plan -> execute -> qa |
+| `VoidDraft/blueprints/functional_graphs/colony_coder/state.py` | ColonyCoderState TypedDict (colony_coder_schema) |
+| `VoidDraft/blueprints/functional_graphs/colony_coder_planner/entity.json` | Planner: debate -> swarm -> decompose -> validate |
+| `VoidDraft/blueprints/functional_graphs/colony_coder_planner/validators.py` | decomposition_validator + JSON 解析 |
+| `VoidDraft/blueprints/functional_graphs/colony_coder_executor/entity.json` | Executor: 4 节点 (inject -> code_gen -> run_tests -> test_route) |
+| `VoidDraft/blueprints/functional_graphs/colony_coder_executor/validators.py` | inject_task_context, run_tests, test_route |
+| `VoidDraft/blueprints/functional_graphs/colony_coder_qa/entity.json` | QA: 8 节点 E2E 验收 + rescue |
+| `VoidDraft/blueprints/functional_graphs/colony_coder_qa/validators.py` | inject_e2e_context, run_e2e, e2e_route, inject_rescue_context, run_e2e_rescue, rescue_route |
+| `VoidDraft/blueprints/functional_graphs/colony_coder_integrator/entity.json` | Integrator: 3 节点集成测试 + 修复循环 |
+| `VoidDraft/blueprints/functional_graphs/colony_coder_integrator/validators.py` | integration_test, integration_route |
+| `VoidDraft/blueprints/functional_graphs/debate_claude_first/entity.json` | 异构辩论子图 (Claude x 3 + Gemini x 2) |
 | `framework/token_guard.py` | Token 安全阀 |
 | `framework/nodes/llm/llm_node.py` | LLM 节点基类，含 tools=[] 修复 + token guard |
 | `framework/nodes/llm/ollama.py` | Ollama 节点，含 _chat_completions + _call_with_tools |

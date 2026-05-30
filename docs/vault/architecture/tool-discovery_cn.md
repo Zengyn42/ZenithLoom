@@ -111,7 +111,7 @@ class ToolDiscoveryState(TypedDict):
 ### 新建
 
 ```
-blueprints/functional_graphs/tool_discovery/
+VoidDraft/blueprints/functional_graphs/tool_discovery/
 ├── entity.json                  # 图定义
 └── ROLE.md                     # LLM 节点 persona
 
@@ -128,7 +128,7 @@ docker/
 ### 修改
 
 ```
-blueprints/role_agents/technical_architect/entity.json   # +1 node, +2 edges
+VoidDraft/blueprints/role_agents/technical_architect/entity.json   # +1 node, +2 edges
 framework/command_registry.py                           # +1 行注册
 framework/base_interface.py                             # +1 命令处理分支
 ```
