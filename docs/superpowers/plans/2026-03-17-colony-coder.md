@@ -176,7 +176,7 @@ def _(config, node_config):
 Find the local `_STATE_SCHEMAS` dict inside `_build_declarative` (around line 384):
 
 ```python
-    # ── Step 2: 构建图节点 ────────────────────────────────────────────────
+    # ── Step 2: Build graph nodes ─────────────────────────────────────────
     _STATE_SCHEMAS = {"debate": DebateState, "base": BaseAgentState}
     state_schema = _STATE_SCHEMAS.get(graph_spec.get("state_schema", "base"), BaseAgentState)
 ```
