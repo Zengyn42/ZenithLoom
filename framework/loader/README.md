@@ -27,7 +27,7 @@ loader = EntityLoader(
 
 # Recommended: get a GraphController (lazy-compiled, singleton)
 controller = await loader.get_controller()
-response = await controller.run("用户输入")
+response = await controller.run("user input")
 ```
 
 `data_dir` separates the **blueprint** (role definition, shared) from the **entity** (instance config, runtime data). When omitted, `blueprint_dir` is used for both.

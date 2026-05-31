@@ -1,15 +1,15 @@
 # Colony Coder Implementation Plan
 
 > **⚠️ SUPERSEDED (2026-03-22)**
-> 本文档是历史规划文档，记录了 Colony Coder 的原始设计。实际实现已做重大调整：
-> - Executor 从 10 节点简化为 4 节点 (inject_task_context/code_gen/run_tests/test_route)
-> - Master 第三阶段从 `integrate` 改为 `qa` (独立 QA 子图)
-> - Master 节点类型从 AGENT_REF 改为 SUBGRAPH_NODE
-> - Schema 名称从 `colony_executor` 改为 `colony_coder_schema`
-> - 配置文件从 `agent.json` 改为 `entity.json`
-> - `_post_chat` 方法已被 `_chat_completions` 替代
+> This is a historical planning document recording the original Colony Coder design. Significant changes were made in the actual implementation:
+> - Executor simplified from 10 nodes to 4 nodes (inject_task_context/code_gen/run_tests/test_route)
+> - Master phase 3 changed from `integrate` to `qa` (independent QA subgraph)
+> - Master node type changed from AGENT_REF to SUBGRAPH_NODE
+> - Schema name changed from `colony_executor` to `colony_coder_schema`
+> - Config file changed from `agent.json` to `entity.json`
+> - `_post_chat` method replaced by `_chat_completions`
 >
-> **当前架构请参阅: `docs/vault/architecture/colony-coder.md`**
+> **For current architecture see: `docs/vault/architecture/colony-coder.md`**
 
 > **For agentic workers:** REQUIRED: Use superpowers:subagent-driven-development (if subagents available) or superpowers:executing-plans to implement this plan. Steps use checkbox (`- [ ]`) syntax for tracking.
 
