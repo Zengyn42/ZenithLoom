@@ -101,6 +101,7 @@ message shows the token line"; the toggle exists so it can be silenced
 when noisy, not because it should start off.
 """
 
+
 _enabled: bool = True
 
 
@@ -153,17 +154,17 @@ In `class ClaudeSDKNode(AgentNode):` (around line 57), remove the line:
 
 In `ClaudeSDKNode.__init__`, remove the two lines:
 ```python
-        # session_id → 上次 context 大小（tokens），用于 auto-compact 判断
+        # session_id → last context size (tokens), used for auto-compact check
         self._last_context_size: dict[str, int] = {}
 ```
 
-Also remove the class-level docstring paragraph about auto-compact (the block that reads *"Auto-compact：监测每次调用后的 context 大小…"* inside the class docstring, roughly 2 lines). Leave the rest of the docstring intact.
+Also remove the class-level docstring paragraph about auto-compact (the block that reads *"Auto-compact: monitors the context size after each call…"* inside the class docstring, roughly 2 lines). Leave the rest of the docstring intact.
 
 - [ ] **Step 3: Delete `_last_context_size` writes inside `_run_once`**
 
 Inside `_run_once`'s `ResultMessage` branch, remove these two lines:
 ```python
-                    # 用最后一次 message_start 的 context 作为 session 真实大小
+                    # Use the last message_start context as the true session size
                     if _new_sid and _last_msg_ctx > 0:
                         self._last_context_size[_new_sid] = _last_msg_ctx
 ```
@@ -172,7 +173,7 @@ Leave `update_token_stats(msg.usage)` and the `if msg.result: _result = msg.resu
 
 - [ ] **Step 4: Delete the auto-compact block before `_run_once` is invoked**
 
-Remove the entire block that begins with the comment `# ── Auto-compact：context 超阈值时先让 CLI 压缩 session 历史 ──────` and includes the `if session_id and self._last_context_size.get(session_id, 0) > self._COMPACT_THRESHOLD:` guard plus everything inside its body (including the `try/except` that sends `/compact` and the `_last_context_size.clear()` call). After deletion, the line immediately before `try: result_text, new_session_id, is_error = await _run_once(session_id, prompt)` should be the preceding `is_error = False` assignment (with a blank line separator).
+Remove the entire block that begins with the comment `# ── Auto-compact: when context exceeds threshold, let CLI compress session history first ──────` and includes the `if session_id and self._last_context_size.get(session_id, 0) > self._COMPACT_THRESHOLD:` guard plus everything inside its body (including the `try/except` that sends `/compact` and the `_last_context_size.clear()` call). After deletion, the line immediately before `try: result_text, new_session_id, is_error = await _run_once(session_id, prompt)` should be the preceding `is_error = False` assignment (with a blank line separator).
 
 - [ ] **Step 5: Verify nothing still references the deleted symbols**
 
@@ -229,15 +230,15 @@ This task does **not** emit the token line yet — it only plumbs the `last_msg_
 
 In `_run_once`, replace:
 ```python
-            # 追踪最后一次 API 调用的 context size（每次 tool use 循环都有独立的 message_start）。
-            # 不能用 ResultMessage.usage — 那是累计值，复杂 tool use 会远超真实 context。
+            # Track the context size of the last API call (each tool use loop has its own message_start).
+            # Cannot use ResultMessage.usage — that is cumulative and would overstate real context for complex tool use.
             _last_msg_ctx = 0
 ```
 with:
 ```python
-            # 追踪最后一次 API 调用的完整 usage dict（每次 tool use 循环都有独立的 message_start）。
-            # 不能用 ResultMessage.usage — 那是累计值，复杂 tool use 会远超真实 context。
-            # 这份 dict 会随返回值向外透出，供 call_llm 末尾的内联 token 行显示。
+            # Track the full usage dict of the last API call (each tool use loop has its own message_start).
+            # Cannot use ResultMessage.usage — that is cumulative and would overstate real context for complex tool use.
+            # This dict is surfaced through the return value for the inline token line display at the end of call_llm.
             _last_msg_usage: dict = {}
 ```
 
@@ -248,7 +249,7 @@ Inside the `async for msg` loop, in the `message_start` handling:
 Before:
 ```python
                     if etype == "message_start":
-                        # 每次 API 调用开始，提取本次调用的 input context size
+                        # At the start of each API call, extract the input context size for this call
                         _usage = ev.get("message", {}).get("usage", {})
                         if _usage:
                             _last_msg_ctx = (
@@ -261,8 +262,8 @@ Before:
 After:
 ```python
                     if etype == "message_start":
-                        # 每次 API 调用开始，捕获本次调用的 usage dict（浅拷贝）。
-                        # 最终保留最后一次，反映本轮最终 API 调用的真实 context 占用。
+                        # At the start of each API call, capture the usage dict for this call (shallow copy).
+                        # The last one is retained, reflecting the true context usage of the final API call in this round.
                         _usage = ev.get("message", {}).get("usage", {})
                         if _usage:
                             _last_msg_usage = dict(_usage)
@@ -288,7 +289,7 @@ to:
             return _result, _new_sid, _is_error, _last_msg_usage
 ```
 
-Also update the docstring line that reads `"返回 (result_text, new_session_id, is_error)"` to `"返回 (result_text, new_session_id, is_error, last_msg_usage)"`.
+Also update the docstring line that reads `"Returns (result_text, new_session_id, is_error)"` to `"Returns (result_text, new_session_id, is_error, last_msg_usage)"`.
 
 - [ ] **Step 4: Update the initial `_run_once` call site in `call_llm`**
 
@@ -327,7 +328,7 @@ to:
                 except Exception as retry_err:
 ```
 
-Inside the fallback where retry also fails (the block that sets `result_text = f"[Claude 暂时不可用] {retry_err}"`), add one line resetting `last_msg_usage = {}` right after `is_error = True` to keep the local consistent (prevents stale data from a partial first attempt leaking into a later token-line emission).
+Inside the fallback where retry also fails (the block that sets `result_text = f"[Claude temporarily unavailable] {retry_err}"`), add one line resetting `last_msg_usage = {}` right after `is_error = True` to keep the local consistent (prevents stale data from a partial first attempt leaking into a later token-line emission).
 
 - [ ] **Step 6: Import-level smoke test**
 
@@ -368,28 +369,28 @@ Inside `ClaudeSDKNode` (after `call_llm` / the `call_claude = call_llm` alias, b
 ```python
     async def compact_session(self, session_id: str) -> tuple[str, str]:
         """
-        对指定 Claude session 发送 /compact，让 CLI 压缩对话历史。
+        Send /compact to the specified Claude session, letting the CLI compress the conversation history.
 
-        返回 (status_message, new_session_id)。
-          - status_message: 人类可读状态，如 "ok: sid abc12345 → def67890"
-                            或 "error: <exception msg>" / "warning: no session_id returned"
-          - new_session_id: compact 之后的新 session_id；失败时保留传入的旧 sid
+        Returns (status_message, new_session_id).
+          - status_message: human-readable status, e.g. "ok: sid abc12345 → def67890"
+                            or "error: <exception msg>" / "warning: no session_id returned"
+          - new_session_id: the new session_id after compaction; on failure, the original sid is preserved
 
-        修复原 auto-compact 的两个 bug：
-          1. 不在第一个 ResultMessage 就 break —— 完整遍历迭代器，
-             取最后一次见到的非空 session_id 作为新 sid
-          2. 不清空任何全局追踪字段（这些字段已在移除 auto-compact 时删掉）
+        Fixes two bugs from the original auto-compact:
+          1. Does not break on the first ResultMessage — iterates the iterator to completion,
+             taking the last non-empty session_id seen as the new sid
+          2. Does not clear any global tracking fields (those fields were already removed when auto-compact was deleted)
 
-        语义提醒：Claude CLI 的 /compact 是**有损**操作。它用 LLM 生成摘要
-        替换对话历史，之前的细节（具体文件路径、tool-call 输出等）会丢失。
-        手动调用此方法的上层代码应在 UI 里向用户明确说明。
+        Semantic note: Claude CLI's /compact is a **lossy** operation. It replaces conversation history
+        with an LLM-generated summary; previous details (specific file paths, tool-call outputs, etc.) will be lost.
+        Callers invoking this method manually should make this clear to the user in the UI.
         """
         if not session_id:
             return ("warning: empty session_id, nothing to compact", session_id)
 
-        # 复用 call_llm 里的 _make_options 语义：permission_mode / cwd / settings 等。
-        # 由于 _make_options 是 call_llm 内部闭包，这里直接内联一份最小版本，
-        # 避免提取成方法带来的额外重构范围。
+        # Reuse the _make_options semantics from call_llm: permission_mode / cwd / settings etc.
+        # Since _make_options is a closure inside call_llm, inline a minimal version here
+        # to avoid the extra refactoring scope that extracting it to a method would entail.
         _sp = self.node_config.get("system_prompt") or self.system_prompt or None
         _allowed = self.node_config.get("tools") or self.config.tools
         _disallowed = self._get_disallowed_tools()
@@ -605,18 +606,18 @@ Find `compact_checkpoint` (around line 190). Immediately after it, add:
 ```python
     async def compact_claude_session(self, thread_id: str) -> str:
         """
-        对 thread_id 下所有活跃的 ClaudeSDKNode session 发送 /compact。
+        Send /compact to all active ClaudeSDKNode sessions under thread_id.
 
-        流程：
-          1. 从 compiled graph 的 _llm_node_instances 侧边映射拿到节点实例
-          2. 从 state["node_sessions"] 读出各节点当前的 session_id
-          3. 对每个匹配的 ClaudeSDKNode.compact_session(sid) 并拿到 new_sid
-          4. 如有 sid 变化，用 aupdate_state 写回 checkpoint
+        Process:
+          1. Get node instances from the compiled graph's _llm_node_instances side-map
+          2. Read each node's current session_id from state["node_sessions"]
+          3. Call ClaudeSDKNode.compact_session(sid) for each match and get new_sid
+          4. If any sid changed, write back to checkpoint via aupdate_state
 
-        返回人类可读摘要字符串。
-        该方法从不抛异常（每个节点的失败被转成状态字符串）。
+        Returns a human-readable summary string.
+        This method never raises — each node's failure is converted to a status string.
         """
-        # 懒导入，避免 graph_controller 与 nodes.llm.claude 形成循环依赖
+        # Lazy import to avoid circular dependency between graph_controller and nodes.llm.claude
         from framework.nodes.llm.claude import ClaudeSDKNode
 
         instances: dict = getattr(self._graph, "_llm_node_instances", {}) or {}
@@ -626,29 +627,29 @@ Find `compact_checkpoint` (around line 190). Immediately after it, add:
             if isinstance(inst, ClaudeSDKNode)
         }
         if not claude_nodes:
-            return "无 Claude session 可压缩（该图未注册 ClaudeSDKNode 实例）"
+            return "No Claude session to compact (no ClaudeSDKNode instances registered in this graph)"
 
         config = {"configurable": {"thread_id": thread_id}}
         try:
             snapshot = await self._graph.aget_state(config)
         except Exception as e:
-            return f"❌ 读取 state 失败: {e}"
+            return f"❌ Failed to read state: {e}"
 
         node_sessions: dict = (snapshot.values or {}).get("node_sessions", {}) or {}
         if not node_sessions:
-            return "无活跃 Claude session（state.node_sessions 为空）"
+            return "No active Claude session (state.node_sessions is empty)"
 
         results: list[str] = []
         updated_sessions: dict[str, str] = {}
         any_changed = False
 
         for node_key, node in claude_nodes.items():
-            # 节点实例有 _session_key 属性，指向它在 node_sessions 里的键。
-            # 退一步用 node_key（注册时的 id）作为后备。
+            # Node instances have a _session_key attribute pointing to their key in node_sessions.
+            # Fall back to node_key (the id at registration time) if not present.
             lookup_key = getattr(node, "_session_key", None) or node_key
             sid = node_sessions.get(lookup_key, "")
             if not sid:
-                results.append(f"{lookup_key}: 无活跃 session，跳过")
+                results.append(f"{lookup_key}: no active session, skipping")
                 continue
 
             status, new_sid = await node.compact_session(sid)
@@ -662,16 +663,16 @@ Find `compact_checkpoint` (around line 190). Immediately after it, add:
             try:
                 await self._graph.aupdate_state(config, {"node_sessions": merged})
             except Exception as e:
-                results.append(f"⚠️ aupdate_state 写回 new session_ids 失败: {e}")
+                results.append(f"⚠️ aupdate_state failed to write back new session_ids: {e}")
             else:
-                # 同步 sessions.json，保持与 run() 后的 sync_node_sessions 行为一致
+                # Sync sessions.json to keep consistent with sync_node_sessions behavior after run()
                 self.sync_node_sessions({"node_sessions": merged}, thread_id=thread_id)
 
         logger.info(
             f"[controller] compact_claude_session thread={thread_id!r} "
             f"nodes={len(claude_nodes)} changed={any_changed}"
         )
-        return "；".join(results)
+        return "; ".join(results)
 ```
 
 - [ ] **Step 2: Smoke test**
@@ -732,7 +733,7 @@ After:
         print(f"   !compact:\n{reply}")
 ```
 
-The test's `loader` is a `_setup_bot`-backed fixture whose graph has no real ClaudeSDKNode wired through a live Claude CLI; the new `compact_claude_session()` should still run (returning `"无 Claude session 可压缩…"` or similar) without raising. If running the test reveals that the fixture graph's compiled object lacks `_llm_node_instances`, the `getattr(..., {})` fallback in Task 6 Step 1 keeps it safe.
+The test's `loader` is a `_setup_bot`-backed fixture whose graph has no real ClaudeSDKNode wired through a live Claude CLI; the new `compact_claude_session()` should still run (returning `"No Claude session to compact…"` or similar) without raising. If running the test reveals that the fixture graph's compiled object lacks `_llm_node_instances`, the `getattr(..., {})` fallback in Task 6 Step 1 keeps it safe.
 
 - [ ] **Step 2: Run the test to verify it fails on the new assertions**
 
@@ -751,7 +752,7 @@ In `framework/base_interface.py` (around line 447), replace:
                 keep = 20
             thread_id = self._resolve_thread_id()
             deleted   = await controller.compact_checkpoint(thread_id, keep_last=keep)
-            return f"Compact 完成：删除了 {deleted} 条旧记录，保留最近 {keep} 条。"
+            return f"Compact done: deleted {deleted} old records, kept the last {keep}."
 ```
 
 with:
@@ -767,12 +768,12 @@ with:
             try:
                 claude_msg = await controller.compact_claude_session(thread_id)
             except Exception as e:
-                claude_msg = f"❌ 调用失败: {e}"
+                claude_msg = f"❌ Call failed: {e}"
             return (
-                "Compact 完成：\n"
-                f"  checkpoint DB : 删除 {deleted} 条旧记录，保留最近 {keep} 条\n"
+                "Compact done:\n"
+                f"  checkpoint DB : deleted {deleted} old records, kept the last {keep}\n"
                 f"  Claude session: {claude_msg}\n"
-                "  （注意：/compact 是有损摘要，旧细节可能不再可回忆）"
+                "  (Note: /compact is a lossy summary — old details may no longer be recallable)"
             )
 ```
 
@@ -924,35 +925,35 @@ async def test_discord_tokens():
         reply = await iface.handle_command("!tokens", "")
         assert "1,000" in reply or "1000" in reply
         assert "500" in reply
-        assert "内联显示" in reply
+        assert "inline display" in reply.lower()
         print(f"   !tokens preview:\n{reply[:300]}")
 
         # 2) reset — preserved behavior
         reply2 = await iface.handle_command("!tokens", "reset")
-        assert "重置" in reply2
+        assert "reset" in reply2.lower()
         assert tt._token_stats["input_tokens"] == 0
         print(f"   !tokens reset: {reply2}")
 
         # 3) off — disable inline display
         reply3 = await iface.handle_command("!tokens", "off")
-        assert "关闭" in reply3
+        assert "off" in reply3.lower()
         assert token_display.is_token_display_enabled() is False
         print(f"   !tokens off: {reply3}")
 
         # 4) status — report current state
         reply4 = await iface.handle_command("!tokens", "status")
-        assert "关闭" in reply4
+        assert "off" in reply4.lower()
         print(f"   !tokens status (off): {reply4}")
 
         # 5) on — re-enable
         reply5 = await iface.handle_command("!tokens", "on")
-        assert "开启" in reply5
+        assert "on" in reply5.lower()
         assert token_display.is_token_display_enabled() is True
         print(f"   !tokens on: {reply5}")
 
         # 6) unknown arg — usage hint
         reply6 = await iface.handle_command("!tokens", "gibberish")
-        assert "用法" in reply6 or "on|off|status" in reply6
+        assert "usage" in reply6.lower() or "on|off|status" in reply6
         print(f"   !tokens gibberish: {reply6}")
 
     # Restore default for test isolation
@@ -963,14 +964,14 @@ async def test_discord_tokens():
 - [ ] **Step 2: Run the test to verify it fails**
 
 Run: `cd /home/kingy/Foundation/ZenithLoom && python test_commands.py`
-Expected: `AssertionError` on `"内联显示" in reply` (the handler does not yet append the toggle-state line).
+Expected: `AssertionError` on the inline display assertion in reply (the handler does not yet append the toggle-state line).
 
 - [ ] **Step 3: Update the `!tokens` handler**
 
 In `framework/base_interface.py`, find the `if cmd == "!tokens":` block (around line 360). Replace it with:
 
 ```python
-        # ── Token 统计 ────────────────────────────────────────────────────
+        # ── Token stats ────────────────────────────────────────────────────
         if cmd == "!tokens":
             from framework.token_tracker import get_token_stats, reset_token_stats
             from framework.token_display import (
@@ -982,22 +983,22 @@ In `framework/base_interface.py`, find the `if cmd == "!tokens":` block (around 
 
             if arg_norm == "reset":
                 reset_token_stats()
-                return "Token 计数已重置。"
+                return "Token counters reset."
 
             if arg_norm == "on":
                 set_token_display(True)
-                return "✅ Token 内联显示：开启"
+                return "✅ Token inline display: on"
 
             if arg_norm == "off":
                 set_token_display(False)
-                return "✅ Token 内联显示：关闭"
+                return "✅ Token inline display: off"
 
             if arg_norm == "status":
-                state = "开启" if is_token_display_enabled() else "关闭"
-                return f"Token 内联显示：{state}"
+                state = "on" if is_token_display_enabled() else "off"
+                return f"Token inline display: {state}"
 
             if arg_norm and arg_norm not in {"", "reset", "on", "off", "status"}:
-                return "用法：!tokens [on|off|status|reset]"
+                return "Usage: !tokens [on|off|status|reset]"
 
             # no-arg: cumulative stats plus toggle state
             s = get_token_stats()
@@ -1008,15 +1009,15 @@ In `framework/base_interface.py`, find the `if cmd == "!tokens":` block (around 
             calls = s["calls"]
             cost_usd = (inp * 3 + out * 15 + cr * 0.3 + cc * 3.75) / 1_000_000
             saved_usd = cr * (3 - 0.3) / 1_000_000
-            state = "开启" if is_token_display_enabled() else "关闭"
+            state = "on" if is_token_display_enabled() else "off"
             return (
-                f"调用次数      : {calls}\n"
+                f"Calls         : {calls}\n"
                 f"Input tokens  : {inp:,}\n"
                 f"Output tokens : {out:,}\n"
-                f"Cache read    : {cr:,}  (省了 ${saved_usd:.4f})\n"
+                f"Cache read    : {cr:,}  (saved ${saved_usd:.4f})\n"
                 f"Cache create  : {cc:,}\n"
-                f"估算费用      : ~${cost_usd:.4f} USD\n"
-                f"内联显示      : {state}"
+                f"Estimated cost: ~${cost_usd:.4f} USD\n"
+                f"Inline display: {state}"
             )
 ```
 
@@ -1055,11 +1056,11 @@ default toggle state for cross-test isolation."
 
 Replace the line:
 ```python
-_r("!tokens",     "查看 token 消耗统计",                    ALL,  "[reset]")
+_r("!tokens",     "View token usage stats",                    ALL,  "[reset]")
 ```
 with:
 ```python
-_r("!tokens",     "查看 token 消耗统计 / 切换内联显示",        ALL,  "[on|off|status|reset]")
+_r("!tokens",     "View token usage stats / toggle inline display",        ALL,  "[on|off|status|reset]")
 ```
 
 - [ ] **Step 2: Smoke test**
@@ -1068,10 +1069,10 @@ Run: `cd /home/kingy/Foundation/ZenithLoom && python -c "
 from framework.command_registry import REGISTRY
 entry = REGISTRY['!tokens']
 assert 'on|off' in entry.usage
-assert '内联显示' in entry.description
+assert 'inline display' in entry.description
 print('ok:', entry.usage, '—', entry.description)
 "`
-Expected: `ok: [on|off|status|reset] — 查看 token 消耗统计 / 切换内联显示`
+Expected: `ok: [on|off|status|reset] — View token usage stats / toggle inline display`
 
 Also verify `!help` picks it up by running (if it is quick to invoke) a mock help call:
 
@@ -1121,7 +1122,7 @@ python -m ZenithLoom.interfaces.cli --agent technical_architect
 Inside the CLI:
 
 ```
-你好，请简单介绍一下你自己。
+Hello, please briefly introduce yourself.
 ```
 
 Expected: The technical_architect replies, and the reply **ends with** a line matching the shape `[tokens: ctx=N in=N out=N cache_read=N]` (numbers with commas).
@@ -1132,7 +1133,7 @@ Then run:
 !tokens off
 ```
 
-Expected reply: `✅ Token 内联显示：关闭`
+Expected reply: `✅ Token inline display: off`
 
 Send another short prompt and confirm the token line is **absent** from the reply.
 

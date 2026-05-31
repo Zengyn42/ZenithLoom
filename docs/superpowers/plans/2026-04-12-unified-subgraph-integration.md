@@ -344,7 +344,7 @@ Expected: FAIL — currently uses `_keep_last_2`
 - [ ] **Step 3: Edit `framework/schema/base.py`**
 
 Changes:
-1. Update module docstring: remove "只保留最近 2 条消息", describe new behavior
+1. Update module docstring: remove "only keep the last 2 messages", describe new behavior
 2. Add `from langgraph.graph.message import add_messages`
 3. Delete the entire `_keep_last_2` function (lines 17-26)
 4. Change `messages: Annotated[list[BaseMessage], _keep_last_2]` to `messages: Annotated[list[BaseMessage], add_messages]`
@@ -624,16 +624,16 @@ Delete the `@register_node("SUBGRAPH_MAPPER")` factory (around line 106-109) and
 - [ ] **Step 3: Update comments referencing SubgraphMapperNode**
 
 In `framework/schema/base.py`:
-- Line 43: `SubgraphMapperNode 入口写入、出口清空` → `_subgraph_init 入口写入`
-- Line 44: `SubgraphMapperNode 入口清空` → `_subgraph_init 入口清空`
-- Line 74: `SubgraphMapperNode 或 LLM 节点` → `_subgraph_init 或 LLM 节点`
+- Line 43: `SubgraphMapperNode entry write, exit cleanup` → `_subgraph_init entry write`
+- Line 44: `SubgraphMapperNode entry cleanup` → `_subgraph_init entry cleanup`
+- Line 74: `SubgraphMapperNode or LLM node` → `_subgraph_init or LLM node`
 
 In `framework/nodes/llm/llm_node.py`:
-- Line 321: `SubgraphMapperNode 入口已清空` → `_subgraph_init 入口已清空`
-- Line 507: `SubgraphMapperNode 入口负责清空` → `_subgraph_init 入口负责清空`
+- Line 321: `SubgraphMapperNode entry already cleaned up` → `_subgraph_init entry already cleaned up`
+- Line 507: `SubgraphMapperNode entry is responsible for cleanup` → `_subgraph_init entry is responsible for cleanup`
 
 In `framework/nodes/llm/gemini.py`:
-- Line 887: `SubgraphMapperNode 入口已清空` → `_subgraph_init 入口已清空`
+- Line 887: `SubgraphMapperNode entry already cleaned up` → `_subgraph_init entry already cleaned up`
 
 - [ ] **Step 4: Run tests**
 
@@ -730,11 +730,11 @@ git commit -m "test: update session_mode tests for native subgraph + init/exit +
 
 ```python
 # BEFORE:
-    # 自定义 schema 的跨调用字段污染由 session_mode wrapper（_fresh_wrapper 等）清理。
+    # Cross-call field pollution for custom schemas is cleaned up by the session_mode wrapper (_fresh_wrapper etc.).
 
 # AFTER:
-    # 自定义 schema 的跨调用字段污染由 _subgraph_init 节点清理（注入在 START → entry 之间）。
-    # 子图内部 messages 由 _subgraph_exit 节点清理（注入在 exit → END 之间），防止污染父图。
+    # Cross-call field pollution for custom schemas is cleaned up by the _subgraph_init node (injected between START → entry).
+    # Internal subgraph messages are cleaned up by the _subgraph_exit node (injected between exit → END) to prevent polluting the parent graph.
 ```
 
 - [ ] **Step 2: Update design doc status**

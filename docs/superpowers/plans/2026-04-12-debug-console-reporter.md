@@ -83,13 +83,13 @@ Expected: FAIL — `ModuleNotFoundError: No module named 'framework.debug_report
 ```python
 # framework/debug_reporter.py
 """
-通用 LangGraph 子图 debug 可视化 — framework/debug_reporter.py
+Generic LangGraph subgraph debug visualization — framework/debug_reporter.py
 
-消费 astream(subgraphs=True) 的事件流，输出：
-  1. 实时树形缩进 console 输出（带时间戳）
-  2. Markdown 日志文件
+Consumes the event stream from astream(subgraphs=True) and outputs:
+  1. Real-time tree-indented console output (with timestamps)
+  2. Markdown log file
 
-用法：
+Usage:
     reporter = DebugConsoleReporter("colony_coder")
     async for ns, event in graph.astream(state, stream_mode="updates", subgraphs=True):
         reporter.on_event(ns, event)
@@ -631,9 +631,9 @@ git commit -m "feat(debug_reporter): markdown logging + print_summary"
 ```python
 #!/usr/bin/env python3
 """
-ColonyCoder debug runner — 用 DebugConsoleReporter 可视化完整执行过程。
+ColonyCoder debug runner — visualizes the full execution process using DebugConsoleReporter.
 
-用法: python3 run_colony_coder_debug.py
+Usage: python3 run_colony_coder_debug.py
 """
 
 import asyncio
@@ -651,7 +651,7 @@ logging.basicConfig(
     stream=sys.stderr,
 )
 
-# 注册 state schema
+# Register state schema
 import blueprints.functional_graphs.colony_coder.state  # noqa: F401
 
 from framework.agent_loader import EntityLoader
@@ -660,32 +660,32 @@ from framework.debug_reporter import DebugConsoleReporter
 from langchain_core.messages import HumanMessage
 
 SNAKE_TASK = (
-    "用 Python 写一个双蛇对战游戏（Snake Battle）。\n"
+    "Write a two-snake battle game (Snake Battle) in Python.\n"
     "\n"
-    "## 核心要求\n"
-    "1. 使用 curses 库实现终端 UI\n"
-    "2. 两条蛇同时出现在棋盘上，全部由 AI 控制（无人类玩家），玩家只是观战者\n"
-    "3. 屏幕上同时存在多个食物，蛇吃到食物后身体变长\n"
-    "4. 蛇撞墙、撞自己、或者撞对方身体则死亡\n"
-    "5. 最后存活的蛇获胜；如果都活着则比长度\n"
+    "## Core Requirements\n"
+    "1. Use the curses library for terminal UI\n"
+    "2. Two snakes appear simultaneously on the board, both controlled by AI (no human player), the player is only a spectator\n"
+    "3. Multiple food items exist on screen simultaneously; snakes grow longer after eating food\n"
+    "4. A snake dies if it hits a wall, itself, or the other snake's body\n"
+    "5. The last surviving snake wins; if both are alive, compare by length\n"
     "\n"
-    "## AI 设计\n"
-    "你需要自己设计两个不同策略的 AI（AI-Alpha 和 AI-Beta），让它们各控制一条蛇。\n"
-    "AI 的目标：尽量吃食物让自己变长，同时尽量消灭对方。\n"
-    "两个 AI 必须使用不同的策略，让对战有趣。\n"
+    "## AI Design\n"
+    "Design two AIs with different strategies (AI-Alpha and AI-Beta), each controlling one snake.\n"
+    "AI goal: eat as much food as possible to grow, while trying to eliminate the opponent.\n"
+    "The two AIs must use different strategies to make the battle interesting.\n"
     "\n"
-    "## UI 要求\n"
-    "- 顶部状态栏显示双方信息和当前帧数\n"
-    "- 游戏区域有边框\n"
-    "- 两条蛇用不同颜色区分\n"
-    "- 游戏结束显示获胜者\n"
-    "- 按 Q 退出\n"
-    "- 帧率默认 ~10 FPS\n"
+    "## UI Requirements\n"
+    "- Top status bar showing both snakes' info and current frame count\n"
+    "- Game area has a border\n"
+    "- Two snakes distinguished by different colors\n"
+    "- Display winner when game ends\n"
+    "- Press Q to quit\n"
+    "- Default frame rate ~10 FPS\n"
     "\n"
-    "## 技术要求\n"
-    "- 单文件实现，保存到 /tmp/snake_battle_v3/snake_battle.py\n"
-    "- 代码结构清晰，两个 AI 分别是独立的类\n"
-    "- 可直接 python3 snake_battle.py 运行\n"
+    "## Technical Requirements\n"
+    "- Single-file implementation, save to /tmp/snake_battle_v3/snake_battle.py\n"
+    "- Clear code structure, two AIs as separate independent classes\n"
+    "- Can be run directly with python3 snake_battle.py\n"
 )
 
 

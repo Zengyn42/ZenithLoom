@@ -85,7 +85,7 @@ Expected: FAIL — `ModuleNotFoundError` or `ImportError`
 # blueprints/functional_graphs/apex_coder/state.py
 """ApexCoderState — apex_coder TDD pipeline state schema.
 
-splitter / ClaudeQA / reset_for_coder / ClaudeCoder 共享此 schema。
+Shared by splitter / ClaudeQA / reset_for_coder / ClaudeCoder.
 
 Auto-registers as "apex_coder_schema" on import.
 """
@@ -101,17 +101,17 @@ from framework.registry import register_schema
 
 class ApexCoderState(BaseAgentState):
     # Splitter output
-    user_requirements: str          # 用户需求文本（从 messages[0] 或 plan.md 提取）
-    working_directory: str          # 工作目录路径
+    user_requirements: str          # user requirements text (extracted from messages[0] or plan.md)
+    working_directory: str          # working directory path
 
     # QA output
-    qa_bypass: bool                 # QA 是否跳过（任务不需要测试时为 True）
-    qa_tests_dir: str               # QA 测试目录路径
-    run_qa_script: str              # run_qa.sh 路径
-    qa_summary: str                 # QA 输出摘要
+    qa_bypass: bool                 # whether QA is skipped (True when task does not require tests)
+    qa_tests_dir: str               # QA tests directory path
+    run_qa_script: str              # run_qa.sh path
+    qa_summary: str                 # QA output summary
 
     # Coder output
-    apex_conclusion: str            # Coder 最终报告
+    apex_conclusion: str            # Coder final report
 
     # Override node_sessions with merge reducer
     node_sessions: Annotated[dict, _merge_dict]
@@ -154,9 +154,9 @@ import tempfile
 def test_splitter_text_input():
     from blueprints.functional_graphs.apex_coder.validators import splitter
     result = splitter({
-        "messages": [HumanMessage(content="Build a snake game\n\n## 工作目录: /tmp/test_splitter_apex")]
+        "messages": [HumanMessage(content="Build a snake game\n\n## working_directory: /tmp/test_splitter_apex")]
     })
-    assert result["user_requirements"] == "Build a snake game\n\n## 工作目录: /tmp/test_splitter_apex"
+    assert result["user_requirements"] == "Build a snake game\n\n## working_directory: /tmp/test_splitter_apex"
     assert result["working_directory"] == "/tmp/test_splitter_apex"
     assert len(result["messages"]) == 1
     assert result["messages"][0].content == result["user_requirements"]
@@ -183,7 +183,7 @@ def test_splitter_auto_generates_working_dir():
 def test_splitter_creates_directories():
     from blueprints.functional_graphs.apex_coder.validators import splitter
     result = splitter({
-        "messages": [HumanMessage(content="Task\n\n## 工作目录: /tmp/test_splitter_dirs")]
+        "messages": [HumanMessage(content="Task\n\n## working_directory: /tmp/test_splitter_dirs")]
     })
     assert Path("/tmp/test_splitter_dirs/test_tool/qa_tests").is_dir()
 
@@ -258,7 +258,7 @@ def splitter(state: dict) -> dict:
 
     # Parse working_directory from task or auto-generate
     wd_match = re.search(
-        r"[#]*\s*(?:工作目录|working.?dir(?:ectory)?)[:：]\s*(\S+)",
+        r"[#]*\s*(?:working.?dir(?:ectory)?)[:：]\s*(\S+)",
         user_requirements,
         re.IGNORECASE,
     )
@@ -345,50 +345,50 @@ git commit -m "feat(apex_coder): add splitter and reset_for_coder validators"
 ```markdown
 # Coder Role
 
-你是 P8 级别工程师。端到端实现功能。
+You are a senior P8 engineer. Implement features end-to-end.
 
-## 你的输入
+## Your Inputs
 
-1. **User Requirements** — 用户需求（在消息中）
-2. **QA Tests** — 独立 QA 工程师写的自动化测试（在 test_tool/qa_tests/ 目录）
+1. **User Requirements** — user requirements (in the message)
+2. **QA Tests** — automated tests written by an independent QA engineer (in the test_tool/qa_tests/ directory)
 
-如果 QA 标记为 BYPASSED，你只需满足 User Requirements，不需要跑测试。
+If QA is marked as BYPASSED, you only need to satisfy User Requirements — no need to run tests.
 
-## 你的工作流程
+## Your Workflow
 
-1. **先读 QA 测试** — 理解 QA 期望的行为和验收标准
-2. **再读 User Requirements** — 确认完整需求
-3. **实现** — 写代码满足需求
-4. **自测** — 运行 `bash <run_qa_script>`
-5. **修复** — 如果测试失败，读错误输出，修代码，重跑
-6. **重复 4-5 直到全部通过**
-7. **完成报告**
+1. **Read QA tests first** — understand the expected behavior and acceptance criteria
+2. **Then read User Requirements** — confirm the full requirements
+3. **Implement** — write code to satisfy the requirements
+4. **Self-test** — run `bash <run_qa_script>`
+5. **Fix** — if tests fail, read the error output, fix the code, re-run
+6. **Repeat 4-5 until all pass**
+7. **Completion report**
 
-## 铁律
+## Iron Rules
 
-- ❌ 禁止修改 `test_tool/qa_tests/` 下的任何文件（有 hook 强制阻止）
-- ❌ 禁止删除或重命名 QA 测试
-- ✅ 如果你认为 QA 测试有问题，在最终报告里说明，但不要改它
-- ✅ 所有 Bash 命令必须带 timeout（参见 PROTOCOL.md）
+- ❌ Never modify any files under `test_tool/qa_tests/` (a hook enforces this)
+- ❌ Never delete or rename QA tests
+- ✅ If you believe a QA test is wrong, note it in the final report but do not modify it
+- ✅ All Bash commands must include a timeout (see PROTOCOL.md)
 
-## 你的团队
+## Your Team
 
-你有 Agent 工具可以 spawn 专家子 agent：
+You have the Agent tool to spawn expert sub-agents:
 
-| Agent | 用途 | 何时 spawn |
-|-------|------|-----------|
-| planner | 需求分析 + 实现计划 | 复杂任务开始前 |
-| architect | 系统设计 + ADR | 架构决策 |
-| code-reviewer | 代码审查 | 实现完成后 |
-| build-error-resolver | 构建错误修复 | build 失败时 |
-| pua-debugger | 极限调试 | 反复失败时 |
+| Agent | Purpose | When to spawn |
+|-------|---------|--------------|
+| planner | requirements analysis + implementation plan | before starting complex tasks |
+| architect | system design + ADR | architecture decisions |
+| code-reviewer | code review | after implementation is complete |
+| build-error-resolver | build error fixes | when build fails |
+| pua-debugger | extreme debugging | when repeatedly failing |
 
-## 报告格式
+## Report Format
 
-完成后输出：
-- 创建/修改了哪些文件
-- QA 测试结果（全部通过 or 哪些仍失败 + 原因）
-- 代码架构简述
+When done, output:
+- Which files were created/modified
+- QA test results (all passing or which still fail + reasons)
+- Brief code architecture description
 ```
 
 - [ ] **Step 2: Create QA_ROLE.md**
@@ -396,30 +396,30 @@ git commit -m "feat(apex_coder): add splitter and reset_for_coder validators"
 ```markdown
 # QA Engineer Role
 
-你是独立的 QA 工程师。你的任务是根据用户需求写自动化测试。
-你不知道代码会怎么实现，也不应该关心。你只关心：用户要什么功能？怎么验证？
+You are an independent QA engineer. Your task is to write automated tests based on user requirements.
+You do not know how the code will be implemented and should not care. You only care about: what does the user want? How do you verify it?
 
-## 你的工作
+## Your Work
 
-1. 读取用户需求
-2. 判断是否需要 QA 测试：
-   - 不需要时（纯重构无行为变化、文档编辑、配置改动、代码风格调整、修改大型代码库中难以做 E2E 测试的部分）：输出 `QA_BYPASS: <原因>`，不写测试
-   - 需要时：继续下面的步骤
-3. 在 `<working_directory>/test_tool/qa_tests/` 目录写 5-10 个测试
-4. 写 `<working_directory>/test_tool/run_qa.sh` 执行脚本
-5. 输出测试摘要
+1. Read the user requirements
+2. Determine whether QA tests are needed:
+   - Not needed (pure refactor with no behavior change, documentation edits, config changes, code style adjustments, modifying parts of a large codebase where E2E testing is impractical): output `QA_BYPASS: <reason>`, do not write tests
+   - Needed: continue with the steps below
+3. Write 5-10 tests in the `<working_directory>/test_tool/qa_tests/` directory
+4. Write the `<working_directory>/test_tool/run_qa.sh` execution script
+5. Output a test summary
 
-## 测试规则
+## Testing Rules
 
-- 测试从**用户视角**验证功能，不测内部实现
-- 每个测试 < 10 秒，总测试 < 90 秒
-- curses/终端程序：必须用 pty 模块在**真实终端环境**测试
-  - ❌ 禁止 `python3 -c "import X; X.Game().tick()"` 这种 headless 测试
-  - ✅ 必须用 pty + 24x80 终端启动真实进程
-- 覆盖：核心功能 + 关键边界 + 退出行为
-- 不要测试实现细节（内部类名、函数签名等）
+- Tests verify functionality from the **user's perspective** — do not test internal implementation
+- Each test < 10 seconds, total tests < 90 seconds
+- curses/terminal programs: must use the pty module to test in a **real terminal environment**
+  - ❌ Forbidden: headless tests like `python3 -c "import X; X.Game().tick()"`
+  - ✅ Must use pty + 24x80 terminal to launch a real process
+- Coverage: core functionality + key edge cases + exit behavior
+- Do not test implementation details (internal class names, function signatures, etc.)
 
-## run_qa.sh 模板
+## run_qa.sh Template
 
 ```bash
 #!/bin/bash
@@ -428,13 +428,13 @@ cd "$(dirname "$0")/.."
 timeout 120 python3 -m pytest test_tool/qa_tests/ -v 2>&1
 ```
 
-## 输出格式
+## Output Format
 
-如果写了测试：
-  QA_READY: <测试数量> tests written to <path>
+If tests were written:
+  QA_READY: <number of tests> tests written to <path>
 
-如果跳过：
-  QA_BYPASS: <原因>
+If skipped:
+  QA_BYPASS: <reason>
 ```
 
 - [ ] **Step 3: Delete old ROLE.md**
@@ -582,7 +582,7 @@ Expected: FAIL — old entity.json has `apex_main` not 4 nodes
 ```json
 {
   "name": "apex_coder",
-  "routing_hint": "当编程问题极其复杂、需要全力以赴穷举所有方案时使用。适用：多次失败仍未解决的 bug、完整架构重构、跨多文件系统变更、需要深度 debug 的环境/配置问题。",
+  "routing_hint": "Use when a programming problem is extremely complex and requires exhausting all possible approaches. Applicable for: bugs that have failed to resolve after multiple attempts, full architecture refactors, cross-file system changes, environment/config issues requiring deep debugging.",
   "llm": "claude",
   "graph": {
     "state_schema": "apex_coder_schema",
@@ -709,35 +709,35 @@ from framework.debug_reporter import DebugConsoleReporter
 from langchain_core.messages import HumanMessage
 
 SNAKE_TASK = (
-    "用 Python 写一个双蛇对战游戏（Snake Battle）。\n"
+    "Write a two-snake battle game (Snake Battle) in Python.\n"
     "\n"
-    "## 核心要求\n"
-    "1. 使用 curses 库实现终端 UI\n"
-    "2. 两条蛇同时出现在棋盘上，全部由 AI 控制（无人类玩家），玩家只是观战者\n"
-    "3. 屏幕上同时存在多个食物，蛇吃到食物后身体变长\n"
-    "4. 蛇撞墙、撞自己、或者撞对方身体则死亡\n"
-    "5. 最后存活的蛇获胜；如果都活着则比长度\n"
+    "## Core Requirements\n"
+    "1. Use the curses library for terminal UI\n"
+    "2. Two snakes appear simultaneously on the board, both controlled by AI (no human player), the player is only a spectator\n"
+    "3. Multiple food items exist on screen simultaneously; snakes grow longer after eating food\n"
+    "4. A snake dies if it hits a wall, itself, or the other snake's body\n"
+    "5. The last surviving snake wins; if both are alive, compare by length\n"
     "\n"
-    "## AI 设计\n"
-    "你需要自己设计两个不同策略的 AI（AI-Alpha 和 AI-Beta），让它们各控制一条蛇。\n"
-    "AI 的目标：尽量吃食物让自己变长，同时尽量消灭对方。\n"
-    "两个 AI 必须使用不同的策略，让对战有趣。\n"
+    "## AI Design\n"
+    "Design two AIs with different strategies (AI-Alpha and AI-Beta), each controlling one snake.\n"
+    "AI goal: eat as much food as possible to grow, while trying to eliminate the opponent.\n"
+    "The two AIs must use different strategies to make the battle interesting.\n"
     "\n"
-    "## UI 要求\n"
-    "- 顶部状态栏显示双方信息和当前帧数\n"
-    "- 游戏区域有边框\n"
-    "- 两条蛇用不同颜色区分\n"
-    "- 游戏结束显示获胜者\n"
-    "- 按 Q 退出\n"
-    "- 帧率默认 ~10 FPS\n"
+    "## UI Requirements\n"
+    "- Top status bar showing both snakes' info and current frame count\n"
+    "- Game area has a border\n"
+    "- Two snakes distinguished by different colors\n"
+    "- Display winner when game ends\n"
+    "- Press Q to quit\n"
+    "- Default frame rate ~10 FPS\n"
     "\n"
-    "## 技术要求\n"
-    "- 单文件实现，保存到 /tmp/snake_battle_apex/snake_battle.py\n"
-    "- 代码结构清晰，两个 AI 分别是独立的类\n"
-    "- 可直接 python3 snake_battle.py 运行\n"
-    "- 必须能在标准 24x80 终端下正常运行\n"
+    "## Technical Requirements\n"
+    "- Single-file implementation, save to /tmp/snake_battle_apex/snake_battle.py\n"
+    "- Clear code structure, two AIs as separate independent classes\n"
+    "- Can be run directly with python3 snake_battle.py\n"
+    "- Must run correctly in a standard 24x80 terminal\n"
     "\n"
-    "## 工作目录: /tmp/snake_battle_apex\n"
+    "## working_directory: /tmp/snake_battle_apex\n"
 )
 
 
@@ -797,7 +797,7 @@ async def main():
     print("=" * 70, flush=True)
 
     # Append working_directory hint to task
-    task_with_wd = f"{task_desc}\n## 工作目录: {working_dir}\n"
+    task_with_wd = f"{task_desc}\n## working_directory: {working_dir}\n"
     init_state = {"messages": [HumanMessage(content=task_with_wd)]}
 
     async for ns, event in graph.astream(init_state, stream_mode="updates", subgraphs=True):
