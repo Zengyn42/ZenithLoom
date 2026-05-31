@@ -503,6 +503,227 @@ python awaken.py --entity ~/Foundation/EdenGateway/agents/my-pipeline --connecto
 
 ---
 
+---
+
+## 10. Blueprint Editing Guide for Agents
+
+> This section is for agents that need to create or modify blueprints in VoidDraft. Read it entirely before touching any file.
+
+### 10.1 — Blueprint Directory Layout
+
+A blueprint directory contains:
+
+```
+VoidDraft/blueprints/
+├── role_agents/
+│   └── my_role/
+│       ├── entity.json        ← REQUIRED: graph definition
+│       ├── ROLE.md            ← persona: role identity (who I am)
+│       ├── PROTOCOL.md        ← persona: operating rules (how I behave)
+│       └── graph.py           ← OPTIONAL: custom Python graph (overrides entity.json)
+│
+└── functional_graphs/
+    └── my_subgraph/
+        ├── entity.json        ← REQUIRED: graph + routing_hint
+        └── validators.py      ← OPTIONAL: functions for DETERMINISTIC nodes
+```
+
+**Do NOT edit these runtime files** (they appear in blueprint dirs but are instance state):
+```
+*.db            ← SQLite checkpoint database
+sessions.json   ← LLM session ID registry
+```
+
+### 10.2 — Full `entity.json` Field Reference
+
+```jsonc
+{
+  // ── Top-level fields ─────────────────────────────────────────────────
+  "llm": "claude",                   // default LLM type hint (optional)
+  "max_retries": 2,                  // node-level retry limit on exception
+  "channel_history_limit": 20,       // how many Discord messages to inject as history
+  "permission_mode": "bypassPermissions",  // default for all nodes unless overridden
+  "routing_hint": "Use when ...",    // auto-injected into parent's system prompt
+
+  "mcp": [                           // MCP servers to auto-start with this agent
+    { "name": "heartbeat", "url": "http://127.0.0.1:8100/sse" }
+  ],
+
+  // ── Graph definition ─────────────────────────────────────────────────
+  "graph": {
+    "state_schema": "debate_schema", // OPTIONAL: custom state (default: BaseAgentState)
+    "entry": "main_node",            // first node — used when no explicit __start__ edge
+    "exit": "main_node",             // last node  — used when no explicit __end__ edge
+
+    "nodes": [ ... ],
+    "edges": [ ... ]
+  }
+}
+```
+
+### 10.3 — Node Definition Patterns
+
+**LLM node (standard):**
+```jsonc
+{
+  "id": "claude_main",
+  "type": "CLAUDE_SDK",
+  "session_key": "claude_main",
+  "model": "claude-opus-4-5",         // optional; uses default if omitted
+  "permission_mode": "bypassPermissions",
+  "tools": null,                       // null = all tools; [] = read-only
+  "channel_send_final": false,
+  "output_field": "debate_conclusion", // write LLM output to this state field
+  "system_prompt": "...",              // inline system prompt (or use persona_files)
+  "persona_files": ["ROLE.md"],        // paths relative to blueprint_dir
+  "inject_topic": true,                // inject routing_context as topic header
+  "tombstone_enabled": true,           // inject prior-failure warnings
+  "token_limit": 100000,
+  "max_iterations": 10
+}
+```
+
+**SUBGRAPH_REF node** — note: NO `type` field, just `agent_dir`:
+```jsonc
+{
+  "id": "debate_brainstorm",
+  "agent_dir": "/absolute/path/to/VoidDraft/blueprints/functional_graphs/debate_gemini_first",
+  "session_mode": "fresh_per_call",
+  "fresh_keep_fields": ["discovery_report"],  // preserve these fields through the reset
+  "routing_hint": "Use when..."               // override subgraph's own routing_hint
+}
+```
+
+**Special framework nodes** (no config needed):
+```jsonc
+{ "id": "git_snapshot", "type": "GIT_SNAPSHOT" }  // snapshot git state before LLM runs
+{ "id": "validate",     "type": "VALIDATE"      }  // parse routing signal from prior node
+{ "id": "flush_vram",   "type": "VRAM_FLUSH"    }  // clear GPU VRAM before local model
+```
+
+**DETERMINISTIC node:**
+```jsonc
+{
+  "id": "my_validator",
+  "type": "DETERMINISTIC",
+  "agent_dir": "/path/to/blueprint"   // looks for validators.py here
+}
+// validators.py must define a function with the same name as the node id:
+// def my_validator(state: dict) -> dict: ...
+```
+
+### 10.4 — Edge Definition Patterns
+
+```jsonc
+"edges": [
+  // Direct unconditional edge
+  { "id": "e1", "from": "__start__", "to": "claude_main" },
+
+  // Unconditional — no id required
+  { "from": "claude_main", "to": "git_snapshot" },
+
+  // Routing edge — fires only when routing_target matches
+  { "from": "validate", "type": "routing_to", "to": "debate_brainstorm" },
+
+  // No-routing edge — fires when routing_target is empty (normal reply)
+  { "from": "validate", "type": "no_routing", "to": "__end__" },
+
+  // Error edge — fires when rollback_reason is non-empty
+  { "from": "validate", "type": "on_error",   "to": "error_handler" }
+]
+```
+
+> `__start__` and `__end__` are valid edge targets (equivalent to LangGraph's `START`/`END`). Use either; both work.
+
+### 10.5 — Alias Fuse Table (Never Use Old Names)
+
+Historical code may reference deprecated aliases. **Always write the current names:**
+
+| ❌ Old name | ✅ Current name | Where used |
+|---|---|---|
+| `AgentNode` | `LlmNode` | Python base class |
+| `AgentClaudeNode` | `LlmClaudeNode` | Python class |
+| `AgentRefNode` | `SubgraphRefNode` | Python class |
+| `AgentRunNode` | `HeartbeatNode` | Python class |
+| `AGENT_REF` | `SUBGRAPH_REF` | `"type"` in entity.json |
+| `AGENT_RUN` | `HEARTBEAT` | `"type"` in entity.json |
+| `LLAMA` | `OLLAMA` | `"type"` in entity.json |
+| `LOCAL_VLLM` | `OLLAMA` | `"type"` in entity.json (alias still works) |
+| `agent.json` | `entity.json` | filename |
+| `from_json()` | `from_blueprint_and_instance()` | Python API |
+
+### 10.6 — Subgraph State Leak Defensive Pattern
+
+**Real production bug (2026-04-20):** Subgraphs leaked internal temporary state fields into the parent graph, corrupting the parent's `routing_target` and causing misroutes.
+
+Safe patterns to prevent state pollution:
+
+1. **Use `fresh_per_call`** (default) for all stateless subgraphs. This clears `messages` and `node_sessions` on entry and removes all internal messages on exit.
+
+2. **Use `fresh_keep_fields`** only for fields that the parent intentionally passed IN and the subgraph must read:
+   ```jsonc
+   { "id": "tool_evaluate", "agent_dir": "...", "session_mode": "fresh_per_call",
+     "fresh_keep_fields": ["discovery_report"] }
+   ```
+
+3. **Never rely on `routing_target` surviving a subgraph boundary.** It is cleared by `_subgraph_init` and by `_subgraph_exit`. The parent's validate/routing node re-parses the signal after the subgraph returns.
+
+4. **Terminal nodes write via `output_field`**, not by directly setting parent state fields. This is the only safe handoff channel.
+
+5. **Subgraph internal messages are always stripped** by `_subgraph_exit`. Parent `messages` list is not polluted regardless of what the subgraph's nodes add.
+
+### 10.7 — Three-Phase Validation Before Committing
+
+Before finalizing any blueprint edit, run these checks in order:
+
+**Phase 1 — Anchor paths**
+```bash
+BLUEPRINT=/home/kingy/Foundation/VoidDraft/blueprints/role_agents/my_role
+ls "$BLUEPRINT/entity.json"      # must exist
+ls "$BLUEPRINT/"*.md             # persona files referenced in entity.json must exist
+```
+
+**Phase 2 — Atomic write**
+Write `entity.json` and all persona files in one pass. Never leave entity.json referencing a persona file that doesn't exist yet.
+
+**Phase 3 — Post-write validation**
+```bash
+# 1. JSON syntax check
+python3 -m json.tool "$BLUEPRINT/entity.json" > /dev/null && echo "JSON OK"
+
+# 2. All referenced persona files exist
+python3 -c "
+import json, pathlib
+d = json.load(open('$BLUEPRINT/entity.json'))
+base = pathlib.Path('$BLUEPRINT')
+for f in (d.get('persona_files') or []):
+    assert (base / f).exists(), f'Missing persona file: {f}'
+for node in d.get('graph', {}).get('nodes', []):
+    for f in (node.get('persona_files') or []):
+        assert (base / f).exists(), f'Missing node persona: {f}'
+print('All persona files exist OK')
+"
+
+# 3. Topology sanity — every non-start/end node has at least one in-edge and one out-edge
+python3 -c "
+import json
+d = json.load(open('$BLUEPRINT/entity.json'))
+nodes = {n['id'] for n in d['graph']['nodes']}
+edges = d['graph']['edges']
+in_deg  = {n: 0 for n in nodes}
+out_deg = {n: 0 for n in nodes}
+for e in edges:
+    if e['to']   in nodes: in_deg[e['to']]   += 1
+    if e['from'] in nodes: out_deg[e['from']] += 1
+for n in nodes:
+    assert in_deg[n]  > 0, f'Node {n!r} has no incoming edge (orphan)'
+    assert out_deg[n] > 0, f'Node {n!r} has no outgoing edge (dead-end)'
+print('Topology OK')
+"
+```
+
+---
+
 ## 9. Quick Reference
 
 | Want to... | How |
@@ -519,3 +740,9 @@ python awaken.py --entity ~/Foundation/EdenGateway/agents/my-pipeline --connecto
 | Inspect graph topology | Send `!topology` in CLI/Discord |
 | View session info | `!session`, `!sessions` |
 | Roll back to last snapshot | `!rollback N` |
+| Create a new blueprint | Add dir + `entity.json` + persona `.md` files in VoidDraft |
+| Embed a subgraph node | Use `agent_dir` field, **no** `type` field |
+| Pass state into fresh subgraph | Use `fresh_keep_fields: ["field_name"]` |
+| Write subgraph output to parent | Set `output_field` on terminal node |
+| Validate blueprint before commit | Run Phase 1-3 checks in Section 10.7 |
+| Check deprecated names | See alias fuse table in Section 10.5 |
