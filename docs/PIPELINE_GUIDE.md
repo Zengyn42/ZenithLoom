@@ -238,7 +238,7 @@ def validate_output(state: dict) -> dict:
 
 ### `SUBGRAPH_REF` — Embedded subgraph
 
-See Section 4 below.
+See Section 5 below.
 
 ### `HEARTBEAT` — Background task monitor
 
@@ -261,7 +261,73 @@ Kills any lingering GPU processes before launching a local model node. Use befor
 
 ---
 
-## 4. LangGraph Subgraphs (`SUBGRAPH_REF`)
+## 4. Agent Runtime Conventions
+
+> This section is especially important for agents reading this guide — it explains what you will see at runtime and how to respond correctly.
+
+### What an agent sees in its system prompt
+
+When a blueprint is loaded, the framework automatically appends a routing hint block to the system prompt for any node that has `SUBGRAPH_REF` siblings in the same graph:
+
+```
+<!-- [auto-generated section: routing hints collected from subgraph nodes] -->
+[Available Subgraphs]
+Delegate tasks to the subgraphs below when appropriate.
+Routing: emit the following JSON as the FIRST AND ONLY line of your reply (no prefix, no explanation):
+{"route": "<node_id>", "context": "<describe the topic and relevant background clearly>"}
+
+Available subgraphs:
+  - "debate_brainstorm": Use when the topic needs fast idea exploration and perspective collision...
+  - "apex_coder": Use when the coding problem is extremely complex...
+
+Note: routing is a heavy operation. Only use it when truly valuable — handle simple tasks directly.
+```
+
+This block is built from the `routing_hint` field in each subgraph's `entity.json`. When writing a new subgraph, always declare:
+
+```jsonc
+// VoidDraft/blueprints/functional_graphs/my_subgraph/entity.json
+{
+  "routing_hint": "Use when the user needs X. Triggered by: 'do X', 'help with X'.",
+  ...
+}
+```
+
+### How subgraph conclusions reach the parent agent
+
+After a subgraph completes, its conclusion is stored in a state field (e.g. `debate_conclusion`). On the **parent agent's next invocation**, the framework prepends the conclusion to the user message:
+
+```
+[Debate Conclusion]
+<full subgraph output here>
+
+[ApexCoder Conclusion]
+<coder output here>
+```
+
+As an agent, you should:
+1. Read the injected conclusion block before responding
+2. Synthesize it with the original user request
+3. Deliver your final answer — do **not** route again unless needed
+
+### How to write `output_field` for a subgraph's terminal node
+
+The last LLM node in a subgraph must declare `output_field` to write its response into the parent state:
+
+```jsonc
+{
+  "id": "conclude_node",
+  "type": "CLAUDE_SDK",
+  "output_field": "debate_conclusion",   // ← writes LLM response to this state field
+  "channel_send_final": true             // ← suppress streaming, send one final message
+}
+```
+
+Valid `output_field` values match the state fields in Section 6.
+
+---
+
+## 5. LangGraph Subgraphs (`SUBGRAPH_REF`)
 
 A `SUBGRAPH_REF` node embeds another blueprint's graph as a callable sub-pipeline. It is the primary composition mechanism.
 
@@ -328,7 +394,7 @@ The parent's next LLM node automatically sees these injected into its prompt.
 
 ---
 
-## 5. Edge Types
+## 6. Edge Types
 
 Edges connect nodes. Declare them in `entity.json["graph"]["edges"]`:
 
@@ -361,7 +427,7 @@ Shorthand edge types (legacy, still supported):
 
 ---
 
-## 6. State Schema
+## 7. State Schema
 
 All nodes share `BaseAgentState`. Key fields:
 
@@ -388,7 +454,7 @@ Then in `entity.json`: `"state_schema": "debate"`.
 
 ---
 
-## 7. Minimal Pipeline Example
+## 8. Minimal Pipeline Example
 
 A two-node pipeline: Claude plans, Gemini critiques, Claude concludes.
 
@@ -437,7 +503,7 @@ python awaken.py --entity ~/Foundation/EdenGateway/agents/my-pipeline --connecto
 
 ---
 
-## 8. Quick Reference
+## 9. Quick Reference
 
 | Want to... | How |
 |---|---|
