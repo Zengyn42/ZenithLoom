@@ -454,7 +454,264 @@ Then in `entity.json`: `"state_schema": "debate"`.
 
 ---
 
-## 8. Minimal Pipeline Example
+## 8. Complete Role Agent — End-to-End Walkthrough
+
+> Step-by-step guide to build a production-grade conversational role agent with subgraph routing. This is the proven pattern used by all role agents in VoidDraft.
+
+### The Standard Role Agent Graph
+
+Every role agent follows this topology:
+
+```
+                    ┌─────────────────────────────────┐
+                    │                                 │
+__start__ ──► claude_main ──► git_snapshot ──► validate
+                    ▲              │
+                    │         routing_to ──► debate_brainstorm ──┐
+                    │         routing_to ──► debate_design    ──┤
+                    │         routing_to ──► apex_coder       ──┤
+                    └─────────────────────────────────────────────┘
+                               no_routing ──► __end__
+                               on_error   ──► git_rollback ──► claude_main
+```
+
+**Key nodes explained:**
+- `claude_main` — the primary LLM node; handles the user's message and optionally emits a routing signal
+- `git_snapshot` — takes a git snapshot of the workspace before each reply (enables `!rollback`)
+- `validate` — parses the routing signal from `claude_main`'s output and sets `routing_target` in state
+- subgraph nodes — execute and loop back to `claude_main` which synthesizes the result
+- `git_rollback` — reverts workspace to last snapshot when `rollback_reason` is set
+
+---
+
+### Step 1 — Create the blueprint directory in VoidDraft
+
+```bash
+mkdir -p /home/kingy/Foundation/VoidDraft/blueprints/role_agents/my_role
+cd /home/kingy/Foundation/VoidDraft/blueprints/role_agents/my_role
+```
+
+Required files to create:
+```
+my_role/
+├── entity.json    ← graph definition
+├── ROLE.md        ← who the agent is, what it knows, its limits
+└── PROTOCOL.md    ← how it behaves, operating rules, command reference
+```
+
+---
+
+### Step 2 — Write the persona files
+
+**`ROLE.md`** — defines identity and capability boundaries:
+
+```markdown
+# My Role — Role Definition
+
+## Capabilities
+
+**Good at:**
+- [List what this agent specializes in]
+- [Specific domains, tools, frameworks]
+
+**Boundaries:**
+- [What it should NOT do, or must escalate]
+
+## Behavior Principles
+
+1. **Transparency** — state uncertainty directly, never fabricate answers
+2. **Verify before asserting** — use tools (Read/Grep/Glob) before claiming file contents
+3. **[Add role-specific principles]**
+
+## Prohibited Actions
+
+- Never execute destructive operations without explicit user confirmation
+- Never expose credentials or secrets to external services
+```
+
+**`PROTOCOL.md`** — defines runtime rules and available commands:
+
+```markdown
+# My Role — Operating Protocol
+
+## Runtime Framework
+
+You run inside ZenithLoom's LangGraph state machine:
+- Each reply is processed by middleware before reaching the user
+- Routing pipeline is active: emit JSON → system routes to subgraph → result injected into next prompt
+- When you see a [Debate Conclusion] or [ApexCoder Conclusion] block, the subgraph has finished — synthesize and reply
+
+## Operating Rules
+
+1. Be concise. Output results or ask for approval — no preamble.
+2. [Add role-specific rules]
+3. Reply in [language]. Use English for code and commands.
+
+## Available Commands
+
+| Command | Description |
+|---------|-------------|
+| `!session` | Show current session info |
+| `!topology` | Show agent graph |
+| `!rollback N` | Roll back to snapshot N |
+| `!tokens` | Show token usage |
+```
+
+---
+
+### Step 3 — Write `entity.json`
+
+```jsonc
+// VoidDraft/blueprints/role_agents/my_role/entity.json
+{
+  "llm": "claude",
+  "channel_history_limit": 0,
+  "max_retries": 2,
+
+  "graph": {
+    "nodes": [
+      {
+        "id": "claude_main",
+        "type": "CLAUDE_SDK",
+        "session_key": "claude_main",
+        "persona_files": ["./ROLE.md", "./PROTOCOL.md"],
+        "extra_persona": true,
+        "tools": ["Read", "Write", "Edit", "Bash", "Glob", "Grep"],
+        "permission_mode": "bypassPermissions",
+        "tombstone_enabled": true
+      },
+      { "id": "git_snapshot", "type": "GIT_SNAPSHOT" },
+      { "id": "validate",     "type": "VALIDATE"     },
+      { "id": "git_rollback", "type": "GIT_ROLLBACK" },
+
+      // ── Subgraph nodes (add only the ones your role needs) ──────────
+      {
+        "id": "debate_brainstorm",
+        "agent_dir": "/home/kingy/Foundation/VoidDraft/blueprints/functional_graphs/debate_gemini_first",
+        "session_mode": "fresh_per_call"
+      },
+      {
+        "id": "debate_design",
+        "agent_dir": "/home/kingy/Foundation/VoidDraft/blueprints/functional_graphs/debate_claude_first",
+        "session_mode": "fresh_per_call"
+      },
+      {
+        "id": "apex_coder",
+        "agent_dir": "/home/kingy/Foundation/VoidDraft/blueprints/functional_graphs/apex_coder",
+        "session_mode": "inherit",
+        "routing_hint": "Use when the coding problem is extremely complex, a bug has failed multiple attempts, or a full architecture refactor is needed."
+      }
+    ],
+
+    "edges": [
+      // Main loop
+      { "from": "__start__",     "to": "claude_main"   },
+      { "from": "claude_main",   "to": "git_snapshot"  },
+      { "from": "git_snapshot",  "to": "validate"      },
+
+      // Routing fan-out from validate
+      { "type": "routing_to", "from": "validate", "to": "debate_brainstorm" },
+      { "type": "routing_to", "from": "validate", "to": "debate_design"     },
+      { "type": "routing_to", "from": "validate", "to": "apex_coder"        },
+
+      // Terminal edges
+      { "type": "no_routing", "from": "validate",     "to": "__end__"     },
+      { "type": "on_error",   "from": "validate",     "to": "git_rollback"},
+
+      // All subgraphs loop back to claude_main for synthesis
+      { "from": "debate_brainstorm", "to": "claude_main" },
+      { "from": "debate_design",     "to": "claude_main" },
+      { "from": "apex_coder",        "to": "claude_main" },
+      { "from": "git_rollback",      "to": "claude_main" }
+    ]
+  }
+}
+```
+
+> **Rule:** Every subgraph must have an edge looping back to `claude_main`. That is how the conclusion gets synthesized into the final user reply.
+
+---
+
+### Step 4 — Create the instance in EdenGateway
+
+```bash
+mkdir -p /home/kingy/Foundation/EdenGateway/agents/my-agent
+```
+
+```jsonc
+// EdenGateway/agents/my-agent/identity.json
+{
+  "name": "my-agent",
+  "blueprint": "/home/kingy/Foundation/VoidDraft/blueprints/role_agents/my_role",
+  "framework": "/home/kingy/Foundation/ZenithLoom",
+  "persona_files": ["./IDENTITY.md", "./SOUL.md"],   // injected on top of blueprint personas
+  "workspace": "/home/kingy/Foundation",
+  "connector": "discord",
+  "discord": {
+    "token": "Bot TOKEN_HERE",
+    "allowed_users": ["your-discord-user-id"]
+  }
+}
+```
+
+> `persona_files` in `identity.json` are injected **in addition to** the blueprint's own persona files. Use them for instance-specific identity (name, personality, greeting style).
+
+---
+
+### Step 5 — Validate and launch
+
+```bash
+# Validate entity.json syntax and persona references
+cd /home/kingy/Foundation/VoidDraft/blueprints/role_agents/my_role
+python3 -m json.tool entity.json > /dev/null && echo "JSON OK"
+python3 -c "
+import json, pathlib
+d = json.load(open('entity.json'))
+base = pathlib.Path('.')
+for n in d['graph']['nodes']:
+    for f in (n.get('persona_files') or []):
+        p = base / f
+        assert p.exists(), f'Missing: {f}'
+print('Persona files OK')
+"
+
+# Launch via CLI for testing
+python3 /home/kingy/Foundation/ZenithLoom/awaken.py \
+  --entity /home/kingy/Foundation/EdenGateway/agents/my-agent \
+  --connector cli \
+  --debug
+
+# Launch via systemd for production
+# (create a systemd user service that runs awaken.py with --entity flag)
+```
+
+---
+
+### The Routing Loop in Practice
+
+Here is what happens when a user message triggers a subgraph:
+
+```
+Turn 1 — User: "Should I use microservices or monolith?"
+  → claude_main decides this needs a debate
+  → Emits (first line): {"route": "debate_brainstorm", "context": "microservices vs monolith..."}
+  → git_snapshot runs
+  → validate parses signal → routing_target = "debate_brainstorm"
+  → debate_brainstorm subgraph runs (Gemini proposes → Claude critiques → conclusion)
+  → debate_conclusion written to state
+  → Loop back to claude_main
+
+Turn 2 — [same thread, no user input]
+  → claude_main sees [Debate Conclusion] injected in prompt
+  → Synthesizes the conclusion into a final answer
+  → Does NOT emit a routing signal
+  → validate sees no routing → no_routing edge → __end__
+  → User receives the final reply
+```
+
+---
+
+## 9. Minimal Functional Graph Example
 
 A two-node pipeline: Claude plans, Gemini critiques, Claude concludes.
 
@@ -724,7 +981,7 @@ print('Topology OK')
 
 ---
 
-## 9. Quick Reference
+## 11. Quick Reference
 
 | Want to... | How |
 |---|---|
@@ -744,5 +1001,6 @@ print('Topology OK')
 | Embed a subgraph node | Use `agent_dir` field, **no** `type` field |
 | Pass state into fresh subgraph | Use `fresh_keep_fields: ["field_name"]` |
 | Write subgraph output to parent | Set `output_field` on terminal node |
+| Build a complete role agent | Follow Section 8 end-to-end walkthrough |
 | Validate blueprint before commit | Run Phase 1-3 checks in Section 10.7 |
 | Check deprecated names | See alias fuse table in Section 10.5 |
