@@ -5,10 +5,16 @@ import inspect
 
 
 def test_subgraph_node_type_handled_in_graph_builder():
-    """external subgraph branch must exist in _build_declarative in graph_builder."""
+    """external subgraph branch must exist in _build_declarative in graph_builder.
+
+    After the AgentGraph refactor, subgraph detection is expressed via
+    ``node_spec.is_subgraph`` (a property on NodeSpec) rather than the old
+    inline ``node_def.get("agent_dir") and not node_type`` pattern.
+    """
     import framework.loader.graph_builder as gb
     src = inspect.getsource(gb)
-    assert "agent_dir" in src and "not node_type" in src, "agent_dir detection not in graph_builder"
+    # The new implementation delegates to NodeSpec.is_subgraph
+    assert "is_subgraph" in src, "subgraph detection (is_subgraph) not found in graph_builder"
 
 
 def test_no_circular_import_with_reducers():

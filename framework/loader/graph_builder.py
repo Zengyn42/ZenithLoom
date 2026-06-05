@@ -37,12 +37,12 @@ def _maybe_limit(fn, max_retry):
 
 def _extract_session_keys_from_json(entity_json: dict) -> list[str]:
     """Extract session_key values from all LLM nodes in entity.json graph spec."""
-    graph = entity_json.get("graph", {})
+    from framework.loader.graph_spec import AgentGraph
+    graph_raw = entity_json.get("graph", {})
+    graph = AgentGraph.from_dict(graph_raw) if isinstance(graph_raw, dict) else graph_raw
     keys = []
-    for node in graph.get("nodes", []):
-        ntype = node.get("type", "")
-        if ntype in _LLM_NODE_TYPES:
-            keys.append(node.get("session_key", node["id"]))
+    for node in graph.llm_nodes():
+        keys.append(node.config.get("session_key", node.id))
     return keys
 
 
@@ -141,19 +141,26 @@ async def _build_declarative(
 
     from framework.registry import get_condition, get_node_factory, get_all_schemas
     from framework.schema.base import BaseAgentState, SubgraphInputState
+    from framework.loader.graph_spec import AgentGraph
+
+    # ── Convert raw dict → AgentGraph (one parse, shared by all consumers) ──
+    if isinstance(graph_spec, dict):
+        graph = AgentGraph.from_dict(graph_spec)
+    else:
+        graph = graph_spec  # already an AgentGraph
 
     # ── Step 0: routing_hint collection ──────────────────────────────────────
-    routing_section = _collect_routing_hints(graph_spec, base_dir=blueprint_dir)
+    routing_section = _collect_routing_hints(graph, base_dir=blueprint_dir)
 
     # ── Step 1: three-pass graph validation ──────────────────────────────────
-    all_ids = _collect_all_ids(graph_spec)
-    _check_edge_refs(graph_spec, all_ids)
-    _check_reachable(graph_spec, all_ids)
+    all_ids = _collect_all_ids(graph)
+    _check_edge_refs(graph, all_ids)
+    _check_reachable(graph, all_ids)
 
     # ── Step 2: build nodes ───────────────────────────────────────────────────
     import framework.schema  # noqa: F401 — 确保内置 schema 已注册
 
-    _schema_name = graph_spec.get("state_schema", "base_schema")
+    _schema_name = graph.state_schema
     if _schema_name != "base_schema" and blueprint_dir:
         _state_py = Path(blueprint_dir) / "state.py"
         if _state_py.exists() and _schema_name not in get_all_schemas():
@@ -182,24 +189,26 @@ async def _build_declarative(
 
     _llm_node_instances: dict[str, object] = {}
 
-    for node_def in graph_spec.get("nodes", []):
-        node_id = node_def["id"]
-        node_type = node_def.get("type", "")
+    for node_spec in graph.nodes:
+        node_id = node_spec.id
+        node_type = node_spec.type
+        # node_def: raw dict form (used for factory calls and config access)
+        node_def = node_spec.to_dict()
 
         if node_type == "SUBGRAPH":
             inner = await _build_declarative(
-                node_def["graph"], config, None,
+                node_spec.config.get("graph", {}), config, None,
                 blueprint_dir=blueprint_dir,
                 is_subgraph=True,
                 extra_persona_text=extra_persona_text,
             )
             builder.add_node(node_id, _wrap_node_for_flow_log(node_id, inner))
 
-        elif node_def.get("agent_dir") and not node_type:
+        elif node_spec.is_subgraph:
             # External agent subgraph — lazy import avoids circular dependency.
             from framework.loader.entity_loader import EntityLoader
 
-            raw_dir = node_def.get("agent_dir", "")
+            raw_dir = node_spec.agent_dir
             if not raw_dir:
                 raise ValueError(f"subgraph node '{node_id}' must declare 'agent_dir'")
 
@@ -221,11 +230,11 @@ async def _build_declarative(
                     f"external subgraph '{node_id}': agent_dir not found: {inner_dir}"
                 )
 
-            session_mode = node_def.get("session_mode", "fresh_per_call")
+            session_mode = node_spec.config.get("session_mode", "fresh_per_call")
             inner_loader = EntityLoader(inner_dir)
 
             _child_extra_persona = ""
-            _ep_def = node_def.get("extra_persona")
+            _ep_def = node_spec.config.get("extra_persona")
             if isinstance(_ep_def, dict):
                 _bp_path = Path(blueprint_dir) if blueprint_dir else Path(".")
                 _child_extra_persona = _load_persona_text(
@@ -241,7 +250,7 @@ async def _build_declarative(
                 )
 
             _force_unique = session_mode == "isolated"
-            _keep_fields = node_def.get("fresh_keep_fields")
+            _keep_fields = node_spec.config.get("fresh_keep_fields")
             inner_graph = await inner_loader.build_graph(
                 checkpointer=None, extra_persona_text=_child_extra_persona, is_subgraph=True,
                 force_unique_session_keys=_force_unique,
@@ -261,9 +270,9 @@ async def _build_declarative(
             factory = get_node_factory(node_type)
             _base = dict(node_def)
 
-            if node_type in _LLM_NODE_TYPES:
+            if node_spec.is_llm:
                 _node_extra = ""
-                _ep_flag = node_def.get("extra_persona", False)
+                _ep_flag = node_spec.config.get("extra_persona", False)
 
                 if _ep_flag and not isinstance(_ep_flag, bool):
                     raise ValueError(
@@ -275,11 +284,11 @@ async def _build_declarative(
                 if _ep_flag and extra_persona_text:
                     _node_extra = extra_persona_text
 
-                _node_pfiles = node_def.get("persona_files", [])
+                _node_pfiles = node_spec.config.get("persona_files", [])
                 _bp_dir = Path(blueprint_dir) if blueprint_dir else Path(".")
                 _node_persona = _load_persona_text(_node_pfiles, _bp_dir, label=_bp_dir.name)
 
-                _node_sys = node_def.get("system_prompt", "")
+                _node_sys = node_spec.config.get("system_prompt", "")
                 if routing_section and _ep_flag:
                     _node_sys = (_node_sys + "\n\n" + routing_section).strip() if _node_sys else routing_section
 
@@ -300,10 +309,10 @@ async def _build_declarative(
             builder.add_node(node_id, _wrap_node_for_flow_log(node_id, node_instance))
 
     # ── Pre-compute entry/exit metadata ──────────────────────────────────────
-    _graph_entry = graph_spec.get("entry")
-    _graph_exit  = graph_spec.get("exit")
-    _has_start_edge = any(e["from"] == "__start__" for e in graph_spec.get("edges", []))
-    _has_end_edge   = any(e["to"]   == "__end__"   for e in graph_spec.get("edges", []))
+    _graph_entry = graph.entry
+    _graph_exit  = graph.exit
+    _has_start_edge = any(e.source == "__start__" for e in graph.edges)
+    _has_end_edge   = any(e.target == "__end__"   for e in graph.edges)
 
     _needs_init = is_subgraph and session_mode in ("fresh_per_call", "isolated")
     _needs_exit = is_subgraph
@@ -313,9 +322,8 @@ async def _build_declarative(
     if _needs_exit and _has_end_edge and not _graph_exit:
         from framework.nodes.subgraph_init_node import make_subgraph_exit
         _subgraph_skeys = [
-            n.get("session_key", n["id"])
-            for n in graph_spec.get("nodes", [])
-            if n.get("type", "") in _LLM_NODE_TYPES
+            n.config.get("session_key", n.id)
+            for n in graph.llm_nodes()
         ]
         _exit_fn = make_subgraph_exit(session_mode=session_mode, subgraph_session_keys=_subgraph_skeys)
         builder.add_node("_subgraph_exit", _exit_fn)
@@ -329,15 +337,15 @@ async def _build_declarative(
     _routing_targets: dict[str, dict[str, str]] = defaultdict(dict)
     _named_conds: dict[str, list[tuple[str, object, str]]] = defaultdict(list)
 
-    for edge in graph_spec.get("edges", []):
-        src = edge["from"]
-        dst = edge["to"]
-        edge_type = edge.get("type")
+    for edge_spec in graph.edges:
+        src = edge_spec.source
+        dst = edge_spec.target
+        edge_type = edge_spec.condition
         if dst == "__end__" and _exit_intercept:
             dst_node = "_subgraph_exit"
         else:
             dst_node = END if dst == "__end__" else dst
-        max_retry = edge.get("max_retry")
+        max_retry = edge_spec.config.get("max_retry")
 
         if not edge_type:
             if src == "__start__":
@@ -370,9 +378,8 @@ async def _build_declarative(
     if _needs_exit and _graph_exit and not _has_end_edge and not _exit_intercept:
         from framework.nodes.subgraph_init_node import make_subgraph_exit
         _subgraph_skeys = [
-            n.get("session_key", n["id"])
-            for n in graph_spec.get("nodes", [])
-            if n.get("type", "") in _LLM_NODE_TYPES
+            n.config.get("session_key", n.id)
+            for n in graph.llm_nodes()
         ]
         _exit_fn = make_subgraph_exit(session_mode=session_mode, subgraph_session_keys=_subgraph_skeys)
         builder.add_node("_subgraph_exit", _exit_fn)

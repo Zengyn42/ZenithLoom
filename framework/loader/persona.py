@@ -34,18 +34,25 @@ def _load_persona_text(
     return "\n\n---\n\n".join(parts)
 
 
-def _collect_routing_hints(graph_spec: dict, base_dir: str = "") -> str:
+def _collect_routing_hints(graph_spec, base_dir: str = "") -> str:
     """
     遍历 graph_spec 中所有含 agent_dir 的子图节点，读取其 entity.json 的 routing_hint 字段，
     构建路由说明字符串，用于注入主节点 system_prompt。
+
+    Accepts an AgentGraph instance or a raw dict (backward-compat: auto-wrapped).
     """
+    # Backward-compat: accept raw dict by converting to AgentGraph
+    from framework.loader.graph_spec import AgentGraph
+    if isinstance(graph_spec, dict):
+        graph = AgentGraph.from_dict(graph_spec)
+    else:
+        graph = graph_spec
+
     hints: list[str] = []
-    for node_def in graph_spec.get("nodes", []):
-        agent_dir = node_def.get("agent_dir", "")
-        if not agent_dir or node_def.get("type"):
-            continue
-        node_id = node_def.get("id", "")
-        hint = node_def.get("routing_hint") or ""
+    for node in graph.subgraph_nodes():
+        agent_dir = node.agent_dir
+        node_id = node.id
+        hint = node.config.get("routing_hint") or ""
         if not hint:
             raw = Path(agent_dir)
             for candidate in [

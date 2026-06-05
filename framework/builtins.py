@@ -11,6 +11,7 @@ import 时自动执行注册（无副作用，幂等）。
   GEMINI_API       — GeminiCodeAssistNode(AgentNode)，Gemini Code Assist HTTP API
   OLLAMA           — OllamaNode(AgentNode)，Ollama HTTP API（别名 LOCAL_VLLM）
   LOCAL_VLLM       — OllamaNode(AgentNode)，同 OLLAMA（向后兼容别名）
+  GROK_IMAGINE     — GrokImagineNode，Grok Imagine 图像/视频生成（grok-web-connector）
   GIT_SNAPSHOT     — GitSnapshotNode，提交前自动快照
   GIT_ROLLBACK     — GitRollbackNode，验证失败时回退
   VALIDATE         — ValidateNode，输出质量验证
@@ -64,6 +65,12 @@ def _(config, node_config):
 def _(config, node_config):
     from framework.nodes.llm.grok import GrokNode
     return GrokNode(config, node_config)
+
+
+@register_node("GROK_IMAGINE")
+def _(config, node_config):
+    from framework.nodes.grok_imagine_node import GrokImagineNode
+    return GrokImagineNode(config, node_config)
 
 
 @register_node("GEMINI_API")

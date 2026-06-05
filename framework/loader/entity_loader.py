@@ -243,9 +243,11 @@ class EntityLoader:
 
         # Priority 2: declarative graph
         if "nodes" in graph_dict and "edges" in graph_dict:
+            from framework.loader.graph_spec import AgentGraph
+            agent_graph = AgentGraph.from_dict(graph_dict)
             logger.info(f"[entity_loader] building declarative graph for {self.name!r}")
             return await _build_declarative(
-                graph_dict, config, checkpointer,
+                agent_graph, config, checkpointer,
                 blueprint_dir=str(self._dir),
                 is_subgraph=is_subgraph,
                 force_unique_session_keys=force_unique_session_keys,
@@ -472,8 +474,13 @@ class EntityLoader:
         if not acquired_specs:
             return
 
-        nodes = self._json.get("graph", {}).get("nodes", [])
-        has_gemini_cli = any(n.get("type") == "GEMINI_CLI" for n in nodes)
+        graph_raw = self._json.get("graph", {})
+        if isinstance(graph_raw, dict) and "nodes" in graph_raw:
+            from framework.loader.graph_spec import AgentGraph
+            _g = AgentGraph.from_dict(graph_raw)
+            has_gemini_cli = any(n.type == "GEMINI_CLI" for n in _g.nodes)
+        else:
+            has_gemini_cli = False
         if not has_gemini_cli:
             return
 
@@ -675,9 +682,10 @@ class EntityLoader:
 
     def build_topology_mermaid(self) -> str:
         """从 entity.json 构建 Mermaid 拓扑图，展开 external subgraph 子图。"""
-        graph_spec = self._json.get("graph", {})
+        graph_raw = self._json.get("graph", {})
+        # Pass the raw dict to _mermaid_render (it does its own parsing internally)
         lines = ["flowchart LR"]
-        _mermaid_render(graph_spec, lines, "  ", "")
+        _mermaid_render(graph_raw, lines, "  ", "")
         return "\n".join(lines)
 
 
