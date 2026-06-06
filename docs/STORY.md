@@ -106,6 +106,22 @@ Map ZenithLoom's design decisions to Anthropic's shipped features:
 
 ---
 
+## Why This Is Not Hindsight
+
+A fair challenge: couldn't any project claim alignment with industry trends after the fact?
+
+The answer lies in *why* both ZenithLoom and Anthropic made the same choices. It wasn't coincidence — it was physics.
+
+**LLMs have two fundamental defects: non-determinism and context decay.** Every robust agent architecture must address both. ZenithLoom's design decisions weren't inspired by watching Anthropic — they were forced by the same underlying constraints:
+
+- The early Claude API didn't support native Tool Use. ZenithLoom didn't adapt to API limitations; it worked *around* them by building an external DAG engine and hard context isolation. When Anthropic later added native subagents and structured outputs, they were filling the exact vacuum ZenithLoom had patched from the outside. **Need first, native support later — that's the signal of genuine foresight.**
+
+- ZenithLoom's routing protocol (plain-text JSON, language-agnostic, decoupled from execution) is the same philosophy as MCP (Model Context Protocol): strip scheduling logic out of execution code and turn it into a portable, cross-process protocol. LangGraph remains deeply coupled to the Python runtime. ZenithLoom was on the protocol path before MCP existed.
+
+The convergence isn't coincidence. It's what correct answers to the same physical constraints look like.
+
+---
+
 ## What ZenithLoom Bets on Next
 
 Dynamic Workflows solved one problem: scale. 16 concurrent agents, 1000 total. But they introduced a new one: **the pipeline is invisible again.** Claude writes a JS script. The script runs. You can't see the topology. You can't diff it. You can't render it. You can't version it.
@@ -124,4 +140,4 @@ Anthropic reached the same conclusion. They just built the execution environment
 
 ---
 
-*ZenithLoom · 无垠智穹*
+*ZenithLoom*
