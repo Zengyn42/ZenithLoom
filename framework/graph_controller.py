@@ -33,8 +33,16 @@ from framework.session_mgr import SessionManager
 
 
 def _get_obsv():
-    """Lazy-import observability client — no-op singleton when ZL_OBSERV_URL=""."""
-    from framework.observability_client import get_client  # noqa: PLC0415
+    """
+    Lazy-import observability client.
+    ZL_OBSERV_VERSION=2 → v2 JSONL client (ZL_OBSERV_DIR controls enable/disable).
+    ZL_OBSERV_VERSION=1 (default) → v1 WebSocket client (ZL_OBSERV_URL controls).
+    """
+    import os  # noqa: PLC0415
+    if os.environ.get("ZL_OBSERV_VERSION", "1") == "2":
+        from framework.observability_client_v2 import get_client  # noqa: PLC0415
+    else:
+        from framework.observability_client import get_client  # noqa: PLC0415
     return get_client()
 
 logger = logging.getLogger(__name__)
