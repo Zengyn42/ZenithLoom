@@ -199,6 +199,7 @@ class ClaudeSDKNode(AgentNode):
             _new_sid = sid
             _is_error = False
             _in_thinking = False  # track current block type for ANSI styling
+            nonlocal _actual_model
             _text_chunks: list[str] = []  # fallback when ResultMessage.result is empty
             # 追踪最后一次 API 调用的完整 usage dict（每次 tool use 循环都有独立的 message_start）。
             # 不能用 ResultMessage.usage — 那是累计值，复杂 tool use 会远超真实 context。
@@ -216,6 +217,10 @@ class ClaudeSDKNode(AgentNode):
                         _usage = ev.get("message", {}).get("usage", {})
                         if _usage:
                             _last_msg_usage = dict(_usage)
+                        # 捕获 API 返回的真实 model 名（用于回复尾部 model 标注）
+                        _mdl = ev.get("message", {}).get("model")
+                        if _mdl:
+                            _actual_model = _mdl
                     elif etype == "content_block_start":
                         btype = ev.get("content_block", {}).get("type")
                         if btype == "thinking":
@@ -272,6 +277,7 @@ class ClaudeSDKNode(AgentNode):
         new_session_id = ""
         is_error = False
         last_msg_usage: dict = {}
+        _actual_model = ""  # 从 message_start 事件捕获的真实 model 名
 
         try:
             result_text, new_session_id, is_error, last_msg_usage = await _run_once(session_id, prompt)
@@ -281,11 +287,20 @@ class ClaudeSDKNode(AgentNode):
                     f"[claude] CLI stderr ({len(stderr_lines)} lines):\n"
                     + "\n".join(stderr_lines[-20:])
                 )
-            # 子进程未能启动（initialize 超时）或 resume 失败 -> 以新 session 重试
-            if _is_initialize_timeout(e) or (_is_cli_exit_error(e) and session_id):
+            else:
+                logger.error(
+                    f"[claude] CLI 异常但 stderr 为空 "
+                    f"(prompt_len={len(prompt)}, sid={session_id[:8] if session_id else 'new'}): {e!r}"
+                )
+            # CLI 子进程非零退出（resume 失败 / 瞬态 API 故障）或 initialize 超时
+            # -> 以新 session 重试一次。
+            # 注意：session_id 为空时也必须重试——首次 spawn 同样可能遇到瞬态故障，
+            # 否则裸异常会直接抛给用户（2026-06-11 02:19 故障的根因）。
+            if _is_initialize_timeout(e) or _is_cli_exit_error(e):
                 logger.warning(
                     f"[claude] {type(e).__name__}: {e!r}, 以新 session 重试..."
                 )
+                await asyncio.sleep(2)  # 瞬态故障退避
                 try:
                     result_text, new_session_id, is_error, last_msg_usage = await _run_once("", prompt)
                 except Exception as retry_err:
@@ -322,6 +337,13 @@ class ClaudeSDKNode(AgentNode):
                     f"cache_read={_cache_read:,}]\n"
                 )
                 cb(line, False)
+
+        # 将真实 model 名写回 self._model，供基类 LlmNode.__call__ 的
+        # 模型尾注（_model_footer）显示。优先级：API 返回的真实名 > 配置值。
+        # ClaudeSDKNode 此前从不设置 self._model，导致尾注永远显示 "default"。
+        _resolved_model = _actual_model or (model if model != "default" else "")
+        if _resolved_model:
+            self._model = _resolved_model
 
         return result_text, new_session_id
 
