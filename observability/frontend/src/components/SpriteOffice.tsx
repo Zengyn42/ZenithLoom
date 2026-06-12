@@ -19,12 +19,12 @@ import {
 } from '../sprite/stateMachine'
 import { useViewerWS, type ViewerWsStatus } from '../hooks/useViewerWS'
 
-// Canvas dimensions based on grid layout
-const SLOT_W = 180
-const SLOT_H = 120
-const PADDING = 16
-const CANVAS_W = GRID_COLS * SLOT_W + (GRID_COLS + 1) * PADDING
-const CANVAS_H = GRID_ROWS * SLOT_H + (GRID_ROWS + 1) * PADDING
+// Mirror layout constants from pixiOffice.ts (kept in sync)
+const SLOT_W  = 184
+const SLOT_H  = 148
+const PADDING = 10
+const CANVAS_W = GRID_COLS * SLOT_W + (GRID_COLS + 1) * PADDING  // 766
+const CANVAS_H = GRID_ROWS * SLOT_H + (GRID_ROWS + 1) * PADDING  // 800
 
 const WS_STATUS_COLORS: Record<ViewerWsStatus, string> = {
   connected: '#22c55e',
