@@ -58,7 +58,12 @@ class ObservClientV2:
     Thread-safe: emit() from any thread/coroutine; writer thread owns all I/O.
     """
 
-    def __init__(self, agent_name: str, obs_dir: str) -> None:
+    def __init__(self, agent_name: str, obs_dir: str, defer: bool = False) -> None:
+        """
+        defer=True: postpone file/writer initialization until start(agent_name)
+        delivers the real agent name (used by the module singleton, whose name
+        is unknown at import time).
+        """
         if not obs_dir:
             self._enabled = False
             return
@@ -84,6 +89,13 @@ class ObservClientV2:
         self._current_path: Path | None = None
         self._current_size: int = 0
 
+        self._started = False
+        self._init_lock = threading.Lock()
+        if not defer:
+            self._finish_init()
+
+    def _finish_init(self) -> None:
+        """Open output file, write agent_restart marker, start writer thread."""
         # Open the file (may rotate if existing file already > limit)
         self._current_file, self._current_path, self._current_size = self._open_file()
 
@@ -95,9 +107,10 @@ class ObservClientV2:
 
         # Start daemon writer thread
         self._writer = threading.Thread(
-            target=self._write_loop, name=f"obsv-writer-{agent_name}", daemon=True
+            target=self._write_loop, name=f"obsv-writer-{self._agent}", daemon=True
         )
         self._writer.start()
+        self._started = True
 
     # ── Public interface (v1-compatible) ─────────────────────────────────────
 
@@ -106,10 +119,18 @@ class ObservClientV2:
 
     async def start(self, agent_name: str) -> None:
         """
-        Async no-op (v1 compat). v2 writer starts in __init__.
-        Calling multiple times is safe.
+        Inject the real agent name and finish deferred initialization
+        (v1-compatible signature). Idempotent; safe to call multiple times.
+        For non-deferred clients (tests / direct construction) this is a no-op.
         """
-        pass
+        if not self._enabled or self._started:
+            return
+        with self._init_lock:
+            if self._started:
+                return
+            if agent_name:
+                self._agent = agent_name
+            self._finish_init()
 
     def emit_run_start(self, run_id: str, thread_id: str, input_preview: str = "") -> None:
         """Emit run_start event. Never raises."""
@@ -427,5 +448,5 @@ def get_client() -> ObservClientV2:
     global _client
     if _client is None:
         obs_dir = os.environ.get("ZL_OBSERV_DIR", "")
-        _client = ObservClientV2(agent_name="unknown", obs_dir=obs_dir)
+        _client = ObservClientV2(agent_name="unknown", obs_dir=obs_dir, defer=True)
     return _client

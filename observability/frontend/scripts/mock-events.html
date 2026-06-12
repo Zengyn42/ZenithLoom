@@ -1,0 +1,92 @@
+<!DOCTYPE html>
+<html>
+<head>
+  <title>Mock Viewer WS — Sprite Office Demo</title>
+  <style>
+    body { font-family: monospace; background: #0d1117; color: #c9d1d9; padding: 20px; }
+    button { padding: 8px 16px; margin: 4px; background: #21262d; color: #c9d1d9; border: 1px solid #30363d; border-radius: 4px; cursor: pointer; font-family: monospace; }
+    button:hover { background: #30363d; }
+    #log { margin-top: 16px; max-height: 400px; overflow-y: auto; padding: 8px; background: #161b22; border-radius: 4px; font-size: 12px; }
+    .section { margin-bottom: 16px; padding: 12px; border: 1px solid #21262d; border-radius: 6px; }
+    h3 { color: #58a6ff; margin: 0 0 8px 0; }
+    .info { color: #8b949e; font-size: 12px; margin-bottom: 8px; }
+  </style>
+</head>
+<body>
+  <h2>Mock Viewer WS Server — Port 8766</h2>
+  <div class="info">
+    Start this mock server, then open the Pixel Office view in the main app.<br>
+    Usage: open this file in a browser, or run the inline WebSocket server below with Node.
+  </div>
+
+  <div class="section">
+    <h3>Node.js Mock Server</h3>
+    <p style="color:#8b949e;font-size:12px">Copy and run this command to start a mock WS server on port 8766:</p>
+    <pre style="background:#161b22;padding:12px;border-radius:4px;overflow-x:auto;font-size:11px">
+node -e "
+const { WebSocketServer } = require('ws');
+const wss = new WebSocketServer({ port: 8766 });
+let seq = 0;
+const ts = () => Date.now() / 1000;
+
+function send(ws, evt) {
+  seq++;
+  const msg = JSON.stringify({ ts: ts(), seq, ...evt });
+  ws.send(msg);
+  console.log('→', msg);
+}
+
+wss.on('connection', (ws) => {
+  console.log('Client connected');
+  // Send initial snapshot (empty)
+  ws.send(JSON.stringify({ type: 'snapshot', active_runs: [] }));
+
+  // Demo lifecycle: hani agent
+  setTimeout(() => send(ws, { agent: 'hani', event_type: 'run_start', thread_id: 'demo-1', run_id: 'r1', input_preview: 'Build feature X' }), 1000);
+  setTimeout(() => send(ws, { agent: 'hani', event_type: 'node_start', thread_id: 'demo-1', run_id: 'r1', node_id: 'claude_architect', node_type: 'CLAUDE_SDK' }), 2000);
+  setTimeout(() => send(ws, { agent: 'hani', event_type: 'node_end', thread_id: 'demo-1', run_id: 'r1', node_id: 'claude_architect' }), 5000);
+  setTimeout(() => send(ws, { agent: 'hani', event_type: 'node_start', thread_id: 'demo-1', run_id: 'r1', node_id: 'gemini_reviewer', node_type: 'GEMINI_API' }), 5500);
+
+  // Demo: asa agent arrives
+  setTimeout(() => send(ws, { agent: 'asa', event_type: 'run_start', thread_id: 'asa-1', run_id: 'r2', input_preview: 'Schedule review' }), 3000);
+  setTimeout(() => send(ws, { agent: 'asa', event_type: 'node_start', thread_id: 'asa-1', run_id: 'r2', node_id: 'subgraph_planner', node_type: 'SUBGRAPH_REF' }), 4000);
+
+  // Demo: jei agent
+  setTimeout(() => send(ws, { agent: 'jei', event_type: 'run_start', thread_id: 'jei-1', run_id: 'r3', input_preview: 'Index documents' }), 4500);
+  setTimeout(() => send(ws, { agent: 'jei', event_type: 'node_start', thread_id: 'jei-1', run_id: 'r3', node_id: 'heartbeat_probe', node_type: 'HEARTBEAT' }), 5500);
+
+  // hani finishes
+  setTimeout(() => send(ws, { agent: 'hani', event_type: 'node_end', thread_id: 'demo-1', run_id: 'r1', node_id: 'gemini_reviewer' }), 8000);
+  setTimeout(() => send(ws, { agent: 'hani', event_type: 'run_end', thread_id: 'demo-1', run_id: 'r1' }), 9000);
+
+  // asa finishes
+  setTimeout(() => send(ws, { agent: 'asa', event_type: 'node_end', thread_id: 'asa-1', run_id: 'r2', node_id: 'subgraph_planner' }), 10000);
+  setTimeout(() => send(ws, { agent: 'asa', event_type: 'run_end', thread_id: 'asa-1', run_id: 'r2' }), 11000);
+
+  // jei finishes
+  setTimeout(() => send(ws, { agent: 'jei', event_type: 'node_end', thread_id: 'jei-1', run_id: 'r3', node_id: 'heartbeat_probe' }), 12000);
+  setTimeout(() => send(ws, { agent: 'jei', event_type: 'run_end', thread_id: 'jei-1', run_id: 'r3' }), 13000);
+
+  // New run for hani (second lifecycle)
+  setTimeout(() => send(ws, { agent: 'hani', event_type: 'run_start', thread_id: 'demo-2', run_id: 'r4', input_preview: 'Debug issue Y' }), 15000);
+  setTimeout(() => send(ws, { agent: 'hani', event_type: 'node_start', thread_id: 'demo-2', run_id: 'r4', node_id: 'gemini_debug', node_type: 'GEMINI_CLI' }), 16000);
+
+  // Keepalive pings
+  const ping = setInterval(() => {
+    if (ws.readyState === 1) ws.send(JSON.stringify({ type: 'ping' }));
+  }, 5000);
+  ws.on('close', () => { clearInterval(ping); console.log('Client disconnected'); });
+});
+
+console.log('Mock viewer WS running on ws://127.0.0.1:8766/ws');
+console.log('Open the Pixel Office view in the frontend to see sprites.');
+"
+    </pre>
+  </div>
+
+  <div class="section">
+    <h3>State Machine Test (in-browser)</h3>
+    <p style="color:#8b949e;font-size:12px">The state machine is tested via <code>npm run test</code> (vitest). 28 tests cover all transitions.</p>
+  </div>
+</body>
+</html>
