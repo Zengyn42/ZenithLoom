@@ -1,0 +1,24 @@
+# ZenithLoom Observability Server — Agent Configuration
+# observability/config.toml
+#
+# Each [agents.<name>] section tells the server where to find the agent's
+# entity.json (for topology) and SQLite db (for P2 replay).
+#
+# entity_json: path to the blueprint entity.json
+# db_path:     path to the SQLite checkpoint database (P2, not used in P1)
+
+[agents.hani]
+entity_json = "/home/kingy/Foundation/VoidDraft/blueprints/role_agents/technical_architect/entity.json"
+db_path     = "/home/kingy/Foundation/EdenGateway/agents/hani/hani.db"
+
+[agents.asa]
+entity_json = "/home/kingy/Foundation/VoidDraft/blueprints/role_agents/administrative_officer/entity.json"
+db_path     = "/home/kingy/Foundation/EdenGateway/agents/asa/asa.db"
+
+[agents.jei]
+entity_json = "/home/kingy/Foundation/VoidDraft/blueprints/role_agents/knowledge_curator/entity.json"
+db_path     = "/home/kingy/Foundation/EdenGateway/agents/jei/jei.db"
+
+[agents.dan]
+entity_json = "/home/kingy/Foundation/VoidDraft/blueprints/role_agents/strategic_consultant/entity.json"
+db_path     = "/home/kingy/Foundation/EdenGateway/agents/dan/dan.db"

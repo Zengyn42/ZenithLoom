@@ -1,0 +1,14 @@
+# ZenithLoom Observability Server — Python dependencies
+# Install: pip install -r observability/requirements.txt
+
+# Server
+fastapi>=0.110.0
+uvicorn[standard]>=0.29.0
+websockets>=13.0
+
+# TOML parsing (Python < 3.11 fallback; 3.11+ uses stdlib tomllib)
+tomli>=2.0.0; python_version < "3.11"
+
+# P2 (replay + diff) — not needed for P1
+# jsonpatch>=1.33
+# deepdiff>=7.0

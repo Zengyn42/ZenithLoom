@@ -22,6 +22,7 @@ Session 生命周期（重启恢复流程）：
 """
 
 import logging
+from uuid import uuid4
 
 from langchain_core.messages import HumanMessage
 
@@ -29,6 +30,12 @@ from framework.config import AgentConfig
 from framework.debug import is_debug, push_graph_scope, pop_graph_scope
 from framework.rollback_log import RollbackLog
 from framework.session_mgr import SessionManager
+
+
+def _get_obsv():
+    """Lazy-import observability client — no-op singleton when ZL_OBSERV_URL=""."""
+    from framework.observability_client import get_client  # noqa: PLC0415
+    return get_client()
 
 logger = logging.getLogger(__name__)
 
@@ -73,33 +80,56 @@ class GraphController:
         """返回 LangGraph 调用配置（thread_id）。"""
         return {"configurable": {"thread_id": self._active_thread_id}}
 
-    async def _astream_graph(self, init_state: dict, config: dict) -> dict:
+    async def _astream_graph(self, init_state: dict, config: dict, *, run_id: str = "") -> dict:
         """
-        用 astream(values 模式) 替代 ainvoke，收集最终 state。
-        子图节点内容由各节点自身（如 GeminiCLINode）通过 channel_send_cb 实时推送 Discord，
-        无需在此层处理 updates 事件。
+        用 astream(multi-mode) 替代 ainvoke，收集最终 state 并发送可观测性事件。
+        subgraphs=True → chunk 形状为 (namespace_tuple, mode_str, event)
+        白名单 debug 事件 ("task"/"task_result") → node_start/node_end
+        updates 事件 → state_update（只发 key 列表，不发全量 state）
 
         返回最终 result dict（等价于原 ainvoke 的返回值）。
+
+        可观测性生命周期（start / run_start / run_end）在此统一管理：
+        这是所有执行路径（run / invoke / 接口层 invoke_agent 直调）的唯一汇聚点。
+        Bugfix 2026-06-11: 此前生命周期挂在 run()/invoke() 上，
+        而 Discord 路径（base_interface.invoke_agent）直调 _astream_graph，
+        导致 client 永不启动、事件永不上报。
         """
-        print(f"DEBUG: astream_graph received input: {init_state}", flush=True)
-        print("DEBUG: Starting graph iteration...", flush=True)
+        thread_id = config.get("configurable", {}).get("thread_id", "")
+        _obsv = _get_obsv()
+        run_id = run_id or str(uuid4())
+
+        # input preview for run_start (best-effort, never fails the run)
+        try:
+            _msgs = init_state.get("messages") or []
+            input_preview = str(getattr(_msgs[-1], "content", ""))[:200] if _msgs else ""
+        except Exception:
+            input_preview = ""
+
+        await _obsv.start(self._entity_name)
+        _obsv.emit_run_start(run_id, thread_id, input_preview)
 
         final_state: dict = {}
+        try:
+            async for chunk in self._graph.astream(
+                init_state,
+                config=config,
+                stream_mode=["values", "updates", "debug"],
+                subgraphs=True,
+            ):
+                # chunk = (namespace_tuple, mode_str, event)  [subgraphs=True + multi-mode]
+                ns, mode, event = chunk
+                if mode == "values":
+                    final_state = event  # last frame = final state
+                else:
+                    _obsv.tap(ns, mode, event, run_id=run_id, thread_id=thread_id)
 
-        async for event in self._graph.astream(
-            init_state,
-            config=config,
-            stream_mode="values",
-            subgraphs=False,
-        ):
-            # event 格式（subgraphs=False, mode=values）：直接是 state dict
-            # 持续更新，最后一帧即最终 state
-            final_state = event
-
-        # Fallback：若 values 帧为空（某些图版本不发 values 事件），用 ainvoke 补全
-        if not final_state:
-            logger.warning("[controller] _astream_graph: no values frame received, falling back to ainvoke")
-            final_state = await self._graph.ainvoke(init_state, config=config)
+            # Fallback：若 values 帧为空（某些图版本不发 values 事件），用 ainvoke 补全
+            if not final_state:
+                logger.warning("[controller] _astream_graph: no values frame received, falling back to ainvoke")
+                final_state = await self._graph.ainvoke(init_state, config=config)
+        finally:
+            _obsv.emit_run_end(run_id, thread_id)
 
         return final_state
 
@@ -120,6 +150,7 @@ class GraphController:
         env = self._session_mgr.get_envelope(name) if name else None
         workspace = env.workspace if env else ""
 
+        # observability 生命周期由 _astream_graph 统一管理
         push_graph_scope(self._entity_name)
         try:
             result = await self._astream_graph(
@@ -498,6 +529,7 @@ class GraphController:
         if workspace:
             init_state["workspace"] = workspace
 
+        # observability 生命周期由 _astream_graph 统一管理
         push_graph_scope(self._entity_name)
         try:
             result = await self._astream_graph(

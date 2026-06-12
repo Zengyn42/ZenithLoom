@@ -27,3 +27,5 @@ bot-chrome-data/
 # Gemini CLI local config (authoritative copy lives at ~/Foundation/.gemini/)
 .gemini/
 .gitnexus
+node_modules/
+observability/frontend/dist/

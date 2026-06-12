@@ -1,0 +1,29 @@
+# ZenithLoom Observability Server — systemd user unit
+#
+# Install:
+#   cp observability/zl-observability.service ~/.config/systemd/user/
+#   systemctl --user daemon-reload
+#   systemctl --user enable --now zl-observability
+#
+# Status / logs:
+#   systemctl --user status zl-observability
+#   journalctl --user -u zl-observability -f
+
+[Unit]
+Description=ZenithLoom Observability Server
+After=network.target
+
+[Service]
+Type=simple
+WorkingDirectory=/home/kingy/Foundation/ZenithLoom
+ExecStart=/usr/bin/python3 -m uvicorn observability.server:app --host 127.0.0.1 --port 8765 --log-level info
+Restart=on-failure
+RestartSec=5s
+Environment=PYTHONPATH=/home/kingy/Foundation/ZenithLoom
+Environment=OBSERV_CONFIG_PATH=/home/kingy/Foundation/ZenithLoom/observability/config.toml
+# Enable observability on all agent processes by default
+# (agents read this env var at startup; empty string = disable)
+Environment=ZL_OBSERV_URL=ws://127.0.0.1:8765/ingest
+
+[Install]
+WantedBy=default.target
