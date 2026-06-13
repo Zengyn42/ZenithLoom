@@ -8,6 +8,12 @@
 # Status / logs:
 #   systemctl --user status zl-observability
 #   journalctl --user -u zl-observability -f
+#
+# To accept external connections (tunnel / remote IP):
+#   Override ZL_OBSERV_HOST:
+#     systemctl --user edit zl-observability
+#     [Service]
+#     Environment=ZL_OBSERV_HOST=0.0.0.0
 
 [Unit]
 Description=ZenithLoom Observability Server
@@ -16,7 +22,9 @@ After=network.target
 [Service]
 Type=simple
 WorkingDirectory=/home/kingy/Foundation/ZenithLoom
-ExecStart=/usr/bin/python3 -m uvicorn observability.server:app --host 127.0.0.1 --port 8765 --log-level info
+# Bind address — change to 0.0.0.0 (or a specific interface IP) for remote access.
+Environment=ZL_OBSERV_HOST=127.0.0.1
+ExecStart=/usr/bin/python3 -m uvicorn observability.server:app --host ${ZL_OBSERV_HOST} --port 8765 --log-level info
 Restart=on-failure
 RestartSec=5s
 Environment=PYTHONPATH=/home/kingy/Foundation/ZenithLoom
@@ -24,6 +32,8 @@ Environment=OBSERV_CONFIG_PATH=/home/kingy/Foundation/ZenithLoom/observability/c
 # Enable observability on all agent processes by default
 # (agents read this env var at startup; empty string = disable)
 Environment=ZL_OBSERV_URL=ws://127.0.0.1:8765/ingest
+# Optional shared secret — uncomment and set to enable token auth on /ws:
+# Environment=ZL_OBSERV_TOKEN=changeme
 
 [Install]
 WantedBy=default.target

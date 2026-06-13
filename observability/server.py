@@ -4,6 +4,7 @@ ZenithLoom Observability Server — observability/server.py
 FastAPI application exposing:
   WS  /ingest            ← agent clients push JSON-line events
   WS  /ws/events         → frontend subscribes to real-time broadcast
+  WS  /ws               → single-port viewer proxy (→ viewer :8766/ws)
   GET /api/agents        → list agents + current node states
   GET /api/graph/{name}  → AgentGraph topology (reads entity.json via config)
 
@@ -11,10 +12,22 @@ Run:
     uvicorn observability.server:app --port 8765 --host 127.0.0.1
 
 Or via the systemd unit: zl-observability.service
+
+Environment variables
+─────────────────────
+  ZL_OBSERV_HOST    Host uvicorn binds to (default 127.0.0.1).
+                    Set to 0.0.0.0 to accept external connections.
+  ZL_OBSERV_TOKEN   Optional shared secret.  When set, /ws and /ws/events
+                    require ?token=<secret> query param or
+                    Authorization: Bearer <secret> header.
+                    Empty string (default) disables auth.
+  ZL_VIEWER_PORT    Port the viewer process listens on (default 8766).
+                    The /ws proxy endpoint forwards to this port.
 """
 
 from __future__ import annotations
 
+import asyncio
 import json
 import logging
 import os
@@ -22,10 +35,41 @@ import sys
 from pathlib import Path
 from typing import Any
 
+import websockets as _ws_lib
 from fastapi import FastAPI, WebSocket, WebSocketDisconnect
 from fastapi.staticfiles import StaticFiles
 
 logger = logging.getLogger(__name__)
+
+# ---------------------------------------------------------------------------
+# Runtime configuration (read once at import time)
+# ---------------------------------------------------------------------------
+
+_OBSERV_HOST  = os.environ.get("ZL_OBSERV_HOST",  "127.0.0.1")
+_OBSERV_TOKEN = os.environ.get("ZL_OBSERV_TOKEN", "").strip()
+_VIEWER_PORT  = int(os.environ.get("ZL_VIEWER_PORT", "8766"))
+_VIEWER_URL   = f"ws://127.0.0.1:{_VIEWER_PORT}/ws"
+
+# Print effective config so operators can confirm settings at a glance.
+print(
+    f"[observability] host={_OBSERV_HOST}  viewer={_VIEWER_URL}  "
+    f"token={'SET' if _OBSERV_TOKEN else 'disabled'}",
+    flush=True,
+)
+
+
+def _check_token(ws: WebSocket) -> bool:
+    """Return True if the request carries a valid token (or auth is disabled)."""
+    if not _OBSERV_TOKEN:
+        return True
+    # 1. ?token= query param
+    if ws.query_params.get("token") == _OBSERV_TOKEN:
+        return True
+    # 2. Authorization: Bearer <token>
+    auth = ws.headers.get("authorization", "")
+    if auth.lower().startswith("bearer ") and auth[7:].strip() == _OBSERV_TOKEN:
+        return True
+    return False
 
 # ---------------------------------------------------------------------------
 # Config loader — reads observability/config.toml (or env OBSERV_CONFIG_PATH)
@@ -196,7 +240,11 @@ app = FastAPI(title="ZenithLoom Observability", version="1.0.0")
 
 @app.on_event("startup")
 async def _startup() -> None:
-    logger.info("[server] ZenithLoom Observability Server started on port 8765")
+    logger.info(
+        f"[server] ZenithLoom Observability Server started  "
+        f"host={_OBSERV_HOST}  viewer={_VIEWER_URL}  "
+        f"token={'SET' if _OBSERV_TOKEN else 'disabled'}"
+    )
 
 
 # ── WebSocket: agent → server (ingest) ────────────────────────────────────────
@@ -276,6 +324,74 @@ async def ws_events(ws: WebSocket) -> None:
         logger.debug(f"[server] ws_events closed: {exc}")
     finally:
         hub.unsubscribe(q)
+
+
+# ── WebSocket: single-port viewer proxy (/ws) ─────────────────────────────────
+
+@app.websocket("/ws")
+async def ws_proxy(ws: WebSocket) -> None:
+    """
+    Proxy incoming WS connections to the viewer process on _VIEWER_URL.
+
+    This lets the frontend connect to a single origin (same host:port as the
+    HTTP API) instead of needing a separate port for the viewer.  Any tunnel
+    (ngrok, Cloudflare Tunnel, etc.) or direct IP access therefore only
+    requires one address.
+
+    Auth (when ZL_OBSERV_TOKEN is set):
+      • Query param:  ws://<host>/ws?token=<secret>
+      • HTTP header:  Authorization: Bearer <secret>
+    """
+    await ws.accept()
+
+    if not _check_token(ws):
+        logger.warning("[server] /ws rejected: invalid or missing token")
+        await ws.close(code=4403)
+        return
+
+    try:
+        async with _ws_lib.connect(_VIEWER_URL) as viewer_ws:
+
+            async def relay_viewer_to_client() -> None:
+                """Forward every message from viewer → browser client."""
+                async for msg in viewer_ws:
+                    text = msg if isinstance(msg, str) else msg.decode()
+                    try:
+                        await ws.send_text(text)
+                    except Exception:
+                        return
+
+            async def relay_client_to_viewer() -> None:
+                """Forward messages from browser client → viewer (e.g. custom cmds)."""
+                try:
+                    while True:
+                        data = await ws.receive_text()
+                        await viewer_ws.send(data)
+                except (WebSocketDisconnect, Exception):
+                    return
+
+            tasks = [
+                asyncio.create_task(relay_viewer_to_client()),
+                asyncio.create_task(relay_client_to_viewer()),
+            ]
+            _done, pending = await asyncio.wait(tasks, return_when=asyncio.FIRST_COMPLETED)
+            for t in pending:
+                t.cancel()
+                try:
+                    await t
+                except Exception:
+                    pass
+
+    except OSError as exc:
+        # Viewer not reachable — send a meaningful error then close
+        logger.warning(f"[server] /ws proxy: viewer unreachable at {_VIEWER_URL}: {exc}")
+        try:
+            await ws.send_text(json.dumps({"type": "error", "message": "viewer unavailable"}))
+            await ws.close(code=1011)
+        except Exception:
+            pass
+    except Exception as exc:
+        logger.debug(f"[server] /ws proxy closed: {exc}")
 
 
 # ── REST: agents list ──────────────────────────────────────────────────────────

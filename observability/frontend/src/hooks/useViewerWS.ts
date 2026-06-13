@@ -2,10 +2,13 @@
  * ZenithLoom Observability v2 — Viewer WebSocket Hook
  * src/hooks/useViewerWS.ts
  *
- * Connects to the viewer WS server (ws://127.0.0.1:8766/ws)
- * with exponential backoff reconnect.
+ * Connects to the server-side /ws proxy (same origin as the page) with
+ * exponential backoff reconnect.  The URL is derived dynamically so that
+ * any tunnel address, LAN IP, or localhost all work without rebuilding.
  *
- * Emits parsed ViewerEvent / snapshot objects to the provided callbacks.
+ * Token auth (optional):
+ *   Set VITE_OBSERV_TOKEN at build time to append ?token=<value> to the URL.
+ *   Leave unset (or empty) to disable auth (matches server default).
  */
 
 import { useEffect, useRef, useCallback } from 'react'
@@ -19,11 +22,21 @@ interface UseViewerWSOptions {
   onStatusChange?: (status: ViewerWsStatus) => void
 }
 
-const DEFAULT_URL = 'ws://127.0.0.1:8766/ws'
+/** Build the default WS URL from the current page origin (works on any host/tunnel). */
+function defaultViewerUrl(): string {
+  const proto = window.location.protocol === 'https:' ? 'wss:' : 'ws:'
+  let url = `${proto}//${window.location.host}/ws`
+  const token = import.meta.env.VITE_OBSERV_TOKEN as string | undefined
+  if (token) url += `?token=${encodeURIComponent(token)}`
+  return url
+}
+
 const BASE_BACKOFF_MS = 1_000
 const MAX_BACKOFF_MS = 30_000
 
-export function useViewerWS({ url = DEFAULT_URL, onMessage, onStatusChange }: UseViewerWSOptions): void {
+export function useViewerWS({ url, onMessage, onStatusChange }: UseViewerWSOptions): void {
+  // Resolve URL lazily so defaultViewerUrl() runs in browser context (not SSR).
+  const resolvedUrl = url ?? defaultViewerUrl()
   const wsRef = useRef<WebSocket | null>(null)
   const backoffRef = useRef(BASE_BACKOFF_MS)
   const reconnectTimer = useRef<ReturnType<typeof setTimeout> | null>(null)
@@ -46,7 +59,7 @@ export function useViewerWS({ url = DEFAULT_URL, onMessage, onStatusChange }: Us
     }
 
     onStatusRef.current?.('connecting')
-    const ws = new WebSocket(url)
+    const ws = new WebSocket(resolvedUrl)
     wsRef.current = ws
 
     ws.onopen = () => {
@@ -79,7 +92,7 @@ export function useViewerWS({ url = DEFAULT_URL, onMessage, onStatusChange }: Us
     ws.onerror = () => {
       // onclose will fire immediately after, handles reconnect
     }
-  }, [url])
+  }, [resolvedUrl])
 
   useEffect(() => {
     mountedRef.current = true
