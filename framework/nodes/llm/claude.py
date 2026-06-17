@@ -304,12 +304,13 @@ class ClaudeSDKNode(AgentNode):
                 try:
                     result_text, new_session_id, is_error, last_msg_usage = await _run_once("", prompt)
                 except Exception as retry_err:
-                    # 重试也失败：返回错误文本 + 空 session ID，
-                    # 确保 llm_node.__call__ 正常写入 state 清掉坏 session，
-                    # 避免 checkpoint 保留坏 session ID 导致无限 resume 失败循环。
+                    # 重试也失败：最可能原因是 quota 耗尽（新 session 同样受限）。
+                    # 此时原 session 本身仍然有效，不应清空 session_id。
+                    # 保留原 session_id，quota 恢复后下次可正常 resume，不丢失记忆。
+                    # 注意：若原 session_id 为空（首次调用），new_session_id 仍为空，行为不变。
                     logger.error(f"[claude] 新 session 重试也失败: {retry_err}")
                     result_text = f"[Claude 暂时不可用] {retry_err}"
-                    new_session_id = ""
+                    new_session_id = session_id  # 保留原 session，而非清空（quota bug fix）
                     is_error = True
                     last_msg_usage = {}
             else:
