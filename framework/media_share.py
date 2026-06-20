@@ -2,22 +2,31 @@
 media_share.py — Share local media files via Tailscale Funnel.
 
 Usage:
-    python3 -m framework.media_share /path/to/video.mp4 [/path/to/image.png ...]
-    python3 -m framework.media_share --title "Results" /path/to/file1 /path/to/file2
+    python3 -m framework.media_share --project GenesisExp /path/to/video.mp4
+    python3 -m framework.media_share --project GenesisExp --title "Round 3" --context "..." file1 file2
 
 Outputs the public URL to stdout. The HTTP server is auto-started if not already running.
 
+Directory structure:
+    share/
+      GenesisExp/
+        a1b2c3d4/
+          index.html          ← preview page
+          context.md           ← background notes
+          video.mp4            ← copied media file
+          image.png            ← copied media file
+
 Cleanup:
-    python3 -m framework.media_share --cleanup          # list all shares
-    python3 -m framework.media_share --cleanup --all    # remove all shares
-    python3 -m framework.media_share --cleanup <uuid>   # remove specific share
+    python3 -m framework.media_share --cleanup                    # list all shares
+    python3 -m framework.media_share --cleanup --project X        # list shares in project X
+    python3 -m framework.media_share --cleanup --all              # remove all shares
+    python3 -m framework.media_share --remove <project/uuid>      # remove specific share
 """
 
 import argparse
 import datetime
 import os
 import shutil
-import signal
 import socket
 import subprocess
 import sys
@@ -62,7 +71,12 @@ def _mime_hint(path: Path) -> str:
 
 
 # ── HTML generation ──────────────────────────────────────────────────────────
-def _generate_html(title: str, media_items: list[dict]) -> str:
+def _generate_html(
+    title: str,
+    media_items: list[dict],
+    context: str = "",
+    project: str = "",
+) -> str:
     """Generate a responsive HTML page embedding the given media files."""
     cards = []
     for item in media_items:
@@ -105,13 +119,27 @@ def _generate_html(title: str, media_items: list[dict]) -> str:
 
     cards_html = "\n".join(cards)
     now = datetime.datetime.now().strftime("%Y-%m-%d %H:%M")
+    project_badge = f'<span class="badge">{project}</span> ' if project else ""
+
+    # Context section (background knowledge)
+    context_html = ""
+    if context:
+        # Escape HTML in context, preserve newlines
+        import html as html_mod
+        escaped = html_mod.escape(context)
+        escaped = escaped.replace("\n", "<br>")
+        context_html = f'''
+        <div class="context">
+            <div class="context-title">Background</div>
+            <div class="context-body">{escaped}</div>
+        </div>'''
 
     return f'''<!DOCTYPE html>
 <html lang="en">
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
-<title>{title}</title>
+<title>{project_badge}{title}</title>
 <style>
   * {{ margin: 0; padding: 0; box-sizing: border-box; }}
   body {{
@@ -121,7 +149,23 @@ def _generate_html(title: str, media_items: list[dict]) -> str:
   }}
   .container {{ max-width: 960px; margin: 0 auto; }}
   h1 {{ font-size: 1.5rem; margin-bottom: 0.5rem; color: #58a6ff; }}
-  .timestamp {{ font-size: 0.85rem; color: #8b949e; margin-bottom: 2rem; }}
+  .badge {{
+    display: inline-block; background: #1f6feb; color: #fff;
+    padding: 0.15rem 0.5rem; border-radius: 4px; font-size: 0.8rem;
+    vertical-align: middle; margin-right: 0.3rem;
+  }}
+  .timestamp {{ font-size: 0.85rem; color: #8b949e; margin-bottom: 1.5rem; }}
+  .context {{
+    background: #161b22; border: 1px solid #30363d; border-radius: 8px;
+    padding: 1rem; margin-bottom: 1.5rem;
+  }}
+  .context-title {{
+    font-size: 0.85rem; color: #58a6ff; font-weight: 600;
+    margin-bottom: 0.5rem; text-transform: uppercase; letter-spacing: 0.05em;
+  }}
+  .context-body {{
+    font-size: 0.9rem; color: #c9d1d9; line-height: 1.6;
+  }}
   .card {{
     background: #161b22; border: 1px solid #30363d; border-radius: 8px;
     padding: 1rem; margin-bottom: 1.5rem;
@@ -151,8 +195,9 @@ def _generate_html(title: str, media_items: list[dict]) -> str:
 </head>
 <body>
 <div class="container">
-  <h1>{title}</h1>
+  <h1>{project_badge}{title}</h1>
   <div class="timestamp">Shared at {now}</div>
+  {context_html}
   {cards_html}
   <div class="footer">Served by ZenithLoom via Tailscale Funnel</div>
 </div>
@@ -169,7 +214,7 @@ def _is_port_in_use(port: int) -> bool:
 def _start_server(share_dir: Path, port: int) -> None:
     """Start a background HTTP server if not already running."""
     if _is_port_in_use(port):
-        return  # server already running
+        return
 
     share_dir.mkdir(parents=True, exist_ok=True)
     pid_file = share_dir / ".server.pid"
@@ -191,13 +236,27 @@ def _start_server(share_dir: Path, port: int) -> None:
 def share(
     file_paths: list[str],
     title: str = "Shared Media",
+    project: str = "",
+    context: str = "",
 ) -> str:
     """
     Create a share page for the given files.
-    Returns the public URL.
+
+    Args:
+        file_paths: Local file paths to share.
+        title: Page title.
+        project: Project name for directory grouping (e.g. "GenesisExp").
+        context: Background knowledge / notes to embed in the page.
+
+    Returns the public URL. Files are COPIED (not symlinked) for persistence.
     """
     share_id = uuid.uuid4().hex[:8]
-    share_subdir = SHARE_DIR / share_id
+
+    # Directory: share/<project>/<uuid>/ or share/<uuid>/
+    if project:
+        share_subdir = SHARE_DIR / project / share_id
+    else:
+        share_subdir = SHARE_DIR / share_id
     share_subdir.mkdir(parents=True, exist_ok=True)
 
     media_items = []
@@ -207,22 +266,22 @@ def share(
             print(f"[media_share] WARNING: file not found: {fpath}", file=sys.stderr)
             continue
 
-        # Symlink into share directory
-        link_name = fpath.name
-        link_path = share_subdir / link_name
+        dest_name = fpath.name
+        dest_path = share_subdir / dest_name
 
         # Handle name collision
-        if link_path.exists():
+        if dest_path.exists():
             stem = fpath.stem
             suffix = fpath.suffix
-            link_name = f"{stem}_{share_id[:4]}{suffix}"
-            link_path = share_subdir / link_name
+            dest_name = f"{stem}_{share_id[:4]}{suffix}"
+            dest_path = share_subdir / dest_name
 
-        os.symlink(fpath, link_path)
+        # Copy file (not symlink) for persistence
+        shutil.copy2(fpath, dest_path)
 
         size_mb = fpath.stat().st_size / (1024 * 1024)
         media_items.append({
-            "name": link_name,
+            "name": dest_name,
             "type": _media_type(fpath),
             "mime": _mime_hint(fpath),
             "size_mb": size_mb,
@@ -232,57 +291,103 @@ def share(
         shutil.rmtree(share_subdir, ignore_errors=True)
         raise FileNotFoundError("No valid files to share")
 
+    # Save context as markdown (for future reference outside the HTML)
+    if context:
+        (share_subdir / "context.md").write_text(context, encoding="utf-8")
+
     # Generate HTML
-    html = _generate_html(title, media_items)
+    html = _generate_html(title, media_items, context=context, project=project)
     (share_subdir / "index.html").write_text(html, encoding="utf-8")
 
     # Ensure server is running
     _start_server(SHARE_DIR, SHARE_PORT)
 
-    url = f"{PUBLIC_BASE}/{share_id}/"
+    if project:
+        url = f"{PUBLIC_BASE}/{project}/{share_id}/"
+    else:
+        url = f"{PUBLIC_BASE}/{share_id}/"
     return url
 
 
 # ── Cleanup ──────────────────────────────────────────────────────────────────
-def cleanup(share_id: str | None = None, remove_all: bool = False) -> None:
-    """List or remove shares."""
+def _iter_shares(project: str = "") -> list[tuple[str, Path]]:
+    """Iterate all share directories. Returns list of (display_id, path)."""
     if not SHARE_DIR.exists():
-        print("No shares found.")
-        return
+        return []
 
-    subdirs = sorted(
-        [d for d in SHARE_DIR.iterdir() if d.is_dir() and not d.name.startswith(".")],
-        key=lambda d: d.stat().st_mtime,
-        reverse=True,
-    )
+    results = []
+    if project:
+        # Only look inside a specific project
+        proj_dir = SHARE_DIR / project
+        if proj_dir.exists():
+            for d in proj_dir.iterdir():
+                if d.is_dir():
+                    results.append((f"{project}/{d.name}", d))
+    else:
+        # Look everywhere: top-level UUIDs + project/UUID
+        for entry in SHARE_DIR.iterdir():
+            if not entry.is_dir() or entry.name.startswith("."):
+                continue
+            # Check if this is a project dir (contains subdirs with index.html)
+            # or a direct share dir (contains index.html itself)
+            if (entry / "index.html").exists():
+                results.append((entry.name, entry))
+            else:
+                # Project directory — list its children
+                for sub in entry.iterdir():
+                    if sub.is_dir() and (sub / "index.html").exists():
+                        results.append((f"{entry.name}/{sub.name}", sub))
+
+    results.sort(key=lambda x: x[1].stat().st_mtime, reverse=True)
+    return results
+
+
+def cleanup(
+    share_id: str | None = None,
+    remove_all: bool = False,
+    project: str = "",
+) -> None:
+    """List or remove shares."""
+    shares = _iter_shares(project=project)
 
     if share_id:
+        # share_id can be "uuid" or "project/uuid"
         target = SHARE_DIR / share_id
         if target.exists():
             shutil.rmtree(target)
             print(f"Removed: {share_id}")
+            # Clean up empty project dir
+            parent = target.parent
+            if parent != SHARE_DIR and parent.exists() and not any(parent.iterdir()):
+                parent.rmdir()
         else:
             print(f"Not found: {share_id}")
         return
 
     if remove_all:
-        for d in subdirs:
-            shutil.rmtree(d)
-        print(f"Removed {len(subdirs)} share(s).")
+        for display_id, path in shares:
+            shutil.rmtree(path)
+        # Clean up empty project dirs
+        if SHARE_DIR.exists():
+            for entry in SHARE_DIR.iterdir():
+                if entry.is_dir() and not entry.name.startswith(".") and not any(entry.iterdir()):
+                    entry.rmdir()
+        print(f"Removed {len(shares)} share(s).")
         return
 
     # List mode
-    if not subdirs:
+    if not shares:
         print("No shares found.")
         return
 
-    print(f"{'ID':<12} {'Created':<20} {'Files':<6} URL")
-    print("-" * 70)
-    for d in subdirs:
-        mtime = datetime.datetime.fromtimestamp(d.stat().st_mtime).strftime("%Y-%m-%d %H:%M")
-        files = [f for f in d.iterdir() if f.name != "index.html"]
-        url = f"{PUBLIC_BASE}/{d.name}/"
-        print(f"{d.name:<12} {mtime:<20} {len(files):<6} {url}")
+    print(f"{'ID':<28} {'Created':<20} {'Files':<6} {'Size':<10} URL")
+    print("-" * 100)
+    for display_id, path in shares:
+        mtime = datetime.datetime.fromtimestamp(path.stat().st_mtime).strftime("%Y-%m-%d %H:%M")
+        files = [f for f in path.iterdir() if f.name not in ("index.html", "context.md")]
+        total_mb = sum(f.stat().st_size for f in files if f.is_file()) / (1024 * 1024)
+        url = f"{PUBLIC_BASE}/{display_id}/"
+        print(f"{display_id:<28} {mtime:<20} {len(files):<6} {total_mb:>7.1f} MB {url}")
 
 
 # ── CLI ──────────────────────────────────────────────────────────────────────
@@ -290,14 +395,16 @@ def main():
     parser = argparse.ArgumentParser(description="Share local media via Tailscale Funnel")
     parser.add_argument("files", nargs="*", help="File paths to share")
     parser.add_argument("--title", default="Shared Media", help="Page title")
+    parser.add_argument("--project", "-p", default="", help="Project name for grouping")
+    parser.add_argument("--context", "-c", default="", help="Background notes to embed")
     parser.add_argument("--cleanup", action="store_true", help="List or remove shares")
     parser.add_argument("--all", action="store_true", help="Remove all shares (with --cleanup)")
-    parser.add_argument("--remove", metavar="ID", help="Remove specific share by ID")
+    parser.add_argument("--remove", metavar="ID", help="Remove specific share (uuid or project/uuid)")
 
     args = parser.parse_args()
 
     if args.cleanup or args.remove:
-        cleanup(share_id=args.remove, remove_all=args.all)
+        cleanup(share_id=args.remove, remove_all=args.all, project=args.project)
         return
 
     if not args.files:
@@ -305,8 +412,12 @@ def main():
         sys.exit(1)
 
     try:
-        url = share(args.files, title=args.title)
-        # Print URL to stdout (this is what the agent captures)
+        url = share(
+            args.files,
+            title=args.title,
+            project=args.project,
+            context=args.context,
+        )
         print(url)
     except FileNotFoundError as e:
         print(f"Error: {e}", file=sys.stderr)
