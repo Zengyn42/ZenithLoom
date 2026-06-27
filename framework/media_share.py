@@ -212,7 +212,7 @@ def _is_port_in_use(port: int) -> bool:
 
 
 def _start_server(share_dir: Path, port: int) -> None:
-    """Start a background HTTP server if not already running."""
+    """Start the share server (with Range support) if not already running."""
     if _is_port_in_use(port):
         return
 
@@ -220,15 +220,14 @@ def _start_server(share_dir: Path, port: int) -> None:
     pid_file = share_dir / ".server.pid"
 
     proc = subprocess.Popen(
-        [sys.executable, "-m", "http.server", str(port),
-         "--directory", str(share_dir), "--bind", "127.0.0.1"],
+        [sys.executable, "-m", "framework.share_server", "--port", str(port)],
         stdout=subprocess.DEVNULL,
         stderr=subprocess.DEVNULL,
         start_new_session=True,
     )
 
     pid_file.write_text(str(proc.pid))
-    print(f"[media_share] HTTP server started on port {port} (PID {proc.pid})",
+    print(f"[media_share] share_server started on port {port} (PID {proc.pid})",
           file=sys.stderr)
 
 
